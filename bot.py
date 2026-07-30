@@ -22,12 +22,10 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("dragonassistant")
 
 # Intents are permission flags telling Discord which events your bot wants
-# to receive. message_content is required to read chat text (needed for the
-# chat-mining feature); it must ALSO be enabled in the Discord Developer
-# Portal under your bot's "Privileged Gateway Intents", or login will fail.
+# to receive. members is privileged - it must ALSO be enabled in the Discord
+# Developer Portal under your bot's "Privileged Gateway Intents".
 intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True  # needed for guild.member_count used in mining blocks
+intents.members = True  # needed for guild.member_count (mining pool, market target stock)
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -43,6 +41,10 @@ INITIAL_EXTENSIONS = [
     "cogs.mining",
     "cogs.furnace",
     "cogs.factory",
+    "cogs.press",
+    "cogs.recipe",
+    "cogs.manual",
+    "cogs.fun",
 ]
 
 

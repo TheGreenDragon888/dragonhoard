@@ -1,6 +1,9 @@
 .env
 .env.example
 data/*.db
+# SQLite WAL sidecars, created since db.py enables journal_mode = WAL
+data/*.db-shm
+data/*.db-wal
 __pycache__/
 *.pyc
 .venv/

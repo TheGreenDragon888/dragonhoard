@@ -10,34 +10,53 @@ Implements:
 
 Per docs/market.md, the server itself is an economic actor with its own
 material storage (server_material_storage table). It buys raw/smelted
-materials from users at a price that scales down as its stock approaches a
-per-server "target stock" (member_count * MARKET_TARGET_STOCK_PER_MEMBER),
-and always sells back to users at MARKET_SELL_MARKUP times a material's
-market_ceiling_price - constrained by what it actually has in stock, since
-the server can't sell what it never acquired.
+materials from users at a per-unit price that decays as its stock grows -
+full ceiling price at zero stock, half price at the server's "target stock"
+(bot-excluded member_count * that material's own per-member constant in
+MATERIAL_TARGET_STOCK_PER_MEMBER), tapering toward (but never reaching)
+zero beyond it. It sells back to users at that same rate plus a
+full ceiling price on top - double the ceiling price at zero stock, tapering
+toward (but never below) the ceiling price as stock grows - constrained by
+what it actually has in stock, since the server can't sell what it never
+acquired. Both rates are locked in at the stock level when the trade starts:
+quantity scales the total but never shifts the per-unit price within a
+single trade, only the stock change carried into future trades does.
 
 DragonCoin (users.dragoncoin) is intentionally NOT surfaced here or anywhere
 else - per docs/market.md section 2, it exists solely as a future conceptual
 unit for cross-server exchange rates and isn't spendable, earnable, or shown
 in any menu.
-
-The passive per-message chat payout that used to live in this file has been
-removed entirely (docs/market.md section 1: faucets should be tied to real
-economic activity, not presence) - the market below is now this server's
-only currency faucet, with furnace/factory fees and market buybacks as sinks.
 """
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from utils.responses import respond
-from utils.embeds import add_multi_field
-from utils.formatting import format_currency, format_market_currency, format_compact_number, DEFAULT_CURRENCY_EMOJI
+from utils.embeds import make_embed, add_multi_field, INVENTORY_COLOR, MARKET_COLOR
+from utils.formatting import format_currency, format_compact_price, DEFAULT_CURRENCY_EMOJI
+from utils.guild_helpers import human_member_count
+from utils.drills import drill_label, guild_name_map
+from database.db import InsufficientQuantity
+from utils.db_helpers import (
+    ensure_user_row,
+    ensure_server_row,
+    get_user_quantity,
+    adjust_user_quantity,
+    deduct_user_quantity,
+    get_server_stock,
+    adjust_server_stock,
+    deduct_server_stock,
+    get_currency_balance,
+    adjust_currency_balance,
+    deduct_currency_balance,
+    record_minted,
+    record_burned,
+)
 
 from data.materials import (
     RAW_MATERIALS,
     SMELTED_MATERIALS,
-    MARKET_SELL_MARKUP,
+    INVENTORY_CATEGORIES,
     get_material_info,
     target_stock,
 )
@@ -46,53 +65,15 @@ from data.materials import (
 # materials and drills are excluded (docs/market.md section 3).
 TRADEABLE_MATERIALS = {**RAW_MATERIALS, **SMELTED_MATERIALS}
 
+# How many drills /inventory lists individually before collapsing the rest
+# into a count, mirroring the pending-jobs cap in /factory status.
+DRILL_DISPLAY_LIMIT = 20
+
 
 class EconomyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
-
-    async def _ensure_user_row(self, user_id: int):
-        await self.db.execute(
-            "INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,)
-        )
-
-    async def _ensure_server_row(self, guild_id: int):
-        await self.db.execute(
-            "INSERT OR IGNORE INTO server_config (guild_id) VALUES (?)", (guild_id,)
-        )
-
-    async def _get_quantity(self, user_id: int, material_id: str) -> int:
-        row = await self.db.fetchone(
-            "SELECT quantity FROM user_materials WHERE user_id = ? AND material_id = ?",
-            (user_id, material_id),
-        )
-        return row["quantity"] if row else 0
-
-    async def _adjust_quantity(self, user_id: int, material_id: str, delta: int):
-        await self.db.execute(
-            """
-            INSERT INTO user_materials (user_id, material_id, quantity) VALUES (?, ?, ?)
-            ON CONFLICT (user_id, material_id) DO UPDATE SET quantity = quantity + excluded.quantity
-            """,
-            (user_id, material_id, delta),
-        )
-
-    async def _get_server_stock(self, guild_id: int, material_id: str) -> int:
-        row = await self.db.fetchone(
-            "SELECT quantity FROM server_material_storage WHERE guild_id = ? AND material_id = ?",
-            (guild_id, material_id),
-        )
-        return row["quantity"] if row else 0
-
-    async def _adjust_server_stock(self, guild_id: int, material_id: str, delta: int):
-        await self.db.execute(
-            """
-            INSERT INTO server_material_storage (guild_id, material_id, quantity) VALUES (?, ?, ?)
-            ON CONFLICT (guild_id, material_id) DO UPDATE SET quantity = quantity + excluded.quantity
-            """,
-            (guild_id, material_id, delta),
-        )
 
     async def _get_currency_emoji(self, guild_id: int) -> str | None:
         row = await self.db.fetchone(
@@ -100,61 +81,39 @@ class EconomyCog(commands.Cog):
         )
         return row["currency_emoji"] if row else None
 
-    async def _get_currency_balance(self, guild_id: int, user_id: int) -> float:
-        row = await self.db.fetchone(
-            "SELECT balance FROM server_currency_balances WHERE guild_id = ? AND user_id = ?",
-            (guild_id, user_id),
-        )
-        return row["balance"] if row else 0.0
-
-    async def _adjust_currency_balance(self, guild_id: int, user_id: int, delta: float):
-        await self.db.execute(
-            """
-            INSERT INTO server_currency_balances (guild_id, user_id, balance) VALUES (?, ?, ?)
-            ON CONFLICT (guild_id, user_id) DO UPDATE SET balance = balance + excluded.balance
-            """,
-            (guild_id, user_id, delta),
-        )
-
-    async def _record_minted(self, guild_id: int, amount: float):
-        await self.db.execute(
-            "UPDATE server_config SET currency_minted_total = currency_minted_total + ? WHERE guild_id = ?",
-            (amount, guild_id),
-        )
-
-    async def _record_burned(self, guild_id: int, amount: float):
-        await self.db.execute(
-            "UPDATE server_config SET currency_burned_total = currency_burned_total + ? WHERE guild_id = ?",
-            (amount, guild_id),
-        )
-
     def _buy_price(self, ceiling_price: float, current_stock: int, quantity: int, target_stock: int) -> float:
-        """Price the server pays to acquire `quantity` units it doesn't yet
-        have, given it currently holds `current_stock` out of `target_stock`.
-        Per-unit price decreases linearly from ceiling_price (at 0 stock) to 0
-        (at target_stock and beyond) - priced using the average over however
-        much of this sale actually falls below target_stock. Any portion of
-        the sale that would push stock past target_stock is still accepted
-        into server storage, just isn't paid for."""
-        if target_stock <= 0 or current_stock >= target_stock:
+        """Total the server pays to acquire `quantity` units, priced at the
+        flat per-unit rate for the stock level at the start of the trade -
+        ceiling_price * target / (target + current_stock) - full price at
+        zero stock, half price at target_stock, approaching (but never
+        reaching) zero beyond it. Target stock is an equilibrium point, not
+        a maximum: the server always buys, and every unit is paid the same
+        rate within a trade - quantity doesn't move the price mid-trade,
+        only the stock change persisted afterward does, for the next trade."""
+        if target_stock <= 0 or quantity <= 0:
             return 0.0
-        priced_units = min(quantity, target_stock - current_stock)
-        end_stock = current_stock + priced_units
-        midpoint_stock = (current_stock + end_stock) / 2
-        unit_price = ceiling_price * (1 - midpoint_stock / target_stock)
-        return unit_price * priced_units
+        return ceiling_price * target_stock / (target_stock + current_stock) * quantity
 
-    def _sell_price(self, ceiling_price: float, quantity: int) -> float:
-        """Flat price the server charges to sell `quantity` units back to a
-        user - always MARKET_SELL_MARKUP times the material's ceiling price
-        per unit, regardless of current stock."""
-        return ceiling_price * MARKET_SELL_MARKUP * quantity
+    def _sell_price(self, ceiling_price: float, current_stock: int, quantity: int, target_stock: int) -> float:
+        """Total a user pays to buy `quantity` units from the server, priced
+        at the flat per-unit rate for the stock level at the start of the
+        trade - ceiling_price * (1 + target / (target + current_stock)) -
+        double the ceiling price at zero stock, tapering down toward (but
+        never below) the ceiling price as stock grows. As with _buy_price,
+        quantity doesn't move the price mid-trade. This rate is always
+        exactly ceiling_price above _buy_price's rate at the same stock
+        level, so round-tripping (sell then immediately buy back) is never
+        profitable, regardless of within-trade granularity."""
+        if target_stock <= 0 or quantity <= 0 or current_stock - quantity < 0:
+            return 0.0
+        return ceiling_price * (1 + target_stock / (target_stock + current_stock)) * quantity
 
     async def _currency_lines(self, interaction: discord.Interaction) -> list[str]:
         """Every server currency balance this user holds, formatted for
-        display. The current server's currency always comes first (even if
-        the balance is 0), followed by every other server's currency ordered
-        highest balance to lowest."""
+        display and labelled with the currency's own name. The current
+        server's currency always comes first (even if the balance is 0),
+        followed by every other server's currency ordered highest balance to
+        lowest."""
         rows = await self.db.fetchall(
             """
             SELECT scb.guild_id, scb.balance, sc.currency_name, sc.currency_emoji
@@ -187,45 +146,71 @@ class EconomyCog(commands.Cog):
         lines = []
         for row in ordered_rows:
             emoji = row["currency_emoji"] if row["currency_name"] else None
+            # A server that hasn't run /setup currency has no currency name
+            # yet, so fall back to naming the server itself.
             guild = self.bot.get_guild(row["guild_id"])
-            guild_name = guild.name if guild else f"Server {row['guild_id']}"
-            suffix = " (this server)" if row["guild_id"] == interaction.guild_id else ""
-            lines.append(f"{format_currency(row['balance'], emoji)} - {guild_name}{suffix}")
+            label = row["currency_name"] or (guild.name if guild else f"Server {row['guild_id']}")
+            lines.append(f"{format_currency(row['balance'], emoji)} {label}")
         return lines
 
     @app_commands.command(name="balance", description="Check your currency balances across every server")
     async def balance(self, interaction: discord.Interaction):
-        embed = discord.Embed(title=f"{interaction.user.display_name}'s Balance", color=discord.Color.gold())
+        embed = make_embed(f"{interaction.user.display_name}'s Balance", INVENTORY_COLOR)
         lines = await self._currency_lines(interaction)
         add_multi_field(embed, "Currencies", lines)
         await respond(interaction, self.db, embed=embed)
 
     @app_commands.command(name="inventory", description="Show your inventory alongside your balance")
     async def inventory(self, interaction: discord.Interaction):
-        embed = discord.Embed(title=f"{interaction.user.display_name}'s Inventory", color=discord.Color.gold())
+        embed = make_embed(f"{interaction.user.display_name}'s Inventory", INVENTORY_COLOR)
 
+        # _currency_lines puts this server first, then every other server by
+        # balance descending - so the first three are this server plus the
+        # user's two largest balances elsewhere.
         currency_lines = await self._currency_lines(interaction)
-        if currency_lines:
-            embed.description = currency_lines[0]
+        embed.description = "\n".join(currency_lines[:3])
 
         inventory_rows = await self.db.fetchall(
-            "SELECT material_id, quantity FROM user_materials WHERE user_id = ? AND quantity > 0 ORDER BY material_id",
+            "SELECT material_id, quantity FROM user_materials WHERE user_id = ? AND quantity > 0",
             (interaction.user.id,),
         )
+        quantities = {row["material_id"]: row["quantity"] for row in inventory_rows}
 
-        inventory_lines = []
-        for row in inventory_rows:
-            info = get_material_info(row["material_id"])
-            if info is None:
+        has_items = False
+        for field_name, material_ids in INVENTORY_CATEGORIES:
+            cells = []
+            for material_id in material_ids:
+                quantity = quantities.get(material_id)
+                info = get_material_info(material_id)
+                if not quantity or info is None:
+                    continue
+                cells.append(f"{info['emoji']} {quantity}")
+            if not cells:
                 continue
-            inventory_lines.append(f"{info['emoji']} {row['quantity']}")
+            has_items = True
+            grid_lines = [" ".join(cells[i:i + 6]) for i in range(0, len(cells), 6)]
+            add_multi_field(embed, field_name, grid_lines)
 
-        if inventory_lines:
-            grid_lines = []
-            for i in range(0, len(inventory_lines), 4):
-                grid_lines.append(" ".join(inventory_lines[i:i + 4]))
-            embed.add_field(name="Items", value="\n".join(grid_lines), inline=False)
-        else:
+        # Drills get their own field rather than a cell in the grid above:
+        # they aren't stacks in user_materials any more but individual rows,
+        # each with its own level, container and location - none of which fits
+        # in a bare "{emoji} {count}" cell.
+        drill_rows = await self.db.fetchall(
+            "SELECT * FROM drills WHERE owner_id = ? ORDER BY level DESC, drill_id ASC",
+            (interaction.user.id,),
+        )
+        if drill_rows:
+            has_items = True
+            names = guild_name_map(self.bot, drill_rows)
+            lines = [
+                drill_label(row, names.get(row["guild_id"]), with_emoji=True)
+                for row in drill_rows[:DRILL_DISPLAY_LIMIT]
+            ]
+            if len(drill_rows) > DRILL_DISPLAY_LIMIT:
+                lines.append(f"... and {len(drill_rows) - DRILL_DISPLAY_LIMIT} more")
+            add_multi_field(embed, "Drills", lines)
+
+        if not has_items:
             embed.add_field(name="Items", value="Your inventory is empty.", inline=False)
 
         await respond(interaction, self.db, embed=embed)
@@ -238,36 +223,50 @@ class EconomyCog(commands.Cog):
         app_commands.Choice(name=info["name"], value=key) for key, info in TRADEABLE_MATERIALS.items()
     ])
     async def market_sell(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000]):
-        await self._ensure_user_row(interaction.user.id)
-        await self._ensure_server_row(interaction.guild_id)
-
-        have = await self._get_quantity(interaction.user.id, material.value)
-        if have < quantity:
-            await interaction.response.send_message(f"You only have {have} of that item.", ephemeral=True)
-            return
-
         info = TRADEABLE_MATERIALS[material.value]
         ceiling_price = info["market_ceiling_price"]
-        current_stock = await self._get_server_stock(interaction.guild_id, material.value)
-        target = target_stock(interaction.guild.member_count)
-        total_value = self._buy_price(ceiling_price, current_stock, quantity, target)
 
-        if total_value <= 0:
+        # Read the member count before opening the transaction: it can chunk
+        # the guild over the gateway, and holding the write lock across a
+        # network round-trip would stall every other command in the bot.
+        member_count = await human_member_count(interaction.guild)
+
+        # Everything the price depends on is read inside the transaction, so
+        # nothing can move between deciding the payout and deducting the
+        # materials. Run twice concurrently without this and both invocations
+        # read the same stock, both pass the "do you have enough" check, and
+        # the player is paid twice for one stack.
+        try:
+            async with self.db.transaction() as tx:
+                await ensure_user_row(tx, interaction.user.id)
+                await ensure_server_row(tx, interaction.guild_id)
+
+                have = await get_user_quantity(tx, interaction.user.id, material.value)
+                if have < quantity:
+                    await interaction.response.send_message(
+                        f"You only have {have} of that item.", ephemeral=True
+                    )
+                    return
+
+                current_stock = await get_server_stock(tx, interaction.guild_id, material.value)
+                target = target_stock(member_count, material.value)
+                total_value = self._buy_price(ceiling_price, current_stock, quantity, target)
+
+                await deduct_user_quantity(tx, interaction.user.id, material.value, quantity)
+                await adjust_server_stock(tx, interaction.guild_id, material.value, quantity)
+                await adjust_currency_balance(tx, interaction.guild_id, interaction.user.id, total_value)
+                await record_minted(tx, interaction.guild_id, total_value)
+        except InsufficientQuantity:
             await interaction.response.send_message(
-                f"The server is already fully stocked on **{info['name']}** and won't pay anything more for it right now.",
+                "Your inventory changed while that was going through - nothing was sold. Try again.",
                 ephemeral=True,
             )
             return
 
-        await self._adjust_quantity(interaction.user.id, material.value, -quantity)
-        await self._adjust_server_stock(interaction.guild_id, material.value, quantity)
-        await self._adjust_currency_balance(interaction.guild_id, interaction.user.id, total_value)
-        await self._record_minted(interaction.guild_id, total_value)
-
         currency_emoji = await self._get_currency_emoji(interaction.guild_id)
         await respond(
             interaction, self.db,
-            content=f"Sold {quantity}x **{info['name']}** to the server for {format_market_currency(total_value, currency_emoji)}.",
+            content=f"Sold {quantity}x **{info['name']}** to the server for {format_currency(total_value, currency_emoji)}.",
         )
 
     @market_group.command(name="buy", description="Buy materials from the server's stock")
@@ -276,75 +275,90 @@ class EconomyCog(commands.Cog):
         app_commands.Choice(name=info["name"], value=key) for key, info in TRADEABLE_MATERIALS.items()
     ])
     async def market_buy(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000]):
-        await self._ensure_user_row(interaction.user.id)
-        await self._ensure_server_row(interaction.guild_id)
-
-        current_stock = await self._get_server_stock(interaction.guild_id, material.value)
-        if current_stock < quantity:
-            await interaction.response.send_message(
-                f"The server only has {current_stock} of that in stock.", ephemeral=True
-            )
-            return
-
         info = TRADEABLE_MATERIALS[material.value]
         ceiling_price = info["market_ceiling_price"]
-        total_cost = self._sell_price(ceiling_price, quantity)
+
+        # Both of these hit Discord, so they happen before the write lock is
+        # taken - see the note in market_sell.
+        member_count = await human_member_count(interaction.guild)
         currency_emoji = await self._get_currency_emoji(interaction.guild_id)
 
-        balance = await self._get_currency_balance(interaction.guild_id, interaction.user.id)
-        if balance < total_cost:
+        try:
+            async with self.db.transaction() as tx:
+                await ensure_user_row(tx, interaction.user.id)
+                await ensure_server_row(tx, interaction.guild_id)
+
+                current_stock = await get_server_stock(tx, interaction.guild_id, material.value)
+                if current_stock < quantity:
+                    await interaction.response.send_message(
+                        f"The server only has {current_stock} of that in stock.", ephemeral=True
+                    )
+                    return
+
+                target = target_stock(member_count, material.value)
+                total_cost = self._sell_price(ceiling_price, current_stock, quantity, target)
+
+                balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
+                if balance < total_cost:
+                    await interaction.response.send_message(
+                        f"This costs {format_currency(total_cost, currency_emoji)}, but you only have {format_currency(balance, currency_emoji)}.",
+                        ephemeral=True,
+                    )
+                    return
+
+                await deduct_currency_balance(tx, interaction.guild_id, interaction.user.id, total_cost)
+                await deduct_server_stock(tx, interaction.guild_id, material.value, quantity)
+                await adjust_user_quantity(tx, interaction.user.id, material.value, quantity)
+                await record_burned(tx, interaction.guild_id, total_cost)
+        except InsufficientQuantity:
             await interaction.response.send_message(
-                f"This costs {format_market_currency(total_cost, currency_emoji)}, but you only have {format_market_currency(balance, currency_emoji)}.",
+                "The server's stock or your balance changed while that was going through - "
+                "nothing was bought. Try again.",
                 ephemeral=True,
             )
             return
 
-        await self._adjust_currency_balance(interaction.guild_id, interaction.user.id, -total_cost)
-        await self._adjust_server_stock(interaction.guild_id, material.value, -quantity)
-        await self._adjust_quantity(interaction.user.id, material.value, quantity)
-        await self._record_burned(interaction.guild_id, total_cost)
-
         await respond(
             interaction, self.db,
-            content=f"Bought {quantity}x **{info['name']}** from the server for {format_market_currency(total_cost, currency_emoji)}.",
+            content=f"Bought {quantity}x **{info['name']}** from the server for {format_currency(total_cost, currency_emoji, True)}.",
         )
 
     @market_group.command(name="status", description="Show the server's current market prices")
     async def market_status(self, interaction: discord.Interaction):
-        await self._ensure_server_row(interaction.guild_id)
-        target = target_stock(interaction.guild.member_count)
+        await ensure_server_row(self.db, interaction.guild_id)
+        member_count = await human_member_count(interaction.guild)
         currency_emoji = await self._get_currency_emoji(interaction.guild_id) or DEFAULT_CURRENCY_EMOJI
 
-        # Three parallel columns (Material / Sell / Buy) rather than one long
-        # line per material - custom material emoji only render outside a
-        # code block, and bare numbers only align into columns inside one,
-        # so the two live in separate embed fields instead of the same line.
-        material_lines = []
-        sell_values = []
-        buy_values = []
-
-        # Add a spacer at the beginning to account for the monospace vertical offset
-        # material_lines.append("‎")  # invisible character
+        # One line per material - {emoji} {sell price} {buy price} - instead
+        # of three parallel Material/Sell/Buy columns split across separate
+        # fields. The material name is deliberately left out: it's
+        # proportional-width text, so keeping it would shift the price
+        # columns per line and defeat the alignment below. Only the material
+        # emoji precedes the prices - custom Discord emoji all render at a
+        # fixed size, unlike text - and prices go through
+        # format_compact_price so every price is a fixed 5-character-wide
+        # string (digits + an optional K/M/B/T suffix). Together that keeps
+        # the sell/buy columns visually aligned without needing a code
+        # block, which would stop the custom material emoji from rendering.
+        lines = []
 
         for material_id, info in TRADEABLE_MATERIALS.items():
-            current_stock = await self._get_server_stock(interaction.guild_id, material_id)
+            current_stock: int = await get_server_stock(self.db, interaction.guild_id, material_id)
             ceiling_price = info["market_ceiling_price"]
+            target = target_stock(member_count, material_id)
             # SELL = what you receive per unit selling to the server (/market sell).
             # BUY = what you pay per unit buying from the server (/market buy).
             sell_price_each = self._buy_price(ceiling_price, current_stock, 1, target)
-            buy_price_each = ceiling_price * MARKET_SELL_MARKUP
-            material_lines.append(f"{info['emoji']} {info['name']}")
-            sell_values.append(format_compact_number(sell_price_each))
-            buy_values.append(format_compact_number(buy_price_each))
+            buy_price_each = self._sell_price(ceiling_price, current_stock, 1, target)
+            sell_str = format_compact_price(sell_price_each)
+            if current_stock > 0:
+                buy_str = f"{format_compact_price(buy_price_each)} ({current_stock} in stock)"
+            else:
+                buy_str = "N/A"
+            lines.append(f"{info['emoji']} {currency_emoji} {sell_str} {currency_emoji} {buy_str}")
 
-        # width = max(len(v) for v in sell_values + buy_values)
-        # sell_block = "```\n" + "\n".join(v.rjust(width) for v in sell_values) + "\n```"
-        # buy_block = "```\n" + "\n".join(v.rjust(width) for v in buy_values) + "\n```"
-
-        embed = discord.Embed(title="Server Market", color=discord.Color.gold())
-        embed.add_field(name="Material", value="\n".join(material_lines), inline=True)
-        embed.add_field(name=f"{currency_emoji} Sell", value="\n".join(sell_values), inline=True)
-        embed.add_field(name=f"{currency_emoji} Buy", value="\n".join(buy_values), inline=True)
+        embed = make_embed("Server Market", MARKET_COLOR)
+        add_multi_field(embed, "Item · Sell · Buy", lines)
         await respond(interaction, self.db, embed=embed)
 
 

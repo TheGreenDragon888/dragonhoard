@@ -30,12 +30,27 @@ CREATE TABLE IF NOT EXISTS server_config (
     currency_emoji      TEXT,
     furnace_level       INTEGER NOT NULL DEFAULT 1,
     factory_level       INTEGER NOT NULL DEFAULT 1,
-    furnace_fee         REAL NOT NULL DEFAULT 0.0,
-    factory_fee         REAL NOT NULL DEFAULT 0.0,
+    -- Keep these DEFAULTs in sync with DEFAULT_FURNACE_FEE / DEFAULT_FACTORY_FEE
+    -- in config.py (used for databases created before a default changed).
+    furnace_fee         REAL NOT NULL DEFAULT 0.01,
+    factory_fee         REAL NOT NULL DEFAULT 0.25,
     furnace_fees_collected REAL NOT NULL DEFAULT 0.0,
     factory_fees_collected REAL NOT NULL DEFAULT 0.0,
     furnace_max_queue   INTEGER NOT NULL DEFAULT 25,
     factory_max_queue   INTEGER NOT NULL DEFAULT 5,
+    -- The hydraulic press. press_fee is the fee for ONE ruby-equivalent of
+    -- press time; a recipe pays it multiplied by its press_days, so a diamond
+    -- costs nine times a ruby. Keep the DEFAULT in sync with
+    -- DEFAULT_PRESS_FEE in config.py.
+    press_level         INTEGER NOT NULL DEFAULT 1,
+    press_fee           REAL NOT NULL DEFAULT 5.0,
+    press_fees_collected REAL NOT NULL DEFAULT 0.0,
+    press_max_queue     INTEGER NOT NULL DEFAULT 1,
+    -- Fractional press-days carried between ticks. Unlike the furnace and
+    -- factory, which keep their accumulator in memory, this one is persisted:
+    -- press jobs run for days, so an in-memory total reset by every restart
+    -- would mean a diamond never finishes on a bot that restarts weekly.
+    press_progress      REAL NOT NULL DEFAULT 0.0,
     -- 0/1 boolean: whether bot responses are public in this server instead of
     -- ephemeral (private). Off by default - see utils/responses.py.
     public_messages         INTEGER NOT NULL DEFAULT 0,
@@ -70,29 +85,51 @@ CREATE TABLE IF NOT EXISTS server_material_storage (
     PRIMARY KEY (guild_id, material_id)
 );
 
--- A drill placed by a user somewhere in a server (mining is no longer
--- restricted to a designated channel). drill_type references
--- data/materials.py (e.g. "iron_drill").
+-- One row per drill for that drill's entire lifetime. A drill is never a
+-- fungible stack in user_materials, because its level and attached container
+-- have to survive being unplaced - so it gets an identity the moment it's
+-- crafted and keeps it. guild_id NULL means the drill is sitting in its
+-- owner's inventory; non-NULL means it's placed and mining in that server
+-- (mining is server-wide, not channel-scoped). drill_type and container_type
+-- reference data/materials.py (e.g. "iron_drill", "steel_container").
 CREATE TABLE IF NOT EXISTS drills (
-    drill_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-    guild_id        INTEGER NOT NULL,
-    owner_id        INTEGER NOT NULL,
-    drill_type      TEXT NOT NULL,
-    stored_amount   INTEGER NOT NULL DEFAULT 0,   -- raw materials waiting for /collect
-    is_full         INTEGER NOT NULL DEFAULT 0,   -- 0/1 boolean: stopped until /collect
-    last_harvest_at TEXT NOT NULL DEFAULT (datetime('now'))
+    drill_id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id         INTEGER,                       -- NULL = unplaced, in inventory
+    owner_id         INTEGER NOT NULL,
+    drill_type       TEXT NOT NULL,
+    level            INTEGER NOT NULL DEFAULT 1,    -- each level past 1 adds +1 item/hour
+    container_type   TEXT,                          -- NULL = no container attached
+    stored_amount    INTEGER NOT NULL DEFAULT 0,    -- raw materials waiting for /collect
+    -- Fractional carry between harvest ticks. A tick is 24 minutes (2.5
+    -- ticks/hour), so a level's +1 item/hour is +0.4 items/tick - banking the
+    -- remainder here is what stops that bonus being rounded away.
+    harvest_progress REAL NOT NULL DEFAULT 0.0,
+    is_full          INTEGER NOT NULL DEFAULT 0,    -- 0/1 boolean: stopped until /collect
+    -- production_jobs.job_id of a queued /factory upgrade, else NULL. A locked
+    -- drill can't be placed, removed, attached to, or queued a second time.
+    locked_job_id    INTEGER,
+    CHECK (level >= 1),
+    -- Buys back what dropping "guild_id NOT NULL" gave up: an unplaced drill
+    -- can't be holding materials or be flagged full.
+    CHECK (guild_id IS NOT NULL OR (stored_amount = 0 AND is_full = 0))
 );
+CREATE INDEX IF NOT EXISTS idx_drills_owner ON drills(owner_id);
+CREATE INDEX IF NOT EXISTS idx_drills_guild ON drills(guild_id);
 
--- A queued furnace (smelting) or factory (crafting) job for a user in a guild.
--- job_type is either 'furnace' or 'factory'; target_id is the material_id
--- being produced (e.g. "iron", "wiring").
+-- A queued furnace (smelting), factory (crafting) or press job for a user in a
+-- guild. target_id is the material_id being produced (e.g. "iron", "wiring",
+-- "ruby").
 CREATE TABLE IF NOT EXISTS production_jobs (
     job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id        INTEGER NOT NULL,
     user_id         INTEGER NOT NULL,
-    job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'factory')),
+    job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'factory', 'press')),
     target_id       TEXT NOT NULL,
     quantity        INTEGER NOT NULL,
     queued_at       TEXT NOT NULL DEFAULT (datetime('now')),
-    status          TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'in_progress', 'complete'))
+    status          TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'in_progress', 'complete')),
+    -- Set only on drill level-up jobs, which are ordinary 'factory' jobs whose
+    -- target_id is the DRILL_UPGRADE_JOB_TARGET sentinel rather than a
+    -- material. Points at the drills row being upgraded.
+    target_drill_id INTEGER
 );

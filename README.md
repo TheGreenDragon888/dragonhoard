@@ -9,19 +9,32 @@ dragonassistant/
 ├── bot.py                    # Entry point - run this to start the bot
 ├── config.py                 # Loads settings from .env
 ├── requirements.txt          # Python dependencies
-├── .env.example               # Template for secrets (copy to .env)
-├── dragonassistant.service    # systemd unit file for running as a background service
+├── .env.example              # Template for secrets (copy to .env)
+├── dragonassistant.service   # systemd unit file for running as a background service
 ├── database/
-│   ├── db.py                  # Async-safe SQLite wrapper
-│   └── schema.sql              # Table definitions
+│   ├── db.py                 # Async-safe SQLite wrapper
+│   └── schema.sql            # Table definitions
 ├── data/
-│   └── materials.py            # Game balance data (drop rates, recipes, drill stats)
-└── cogs/                       # One file per command group ("cog" = discord.py's plugin unit)
-    ├── setup.py                 # /setup mine, /setup currency, /setup fee
-    ├── economy.py                # /balance, chat-mining payout loop
-    ├── mining.py                  # /mine place, /mine status, /collect
-    ├── furnace.py                  # /furnace smelt
-    └── factory.py                   # /factory craft
+│   ├── materials.py          # Game balance data (drop rates, recipes, drill stats)
+│   └── manual.py             # Text of the in-Discord manual served by /help
+├── utils/                    # Helpers shared by all cogs
+│   ├── db_helpers.py         # Common inventory/balance/stock queries
+│   ├── embeds.py             # Embed colors, footer, field helpers
+│   ├── formatting.py         # Currency/number display
+│   └── responses.py          # Public-vs-ephemeral response handling
+├── assets/                   # Files the bot sends as attachments (honk.flac)
+├── docs/                     # Design docs (market, mining, stylization, ...)
+├── tests/                    # unittest suite
+└── cogs/                     # One file per command group ("cog" = discord.py's plugin unit)
+    ├── setup.py              # /setup currency, /setup fee, /setup max_queue, /setup messages
+    ├── economy.py            # /balance, /inventory, /market sell|buy|status
+    ├── mining.py             # /mine place|status|remove|attach|detach, /collect
+    ├── furnace.py            # /furnace smelt|status|queue
+    ├── factory.py            # /factory craft|upgrade|status|queue
+    ├── press.py              # /press craft|status|queue (the hydraulic press)
+    ├── recipe.py             # /recipe factory|furnace|press (the recipe book)
+    ├── manual.py             # /help, /manual, /man (the same manual under three names)
+    └── fun.py                # /honk (and anything else that's purely for fun)
 ```
 
 ## Part 1: Create the LXC container on Proxmox
@@ -102,7 +115,7 @@ nano .env
 ```
 Copies the template, then opens it in `nano` (a simple terminal text editor). Fill in your real bot token from the [Discord Developer Portal](https://discord.com/developers/applications) → your application → **Bot** → **Reset Token**. Save with `Ctrl+O`, `Enter`, then exit with `Ctrl+X`.
 
-**Important**: in the Developer Portal, under **Bot**, also enable the **Message Content Intent** toggle - the bot's chat-mining feature requires it, and Discord will refuse the connection without it.
+**Important**: in the Developer Portal, under **Bot**, also enable the **Server Members Intent** toggle - the bot uses member counts for mining pool top-ups and market pricing, and Discord will refuse the connection without it.
 
 ### Quick test run
 
@@ -150,12 +163,10 @@ To restart after making code changes:
 systemctl restart dragonassistant
 ```
 
-## Notes on this scaffold
+## Notes
 
-This is a working foundation, not a finished game - a few things are intentionally left as `TODO`s for you to build out as you learn:
-- Placing a drill doesn't yet deduct the crafted drill item from your inventory.
-- `/collect` currently returns a generic material count rather than a breakdown by material type per drill.
-- No DragonCoin earning/spending loop yet (the doc doesn't fully specify how DragonCoin is acquired - worth deciding before building it).
-- No admin/moderation safety limits (e.g. rate limiting `/factory craft` spam) beyond what's in the doc.
+This is a working foundation, not a finished game. Known gaps worth building out:
+- DragonCoin is intentionally dormant - a non-spendable unit reserved for a future cross-server exchange (docs/market.md section 2). Don't build features on it yet.
+- No admin/moderation safety limits beyond the per-user production queue caps.
 
 The background loops (`tasks.loop(...)`) are the core pattern you'll extend most - each is a self-contained async function that fires on a timer, independent of any user command.
