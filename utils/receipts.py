@@ -16,7 +16,7 @@ import discord
 
 from data.materials import get_material_info
 from utils.embeds import make_embed, add_multi_field
-from utils.formatting import format_price, DEFAULT_CURRENCY_EMOJI
+from utils.formatting import format_eta, format_price, DEFAULT_CURRENCY_EMOJI
 
 
 def _material_line(material_id: str, amount: int, remaining: int) -> str:
@@ -41,6 +41,7 @@ def build_receipt_embed(
     balance_after: float,
     currency_emoji: str,
     product_label: tuple[str, str] | None = None,
+    eta_hours: float | None = None,
 ) -> discord.Embed:
     """Assembles the queue receipt.
 
@@ -54,6 +55,10 @@ def build_receipt_embed(
     A drill level-up is queued as a factory job whose target is a sentinel
     rather than a material, so it has no entry to look up and would otherwise
     render as "❓ drill_upgrade".
+
+    eta_hours is how long the whole job takes to come out the far end of the
+    machine, queue included - the receipt is where a player finds out that the
+    thing they just paid for lands tomorrow rather than in five minutes.
     """
     if product_label is not None:
         product_emoji, product_name = product_label
@@ -93,5 +98,10 @@ def build_receipt_embed(
         )
     else:
         embed.add_field(name="Fee Paid", value="Free", inline=False)
+
+    if eta_hours is not None:
+        # The last item of the job, not the first - the field is answering
+        # "when do I have all of this", which is what was just paid for.
+        embed.add_field(name="Ready", value=format_eta(eta_hours), inline=False)
 
     return embed

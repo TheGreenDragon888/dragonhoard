@@ -21,7 +21,7 @@ from discord.ext import commands, tasks
 
 from utils.embeds import make_embed, add_multi_field, FACTORY_COLOR
 from utils.responses import respond
-from utils.formatting import format_currency
+from utils.formatting import format_currency, format_duration, format_eta
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
@@ -151,10 +151,13 @@ class FactoryCog(commands.Cog):
                     )
                     await self._maybe_upgrade_factory(tx, interaction.guild_id)
 
+                items_ahead = await self._items_ahead(tx, interaction.guild_id)
+
                 await tx.execute(
                     "INSERT INTO production_jobs (guild_id, user_id, job_type, target_id, quantity) VALUES (?, ?, 'factory', ?, ?)",
                     (interaction.guild_id, interaction.user.id, item.value, quantity),
                 )
+                level = await self._current_level(tx, interaction.guild_id)
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -176,8 +179,31 @@ class FactoryCog(commands.Cog):
             fee_total=fee_total,
             balance_after=balance_after,
             currency_emoji=currency_emoji,
+            eta_hours=(items_ahead + quantity) / factory_rate(level),
         )
         await respond(interaction, self.db, embed=embed)
+
+    @staticmethod
+    async def _items_ahead(db, guild_id: int) -> int:
+        """Items already queued that the factory will get to before whatever is
+        about to be inserted - the queue is plain FIFO, so this is the whole
+        outstanding quantity."""
+        row = await db.fetchone(
+            "SELECT COALESCE(SUM(quantity), 0) AS items FROM production_jobs "
+            "WHERE guild_id = ? AND job_type = 'factory' AND status != 'complete'",
+            (guild_id,),
+        )
+        return row["items"]
+
+    @staticmethod
+    async def _current_level(db, guild_id: int) -> int:
+        """Read after the fee lands rather than reused from the config read at
+        the top: the job's own fee may have just upgraded the factory, and the
+        wait quoted on the receipt should use the speed it will run at."""
+        row = await db.fetchone(
+            "SELECT factory_level FROM server_config WHERE guild_id = ?", (guild_id,)
+        )
+        return row["factory_level"]
 
     async def _upgradable_drill_autocomplete(self, interaction: discord.Interaction, current: str):
         return await drill_choices(
@@ -272,6 +298,8 @@ class FactoryCog(commands.Cog):
                     )
                     await self._maybe_upgrade_factory(tx, interaction.guild_id)
 
+                items_ahead = await self._items_ahead(tx, interaction.guild_id)
+
                 # Queue first, then lock, so locked_job_id always names a job
                 # that exists - a lock pointing at nothing would strand the
                 # drill. Both land in the same commit either way.
@@ -284,6 +312,7 @@ class FactoryCog(commands.Cog):
                     "UPDATE drills SET locked_job_id = ? WHERE drill_id = ? AND locked_job_id IS NULL",
                     (job_id, row["drill_id"]),
                 )
+                factory_level = await self._current_level(tx, interaction.guild_id)
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -306,6 +335,9 @@ class FactoryCog(commands.Cog):
             fee_total=fee_total,
             balance_after=balance_after,
             currency_emoji=currency_emoji,
+            # An upgrade is one item of factory work, so it takes exactly as
+            # long as crafting one thing from the same position in the queue.
+            eta_hours=(items_ahead + 1) / factory_rate(factory_level),
         )
         embed.add_field(
             name="Mining Rate",
@@ -344,12 +376,25 @@ class FactoryCog(commands.Cog):
         )
         pending_items = sum(job["quantity"] for job in jobs)
 
+        # Plain FIFO, so each job's wait is the running total of everything in
+        # front of it plus its own quantity, at the current hourly rate.
+        etas: dict[int, float] = {}
+        items_so_far = 0
+        for job in jobs:
+            items_so_far += job["quantity"]
+            etas[job["job_id"]] = items_so_far / rate
+
         embed = make_embed("🏭 Factory Status", FACTORY_COLOR)
         embed.add_field(name="Level", value=f"**{level}**", inline=True)
         embed.add_field(name="Speed", value=f"**{rate}** items/hour", inline=True)
         embed.add_field(name="Queue Limit", value=f"**{max_queue}** items per user", inline=True)
         embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
         embed.add_field(name="Pending", value=f"**{pending_items}** items across **{len(jobs)}** job(s)", inline=True)
+
+        # An estimate at the current speed: it moves out if anyone queues more
+        # behind this, and in if the factory levels up on their fees.
+        if pending_items:
+            embed.add_field(name="Queue Finishes", value=format_eta(pending_items / rate), inline=True)
 
         # Levels are unbounded, so there is always a next one to show - each
         # costs ten times the last, which is what keeps them in check.
@@ -364,15 +409,18 @@ class FactoryCog(commands.Cog):
             lines = []
             for job in jobs[:10]:  # Show first 10
                 status_str = "In Progress" if job["status"] == "in_progress" else "Queued"
+                done_in = f"· done in {format_duration(etas[job['job_id']])}"
                 if job["target_drill_id"] is not None:
                     # An upgrade's target is a sentinel, not a material, so
                     # there's nothing to look up - name the drill instead.
-                    lines.append(f"🔧 Drill Upgrade (drill #{job['target_drill_id']}) - {status_str}")
+                    lines.append(
+                        f"🔧 Drill Upgrade (drill #{job['target_drill_id']}) - {status_str} {done_in}"
+                    )
                     continue
                 info = get_material_info(job["target_id"])
                 emoji = info["emoji"] if info else "❓"
                 name = info["name"] if info else job["target_id"]
-                lines.append(f"{emoji} {job['quantity']}x {name} - {status_str}")
+                lines.append(f"{emoji} {job['quantity']}x {name} - {status_str} {done_in}")
             if len(jobs) > 10:
                 lines.append(f"... and {len(jobs) - 10} more")
             add_multi_field(embed, "Pending Jobs", lines)

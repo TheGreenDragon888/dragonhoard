@@ -14,7 +14,7 @@ from discord.ext import commands, tasks
 
 from utils.embeds import make_embed, add_multi_field, FURNACE_COLOR
 from utils.responses import respond
-from utils.formatting import format_currency
+from utils.formatting import format_currency, format_duration, format_eta
 from utils.receipts import build_receipt_embed
 from utils.guild_helpers import human_member_count
 from database.db import InsufficientQuantity
@@ -146,10 +146,31 @@ class FurnaceCog(commands.Cog):
                     )
                     await self._maybe_upgrade_furnace(tx, interaction.guild_id)
 
+                # Everything already waiting that will be smelted before this
+                # job. The server's own auto-smelt jobs are excluded because
+                # the drain loop always sorts them behind real players', so
+                # they never actually hold anyone up.
+                ahead_row = await tx.fetchone(
+                    "SELECT COALESCE(SUM(quantity), 0) AS items FROM production_jobs "
+                    "WHERE guild_id = ? AND job_type = 'furnace' AND status != 'complete' "
+                    "AND user_id != ?",
+                    (interaction.guild_id, SERVER_JOB_USER_ID),
+                )
+                items_ahead = ahead_row["items"]
+
                 await tx.execute(
                     "INSERT INTO production_jobs (guild_id, user_id, job_type, target_id, quantity) VALUES (?, ?, 'furnace', ?, ?)",
                     (interaction.guild_id, interaction.user.id, material.value, quantity),
                 )
+
+                # Re-read rather than reuse the level from cfg above: this
+                # job's own fee may have just upgraded the furnace, and the
+                # quoted wait should use the speed it will actually run at.
+                level_row = await tx.fetchone(
+                    "SELECT furnace_level FROM server_config WHERE guild_id = ?",
+                    (interaction.guild_id,),
+                )
+                level = level_row["furnace_level"]
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -174,6 +195,7 @@ class FurnaceCog(commands.Cog):
             fee_total=fee_total,
             balance_after=balance_after,
             currency_emoji=currency_emoji,
+            eta_hours=(items_ahead + quantity) / furnace_rate(level),
         )
         await respond(interaction, self.db, embed=embed)
 
@@ -197,7 +219,19 @@ class FurnaceCog(commands.Cog):
             "SELECT job_id, user_id, target_id, quantity, status FROM production_jobs WHERE guild_id = ? AND job_type = 'furnace' AND status != 'complete' ORDER BY queued_at ASC",
             (interaction.guild_id,),
         )
+        # Listed in the order the furnace will actually work through them: the
+        # drain loop puts the server's own auto-smelt jobs last, and a stable
+        # sort keeps everything else in queued_at order. Each job's wait is
+        # then just the running total of the items in front of it, plus its
+        # own, divided by the hourly rate.
+        jobs = sorted(jobs, key=lambda job: job["user_id"] == SERVER_JOB_USER_ID)
         pending_items = sum(job["quantity"] for job in jobs)
+
+        etas: dict[int, float] = {}
+        items_so_far = 0
+        for job in jobs:
+            items_so_far += job["quantity"]
+            etas[job["job_id"]] = items_so_far / rate
 
         embed = make_embed("🔥 Furnace Status", FURNACE_COLOR)
         embed.add_field(name="Level", value=f"**{level}**", inline=True)
@@ -205,6 +239,11 @@ class FurnaceCog(commands.Cog):
         embed.add_field(name="Queue Limit", value=f"**{max_queue}** items per user", inline=True)
         embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
         embed.add_field(name="Pending", value=f"**{pending_items}** items across **{len(jobs)}** job(s)", inline=True)
+
+        # An estimate at the current speed: it moves out if anyone queues more
+        # behind this, and in if the furnace levels up on their fees.
+        if pending_items:
+            embed.add_field(name="Queue Finishes", value=format_eta(pending_items / rate), inline=True)
 
         # Levels are unbounded, so there is always a next one to show - each
         # costs ten times the last, which is what keeps them in check.
@@ -223,7 +262,10 @@ class FurnaceCog(commands.Cog):
                 name = info["name"] if info else job["target_id"]
                 status_str = "In Progress" if job["status"] == "in_progress" else "Queued"
                 owner_str = " (🏛️ Server)" if job["user_id"] == SERVER_JOB_USER_ID else ""
-                lines.append(f"{emoji} {job['quantity']}x {name} - {status_str}{owner_str}")
+                lines.append(
+                    f"{emoji} {job['quantity']}x {name} - {status_str}{owner_str} "
+                    f"· done in {format_duration(etas[job['job_id']])}"
+                )
             if len(jobs) > 10:
                 lines.append(f"... and {len(jobs) - 10} more")
             add_multi_field(embed, "Pending Jobs", lines)

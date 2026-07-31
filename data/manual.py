@@ -201,6 +201,9 @@ _add(ManualSection(
         "Smelting is not instant. You queue a job and the furnace works through it over time, "
         "so it's worth starting a batch before you log off. The materials and the fee are "
         "taken **when you queue the job**, not when it finishes.\n\n"
+        "Your receipt tells you when that job will be ready, counting everything already in "
+        "front of it - the furnace is shared, so a full queue means a longer wait for whoever "
+        "joins the back of it.\n\n"
         f"Every item smelted also burns **{FURNACE_COAL_COST_PER_UNIT} extra coal** as fuel, "
         "on top of whatever its recipe already calls for - so keep coal in reserve, and don't "
         "sell all of it.\n\n"
@@ -215,8 +218,8 @@ _add(ManualSection(
         ),
         ManualCommand(
             "/furnace status", "/furnace status",
-            "Shows the furnace's level, what's currently in your queue, and how close it is "
-            "to its next level.",
+            "Shows the furnace's level, everything queued on it and when each job will be "
+            "done, when the queue clears entirely, and how close it is to its next level.",
         ),
         ManualCommand(
             "/furnace queue", "/furnace queue",
@@ -245,7 +248,8 @@ _add(ManualSection(
         "that go into drills, the drills themselves, storage containers, and the upgrade "
         "packs that make a drill you already own better.\n\n"
         "Like the furnace, the factory works through a queue over time, and takes your "
-        "materials and the fee up front when you place the job.\n\n"
+        "materials and the fee up front when you place the job. The receipt says when the "
+        "job will be ready, queue included.\n\n"
         "**Upgrading a drill** is a factory job too. The drill has to be in your inventory "
         "rather than in the ground, and it stays locked in the factory until the job "
         "finishes - so pull it out with `/mine remove` first, and expect it to be out of "
@@ -266,7 +270,8 @@ _add(ManualSection(
         ),
         ManualCommand(
             "/factory status", "/factory status",
-            "Shows the factory's level, your queued jobs, and progress toward the next level.",
+            "Shows the factory's level, every queued job and when it'll be done, and progress "
+            "toward the next level.",
         ),
         ManualCommand(
             "/factory queue", "/factory queue",
@@ -303,12 +308,13 @@ _add(ManualSection(
     commands=(
         ManualCommand(
             "/press craft", "/press craft <product> <quantity>",
-            "Queues a gemstone to be pressed. The receipt shows the bulk materials consumed "
-            "and the total fee for the press-days involved.",
+            "Queues a gemstone to be pressed. The receipt shows the bulk materials consumed, "
+            "the total fee for the press-days involved, and the day it'll be ready.",
         ),
         ManualCommand(
             "/press status", "/press status",
-            "Shows the press's level, what it's working on, and progress toward its next level.",
+            "Shows the press's level, what it's working on and when each job lands, and "
+            "progress toward its next level.",
         ),
         ManualCommand(
             "/press queue", "/press queue",

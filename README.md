@@ -20,7 +20,7 @@ dragonassistant/
 ├── utils/                    # Helpers shared by all cogs
 │   ├── db_helpers.py         # Common inventory/balance/stock queries
 │   ├── embeds.py             # Embed colors, footer, field helpers
-│   ├── formatting.py         # Currency/number display
+│   ├── formatting.py         # Currency/number display, job durations and ETAs
 │   └── responses.py          # Public-vs-ephemeral response handling
 ├── assets/                   # Files the bot sends as attachments (honk.flac)
 ├── docs/                     # Design docs (market, mining, stylization, ...)

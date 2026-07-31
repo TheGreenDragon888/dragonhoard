@@ -32,7 +32,7 @@ from discord.ext import commands, tasks
 
 from utils.embeds import make_embed, add_multi_field, PRESS_COLOR
 from utils.responses import respond
-from utils.formatting import format_currency
+from utils.formatting import format_currency, format_duration, format_eta
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
@@ -110,7 +110,7 @@ class PressCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT press_fee, press_max_queue, press_level, currency_emoji "
+                    "SELECT press_fee, press_max_queue, press_level, press_progress, currency_emoji "
                     "FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
@@ -158,12 +158,34 @@ class PressCog(commands.Cog):
                     )
                     await self._maybe_upgrade_press(tx, interaction.guild_id)
 
+                # Press-days already spoken for by the jobs in front of this
+                # one. Recipes cost wildly different amounts of press time, so
+                # unlike the furnace and factory this can't be counted in items.
+                queued = await tx.fetchall(
+                    "SELECT target_id, quantity FROM production_jobs "
+                    "WHERE guild_id = ? AND job_type = 'press' AND status != 'complete'",
+                    (interaction.guild_id,),
+                )
+                press_days_ahead = sum(
+                    PRESS_RECIPES[job["target_id"]]["press_days"] * job["quantity"]
+                    for job in queued
+                )
+
                 await tx.execute(
                     "INSERT INTO production_jobs (guild_id, user_id, job_type, target_id, quantity) "
                     "VALUES (?, ?, 'press', ?, ?)",
                     (interaction.guild_id, interaction.user.id, product.value, quantity),
                 )
-                level = cfg["press_level"]
+
+                # Re-read rather than reuse cfg's level: this job's own fee may
+                # have just upgraded the press, and both the wait quoted below
+                # and the press time shown should use the speed it will run at.
+                level_row = await tx.fetchone(
+                    "SELECT press_level FROM server_config WHERE guild_id = ?",
+                    (interaction.guild_id,),
+                )
+                level = level_row["press_level"]
+                progress = cfg["press_progress"]
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -171,6 +193,12 @@ class PressCog(commands.Cog):
                 ephemeral=True,
             )
             return
+
+        # Whatever press-days the machine has already banked come off the front
+        # of the queue, so they shorten this job's wait too.
+        days_until_ready = max(
+            0.0, press_days_ahead + press_days * quantity - progress
+        ) / press_rate_per_day(level)
 
         embed = build_receipt_embed(
             title="⚙️ Pressing Receipt",
@@ -185,12 +213,13 @@ class PressCog(commands.Cog):
             fee_total=fee_total,
             balance_after=balance_after,
             currency_emoji=currency_emoji,
+            eta_hours=days_until_ready * 24,
         )
         days = press_days * quantity / press_rate_per_day(level)
         embed.add_field(
             name="Press Time",
             value=(
-                f"**{days:,.1f}** days at level {level} "
+                f"This job alone needs **{days:,.1f}** days on the press at level {level} "
                 f"({press_days} press-day{'s' if press_days != 1 else ''} each, "
                 f"{press_rate_per_day(level)}/day)"
             ),
@@ -216,6 +245,18 @@ class PressCog(commands.Cog):
         )
         pending_items = sum(job["quantity"] for job in jobs)
 
+        # The press is FIFO like the other machines, but its queue is measured
+        # in press-days rather than items, and whatever it has already banked
+        # (press_progress) comes off the front of it.
+        rate_per_day = press_rate_per_day(level)
+        etas: dict[int, float] = {}
+        press_days_so_far = 0
+        for job in jobs:
+            press_days_so_far += PRESS_RECIPES[job["target_id"]]["press_days"] * job["quantity"]
+            remaining = max(0.0, press_days_so_far - cfg["press_progress"])
+            etas[job["job_id"]] = remaining / rate_per_day * 24
+        queue_hours = max(0.0, press_days_so_far - cfg["press_progress"]) / rate_per_day * 24
+
         embed = make_embed("⚙️ Hydraulic Press Status", PRESS_COLOR)
         embed.add_field(name="Level", value=f"**{level}**", inline=True)
         embed.add_field(name="Speed", value=f"**{press_rate_per_day(level)}** press-days/day", inline=True)
@@ -228,6 +269,11 @@ class PressCog(commands.Cog):
         embed.add_field(
             name="Pending", value=f"**{pending_items}** item(s) across **{len(jobs)}** job(s)", inline=True
         )
+
+        # An estimate at the current speed: it moves out if anyone queues more
+        # behind this, and in if the press levels up on their fees.
+        if jobs:
+            embed.add_field(name="Queue Finishes", value=format_eta(queue_hours), inline=True)
 
         # Levels are unbounded, so there is always a next one to show.
         next_level = level + 1
@@ -258,7 +304,10 @@ class PressCog(commands.Cog):
                 emoji = info["emoji"] if info else "❓"
                 name = info["name"] if info else job["target_id"]
                 status_str = "In Progress" if job["status"] == "in_progress" else "Queued"
-                lines.append(f"{emoji} {job['quantity']}x {name} - {status_str}")
+                lines.append(
+                    f"{emoji} {job['quantity']}x {name} - {status_str} "
+                    f"· done in {format_duration(etas[job['job_id']])}"
+                )
             if len(jobs) > 10:
                 lines.append(f"... and {len(jobs) - 10} more")
             add_multi_field(embed, "Pending Jobs", lines)

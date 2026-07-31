@@ -11,3 +11,4 @@ venv/
 *.service
 docs/*
 CLAUDE.md
+.claude/
