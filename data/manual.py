@@ -77,7 +77,7 @@ _add(ManualSection(
     color=DEFAULT_COLOR,
     summary="What this bot is and your first five minutes",
     body=(
-        "Dragon Assistant is a game you play a few commands at a time. This server has its "
+        "Dragonhoard is a game you play a few commands at a time. This server has its "
         "own currency and its own economy, and everything you own here is yours alone.\n\n"
         "**Your first five minutes**\n"
         "1. `/mine place` - puts a drill in the ground. If you don't own one yet you'll be "

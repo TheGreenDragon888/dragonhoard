@@ -1,0 +1,7 @@
+This is not a comprehensive list, and will likely be added to as I recognize more commands.
+
+/help [topic] - Opens a comprehensive manual that users can read to figure out how the bot works, learn how to start, and research more into each of the games the bot has to provide. Organized into sections the reader picks from a dropdown, or jumps straight to with the topic argument. /manual and /man are the same command under different names (slash commands have no aliases, so all three are registered separately and share one implementation). The text lives in data/manual.py, and tests/test_manual.py fails if a command is added without a manual entry.
+/collect [here] - Collects all items currently produced / stored by the user's equipment, in every server they have equipment placed in, not just the one the command was run in. Materials are stored per user rather than per server, so the haul lands in the same inventory either way. Pass here:True to limit it to the current server. See docs/mining.txt.
+/market sell <material> <quantity> - Sell raw or smelted materials to the server for its currency. This is the server's only currency faucet - see docs/market.md.
+/market buy <material> <quantity> - Buy raw or smelted materials from the server's own stock, constrained by what it actually has on hand.
+/market status - Shows the server's current stock, buy price, and sell price for every tradeable material.

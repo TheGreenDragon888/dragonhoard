@@ -1,0 +1,123 @@
+Materials
+All mining menu embeds (/mine, /collect) are purple, #8C00FF (see docs/stylization.md).
+
+Materials are stored universally (per user). Raw materials can be mined from anywhere in the server - there is no designated "dig site" channel. Users can individually place up to three drills per server.
+
+Each server holds a single pool of raw materials instead of separate blocks or per-channel pools. Once per day, (server human member count * 200) raw materials are added to that server's pool, up to a cap of 3x that daily amount (human member count * 600) - so a server that goes unharvested can bank up to 3 days' worth of production before the pool stops growing. Bots are excluded from this count, same as the market's target stock (docs/market.md).
+
+Mining drills automatically harvest raw materials from their server's pool until their storage capacity fills; then they stop until their owner runs /collect. If the pool runs dry, drills sit idle until the next daily top-up. Use /mine status to see your active drills and the server's remaining pool size, from any channel.
+
+/collect is cross-server: one call empties every drill you have placed anywhere, wherever you run it from, and its embed breaks the haul down per server when more than one contributed. Everything else about mining stays per-server - each server has its own pool, its own three-drill-per-player cap, and its own /mine status. Collection can be global because materials are stored per user, not per server, so a drill's haul was always going to land in the same inventory regardless of where the drill sat. Drills in servers you or the bot have since left are collected too; they kept mining, and the material is already yours. Pass here:True to collect only from the drills you have in the server you're running it from.
+
+If a player places a drill without having one (nothing in inventory, nothing already placed anywhere), they're automatically given a free Iron Drill to place. Use /mine remove to pull a drill back out early - you get the drill back in your inventory plus whatever raw materials it had collected so far.
+
+Every drill is tracked individually rather than as a stack, and keeps its level and its attached container for its whole life - including while it sits unplaced in your inventory. Commands that act on a drill (/mine place, /mine remove, /mine attach, /mine detach, /factory upgrade) take a specific drill picked from a list rather than a drill type.
+
+Drill Levels
+Every drill starts at level 1 mining at its type's base rate, and each level above that adds 1 raw material / hour. There is no maximum level; the cost is the only limit.
+
+Upgrading is a factory job, queued with /factory upgrade <drill>, and the drill has to be in your inventory rather than placed. One level at a time. The drill is locked while the upgrade is queued - it can't be placed, removed, or have its container changed until the factory finishes it. The cost is one Drill Upgrade Pack plus the drill's tier material, and every part of it doubles with each level (x 2 ^ (current level - 1)):
+
+Iron Drill - 10 Iron
+Steel Drill - 10 Steel
+Ruby Drill - 3 Ruby
+Obsidian Drill - 3 Obsidian
+Diamond Drill - 3 Diamond
+
+So an Iron Drill costs 1 pack + 10 Iron to reach level 2, 2 packs + 20 Iron to reach level 3, 4 packs + 40 Iron to reach level 4, and so on. Gem drills pay 3 of their gem rather than 10, matching the 3 gems their drill bit already costs - at a one-in-a-million drop chance, 10 Diamonds per upgrade would put those drills permanently out of reach.
+
+Storage Containers
+Every drill holds 100 raw materials on its own regardless of type. Storage containers are crafted in the factory and fitted with /mine attach, adding their capacity on top of that 100. A drill holds at most one container at a time, and any container fits any drill - the tier names describe what the container costs and how much it adds, not which drill it belongs to.
+
+Containers are never consumed. /mine attach on a drill that already has one swaps them, returning the old container to your inventory intact, and /mine detach takes one off. Both are instant and free - the factory time and fee are paid when the container is crafted, not when it's fitted. Fitting a container to a full drill lets it start mining again immediately; taking one off a drill that's holding more than 100 loses nothing, the drill just stops until you /collect.
+
+The following are the currently planned materials:
+(Raw Materials AKA mined directly from servers)
+<:IronOre:1523432328028885034> Iron Ore (56.67%)
+<:CopperOre:1523432342813933699> Copper Ore (28.335%)
+<:Coal:1523432352318099456> Coal (14.985%)
+<:Ruby:1523433101840089208> Ruby (0.009%)
+<:Obsidian:1523433115450736690> Obsidian (0.0009%)
+<:Diamond:1523433355708858612> Diamond (0.0001%)
+(percentages sum to 100%)
+(Smelted Materials, requires to be processed in a furnace)
+<:Iron:1523433412805918820> Iron (10 Iron Ore)
+<:Copper:1523433425220927498> Copper (10 Copper Ore)
+<:Steel:1523433463150149692> Steel (20 Iron Ore, 4 Coal)
+(Component Materials, produced in a factory)
+<:Wiring:1523433594004049971> Wiring (12 Copper)
+<:DrillChassis:1523433620566446150> Drill Chassis (20 Iron, 12 Copper)
+<:IronDrillBit:1523433731799519403> Iron Drill Bit (20 Iron)
+<:SteelDrillBit:1523433738950807592> Steel Drill Bit (20 Steel)
+<:RubyDrillBit:1523433749893742752> Ruby Drill Bit (10 Steel, 3 Ruby)
+<:ObsidianDrillBit:1523433758139748372> Obsidian Drill Bit (10 Steel, 3 Obsidian)
+<:DiamondDrillBit:1523433768076050551> Diamond Drill Bit (10 Steel, 3 Diamond)
+(Drills, also produced in a factory)
+Rates below are at level 1; every level adds 1 raw material / hour. Every drill stores 100 raw materials on its own, whatever its type - more storage comes from containers, not from the drill.
+<:IronMiningDrill:1523433637398450347> Iron Drill (Wiring, Drill Chassis, and Iron Drill Bit) [Mines 5 raw materials / hour]
+<:SteelMiningDrill:1523433646613069824> Steel Drill (Wiring, Drill Chassis, and Steel Drill Bit) [Mines 7.5 raw materials / hour]
+<:RubyMiningDrill:1523433666800517262> Ruby Drill (Wiring, Drill Chassis, and Ruby Drill Bit) [Mines 10 raw materials / hour]
+<:ObsidianMiningDrill:1523433678825459893> Obsidian Drill (Wiring, Drill Chassis, and Obsidian Drill Bit) [Mines 12.5 raw materials / hour]
+<:DiamondMiningDrill:1523433688656908408> Diamond Drill (Wiring, Drill Chassis, and Diamond Drill Bit) [Mines 15 raw materials / hour]
+
+(Storage containers, produced in a factory - attach with /mine attach)
+📦 Iron Container (10 Iron, 5 Copper) [+150 storage, so 250 on a drill]
+🗃️ Steel Container (10 Steel, 10 Copper) [+200 storage, so 300 on a drill]
+💼 Ruby Container (1 Ruby, 20 Copper) [+300 storage, so 400 on a drill]
+🧳 Obsidian Container (1 Obsidian, 40 Copper) [+400 storage, so 500 on a drill]
+🎁 Diamond Container (1 Diamond, 80 Copper) [+500 storage, so 600 on a drill]
+
+(Upgrade materials, produced in a factory)
+🧰 Drill Upgrade Pack (5 Copper) [consumed by /factory upgrade]
+
+Server Infrastructure
+Each server comes with a level 1 furnace, factory and hydraulic press. Infrastructure is installed onto servers, and can be accessed anywhere within that server.
+
+Furnace menu embeds are purple-red, #FF0059; factory menu embeds are red-orange, #FF4000; press menu embeds are blue, #0066FF (see docs/stylization.md).
+
+Infrastructure has no maximum level. Every machine's output scales linearly with its level, and every level costs ten times the fees the last one did - 5 to reach level 2, 50 for level 3, 500 for level 4, and so on. The cost is what puts a ceiling on it, not a hard cap.
+
+Furnaces: (/furnace smelt <smelt material result> <quantity>)
+5 smelted materials / hour, per level
+Every item smelted also burns 1 extra Coal to fuel the furnace, on top of whatever Coal the recipe itself requires (e.g. Steel already needs 4 Coal - smelting 1 Steel burns 5 Coal total).
+
+Factories: (/factory craft <component, drill, container, or upgrade pack> <quantity>, and /factory upgrade <drill>)
+1 component / hour, per level
+
+Hydraulic presses: (/press craft <gemstone or ultra dense matter> <quantity>)
+1 press-day of work / day, per level
+
+The press turns bulk smelted material into gemstones. Every recipe costs a little under what a player would have received alongside that gem on average before mining one - the stretch between two rubies yields about 6,297 Iron Ore, which smelts into 630 Iron, and a pressed ruby costs 600. So the press doesn't create gems out of nothing; it trades an enormous pile of ore for the certainty of a gem instead of the one-in-a-million chance of digging one up, with a ~4.7% discount as the reward for having built one.
+
+That discount is deliberately identical for every recipe. The three costs sit in a fixed 1 : 5 : 45 ratio that falls out of the drop rates (gem rarities are 90:9:1, Copper Ore drops at half Iron Ore's rate, and Steel takes 20 ore per unit against Iron's 10), and that ratio is what makes the three recipes worth the same as each other per unit of mining effort. Discounting one gem more than the others would quietly make it the only one worth pressing. Pressed gemstones are identical to mined ones and can be sold on the market.
+
+A recipe's cost in press time is measured in press-days, against a ruby. A press earns one press-day per day for each level it has, so a level 1 press spends nine days on a diamond while a level 3 press spends three. A press earns nothing while its queue is empty - it can't bank weeks of idle time and then finish a diamond the instant one is queued.
+
+<:Ruby:1523433101840089208> Ruby (600 Iron) [1 press-day]
+<:Obsidian:1523433115450736690> Obsidian (3,000 Copper) [3 press-days]
+<:Diamond:1523433355708858612> Diamond (27,000 Steel) [9 press-days]
+🌑 Ultra Dense Matter (10 Diamond) [27 press-days]
+
+Ultra dense matter is priced in diamonds rather than ore: at 27x a ruby's press time it sits a full tier beyond diamond, and costing it in ore would put it out of reach of any server that will ever exist. Nothing consumes it yet - it's reserved for a later feature, and like drills and components it can never be sold on the market (docs/market.md section 3).
+
+Players can queue jobs up for their server's furnace, factory & press. If there's any jobs ahead of them they must wait until those complete before the server can process their items and send the result back to their inventory. Each player can have at most a set number of items queued at once per infrastructure type (default: 25 for the furnace, 5 for the factory, 1 for the press), configurable per server via /setup max_queue <furnace / factory / press> <amount>.
+
+The press fee is charged per press-day rather than per item, so a diamond costs nine times what a ruby does to run (default: 5.00 per press-day, meaning 5.00 for a ruby, 15.00 for an obsidian, 45.00 for a diamond and 135.00 for ultra dense matter).
+
+Server Currencies
+Any server member with "Manage Server" permission can set up the currency - it just needs to be assigned a name and an emoji to use as the currency symbol:
+
+/setup currency <currency name> <currency emoji>
+(/setup commands are only available to users with "manage server" permission)
+
+(Planned, not yet implemented: when the bot joins a new server, it should privately prompt a "Manage Server" member to run this setup.)
+
+Server currencies are earned by selling raw and smelted materials to the server through its market (/market sell) - see docs/market.md for the full design. There is no passive chat-based payout; currency only enters circulation through genuine economic activity.
+
+Each server's currency is currently the only spendable currency in the game - a previously-planned universal "DragonCoin" currency remains a non-spendable, non-earnable unit reserved for a future cross-server exchange rate (docs/market.md).
+
+Server managers can set up a fee to use their server's infrastructure using their server's own currency. The default fee is 0.01 for the furnace and 0.25 for the factory. The fee is charged up front when a job is queued, not when it completes.
+
+/setup fee <furnace / factory> <amount per item>
+
+If a server collects 5.00 of the server's currency in fees, then the respective furnace / factory will upgrade from level 1 to level 2. The same thing will happen upon reaching 50.00 in fees, but instead from level 2 to level 3.

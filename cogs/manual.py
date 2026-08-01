@@ -99,19 +99,19 @@ class ManualCog(commands.Cog):
         await respond(interaction, self.db, embed=build_section_embed(section), view=view)
         view.origin = interaction
 
-    @app_commands.command(name="help", description="Open the Dragon Assistant manual")
+    @app_commands.command(name="help", description="Open the Dragonhoard manual")
     @app_commands.describe(topic="Jump straight to one section - leave blank to start at the beginning")
     @app_commands.choices(topic=TOPIC_CHOICES)
     async def help_command(self, interaction: discord.Interaction, topic: app_commands.Choice[str] | None = None):
         await self._manual_impl(interaction, topic)
 
-    @app_commands.command(name="manual", description="Open the Dragon Assistant manual")
+    @app_commands.command(name="manual", description="Open the Dragonhoard manual")
     @app_commands.describe(topic="Jump straight to one section - leave blank to start at the beginning")
     @app_commands.choices(topic=TOPIC_CHOICES)
     async def manual_command(self, interaction: discord.Interaction, topic: app_commands.Choice[str] | None = None):
         await self._manual_impl(interaction, topic)
 
-    @app_commands.command(name="man", description="Open the Dragon Assistant manual")
+    @app_commands.command(name="man", description="Open the Dragonhoard manual")
     @app_commands.describe(topic="Jump straight to one section - leave blank to start at the beginning")
     @app_commands.choices(topic=TOPIC_CHOICES)
     async def man_command(self, interaction: discord.Interaction, topic: app_commands.Choice[str] | None = None):

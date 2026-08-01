@@ -19,7 +19,7 @@ import config
 from database.db import Database
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("dragonassistant")
+log = logging.getLogger("dragonhoard")
 
 # Intents are permission flags telling Discord which events your bot wants
 # to receive. members is privileged - it must ALSO be enabled in the Discord

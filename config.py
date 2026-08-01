@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-DATABASE_PATH = os.getenv("DATABASE_PATH", "data/dragonassistant.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "data/dragonhoard.db")
 
 # Shown in every embed's footer (see utils/embeds.py and docs/stylization.md).
 VERSION = "0.0 ALPHA"

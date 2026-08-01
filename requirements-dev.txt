@@ -1,0 +1,7 @@
+# Extra packages needed only for development and testing, not for running the
+# bot. Production (/opt/dragonhoard) installs requirements.txt alone; the beta
+# environment installs both. See docs/testing.md.
+-r requirements.txt
+
+pytest>=8.0.0
+pytest-asyncio>=0.24.0

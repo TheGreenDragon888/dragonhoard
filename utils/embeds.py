@@ -18,7 +18,7 @@ FACTORY_COLOR = discord.Color(0xFF4000)    # red-orange
 RECIPE_COLOR = discord.Color(0x00FFEA)     # cyan
 PRESS_COLOR = discord.Color(0x0066FF)      # blue
 
-FOOTER_TEXT = f"Dragon Assistant by Isaac Day · Version {config.VERSION}"
+FOOTER_TEXT = f"Dragonhoard by Isaac Day · Version {config.VERSION}"
 
 
 def make_embed(title: str, color: discord.Color = DEFAULT_COLOR, **kwargs) -> discord.Embed:
