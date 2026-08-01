@@ -71,19 +71,21 @@ def format_duration(hours: float) -> str:
     return f"{days}d {leftover_hours}h" if leftover_hours else f"{days}d"
 
 
-def format_eta(hours: float) -> str:
-    """When something will be ready: how long from now, plus the clock time it
-    lands at as one of Discord's own timestamps.
+def format_relative_timestamp(hours: float) -> str:
+    """A point `hours` from now, as Discord's own relative timestamp - the
+    client renders it "in 2 hours", "in 3 days", in the reader's language.
 
-    The timestamp is the half that keeps working. An embed is written once and
-    then sits in the channel going stale, so "2h 15m" is only true at the
-    moment it's sent - whereas <t:...> is rendered by each reader's client, in
-    their own timezone, whenever they look at it. Jobs less than half a day out
-    show a bare clock time; anything longer shows the date too, since "8:15 PM"
-    on its own is ambiguous once it's more than one of them away."""
+    Rendered by the reader's client rather than by us, which is the whole
+    point: an embed is written once and then sits in the channel going stale,
+    so a baked-in "2h 15m" is only true at the moment it's sent. This stays
+    true, and counts down on its own, however long the message is scrolled back
+    to.
+
+    Only valid in an embed's description or a field's VALUE. Discord does not
+    render timestamp markup in titles, field names or author lines - those need
+    format_duration instead."""
     ready_at = datetime.now(timezone.utc) + timedelta(hours=max(0.0, hours))
-    style = "t" if hours < 12 else "f"
-    return f"**{format_duration(hours)}** · <t:{int(ready_at.timestamp())}:{style}>"
+    return f"<t:{int(ready_at.timestamp())}:R>"
 
 
 def _format_compact_tier(magnitude: float, threshold: float, suffix: str) -> str | None:

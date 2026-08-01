@@ -30,9 +30,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import make_embed, add_multi_field, PRESS_COLOR
+from utils.embeds import (
+    add_multi_field,
+    job_owner_label,
+    make_infrastructure_embed,
+    queue_field_name,
+    PRESS_COLOR,
+)
 from utils.responses import respond
-from utils.formatting import format_currency, format_duration, format_eta
+from utils.formatting import format_currency
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
@@ -55,6 +61,10 @@ from data.materials import (
 # over its 24 hours, coarse enough that persisting progress every tick stays
 # cheap.
 PRESS_TICK_MINUTES = 30
+
+# How many queued jobs a status embed names individually before collapsing the
+# rest into an "and N more" line.
+JOB_DISPLAY_LIMIT = 10
 
 # Progress is accumulated a tick at a time, and a day's worth of those
 # fractions sums to a hair under 1.0 rather than exactly 1.0 (48 additions of
@@ -239,7 +249,7 @@ class PressCog(commands.Cog):
         currency_emoji = cfg["currency_emoji"]
 
         jobs = await self.db.fetchall(
-            "SELECT job_id, user_id, target_id, quantity, status FROM production_jobs "
+            "SELECT job_id, user_id, target_id, quantity FROM production_jobs "
             "WHERE guild_id = ? AND job_type = 'press' AND status != 'complete' ORDER BY queued_at ASC",
             (interaction.guild_id,),
         )
@@ -249,42 +259,35 @@ class PressCog(commands.Cog):
         # in press-days rather than items, and whatever it has already banked
         # (press_progress) comes off the front of it.
         rate_per_day = press_rate_per_day(level)
-        etas: dict[int, float] = {}
-        press_days_so_far = 0
-        for job in jobs:
-            press_days_so_far += PRESS_RECIPES[job["target_id"]]["press_days"] * job["quantity"]
-            remaining = max(0.0, press_days_so_far - cfg["press_progress"])
-            etas[job["job_id"]] = remaining / rate_per_day * 24
-        queue_hours = max(0.0, press_days_so_far - cfg["press_progress"]) / rate_per_day * 24
+        press_days_queued = sum(
+            PRESS_RECIPES[job["target_id"]]["press_days"] * job["quantity"] for job in jobs
+        )
+        queue_hours = max(0.0, press_days_queued - cfg["press_progress"]) / rate_per_day * 24
 
-        embed = make_embed("⚙️ Hydraulic Press Status", PRESS_COLOR)
-        embed.add_field(name="Level", value=f"**{level}**", inline=True)
-        embed.add_field(name="Speed", value=f"**{press_rate_per_day(level)}** press-days/day", inline=True)
-        embed.add_field(name="Queue Limit", value=f"**{cfg['press_max_queue']}** item(s) per user", inline=True)
+        embed = make_infrastructure_embed(
+            emoji="⚙️",
+            name="Hydraulic Press",
+            color=PRESS_COLOR,
+            level=level,
+            # The one machine whose speed isn't items per hour: a press-day is
+            # what a recipe costs, and one ruby is one of them.
+            speed_text=f"{rate_per_day} press-day{'s' if rate_per_day != 1 else ''}/day",
+            fees_collected=cfg["press_fees_collected"],
+            upgrade_cost=upgrade_threshold(level + 1),
+            currency_emoji=currency_emoji,
+        )
         embed.add_field(
             name="Fee",
             value=f"{format_currency(fee_rate, currency_emoji)} per press-day",
             inline=True,
         )
         embed.add_field(
-            name="Pending", value=f"**{pending_items}** item(s) across **{len(jobs)}** job(s)", inline=True
+            name="Queue Limit", value=f"**{cfg['press_max_queue']}** items per user", inline=True
         )
 
-        # An estimate at the current speed: it moves out if anyone queues more
-        # behind this, and in if the press levels up on their fees.
-        if jobs:
-            embed.add_field(name="Queue Finishes", value=format_eta(queue_hours), inline=True)
-
-        # Levels are unbounded, so there is always a next one to show.
-        next_level = level + 1
-        cost = upgrade_threshold(next_level)
-        progress = min(cfg["press_fees_collected"], cost)
-        embed.add_field(
-            name=f"Progress to Level {next_level}",
-            value=f"{format_currency(progress, currency_emoji)} / {format_currency(cost, currency_emoji)} collected",
-            inline=False,
-        )
-
+        # Kept where the other two machines have nothing equivalent: a press job
+        # runs for days, so "how far into the current one am I" is a genuinely
+        # different question from "how long until the queue clears".
         if jobs:
             current = jobs[0]
             cost_days = PRESS_RECIPES[current["target_id"]]["press_days"]
@@ -298,19 +301,25 @@ class PressCog(commands.Cog):
                 inline=False,
             )
 
-            lines = []
-            for job in jobs[:10]:
-                info = get_material_info(job["target_id"])
-                emoji = info["emoji"] if info else "❓"
-                name = info["name"] if info else job["target_id"]
-                status_str = "In Progress" if job["status"] == "in_progress" else "Queued"
-                lines.append(
-                    f"{emoji} {job['quantity']}x {name} - {status_str} "
-                    f"· done in {format_duration(etas[job['job_id']])}"
-                )
-            if len(jobs) > 10:
-                lines.append(f"... and {len(jobs) - 10} more")
-            add_multi_field(embed, "Pending Jobs", lines)
+        lines = []
+        for job in jobs[:JOB_DISPLAY_LIMIT]:
+            info = get_material_info(job["target_id"])
+            emoji = info["emoji"] if info else "❓"
+            name = info["name"] if info else job["target_id"]
+            lines.append(
+                f"{job['quantity']}x {emoji} {name} • {job_owner_label(job['user_id'])}"
+            )
+        if len(jobs) > JOB_DISPLAY_LIMIT:
+            lines.append(f"... and {len(jobs) - JOB_DISPLAY_LIMIT} more")
+
+        add_multi_field(
+            embed,
+            # An estimate at the current speed: it moves out if anyone queues
+            # more behind this, and in if the press levels up on their fees.
+            queue_field_name(pending_items, len(jobs), queue_hours),
+            lines,
+            empty_text="Nothing queued.",
+        )
 
         await respond(interaction, self.db, embed=embed)
 

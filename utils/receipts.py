@@ -16,7 +16,7 @@ import discord
 
 from data.materials import get_material_info
 from utils.embeds import make_embed, add_multi_field
-from utils.formatting import format_eta, format_price, DEFAULT_CURRENCY_EMOJI
+from utils.formatting import format_relative_timestamp, format_price, DEFAULT_CURRENCY_EMOJI
 
 
 def _material_line(material_id: str, amount: int, remaining: int) -> str:
@@ -58,7 +58,12 @@ def build_receipt_embed(
 
     eta_hours is how long the whole job takes to come out the far end of the
     machine, queue included - the receipt is where a player finds out that the
-    thing they just paid for lands tomorrow rather than in five minutes.
+    thing they just paid for lands tomorrow rather than in five minutes. It
+    reads as the second sentence of the description rather than as a field at
+    the bottom, because "when do I get it" is the question the receipt is
+    answering, not a footnote to the cost breakdown. The time itself is one of
+    Discord's relative timestamps, so it keeps counting down after the message
+    is sent.
     """
     if product_label is not None:
         product_emoji, product_name = product_label
@@ -67,11 +72,13 @@ def build_receipt_embed(
         product_emoji = product["emoji"] if product else "❓"
         product_name = product["name"] if product else product_id
 
-    embed = make_embed(
-        title,
-        color,
-        description=f"Queued {product_emoji} **{quantity} {product_name}** for {action}.",
-    )
+    description = f"Queued {product_emoji} **{quantity} {product_name}** for {action}."
+    if eta_hours is not None:
+        # The LAST item of the job, not the first - this is answering "when do I
+        # have all of this", which is what was just paid for.
+        description += f" It will be ready {format_relative_timestamp(eta_hours)}."
+
+    embed = make_embed(title, color, description=description)
 
     add_multi_field(embed, "Consumed", [_material_line(*entry) for entry in consumed])
 
@@ -98,10 +105,5 @@ def build_receipt_embed(
         )
     else:
         embed.add_field(name="Fee Paid", value="Free", inline=False)
-
-    if eta_hours is not None:
-        # The last item of the job, not the first - the field is answering
-        # "when do I have all of this", which is what was just paid for.
-        embed.add_field(name="Ready", value=format_eta(eta_hours), inline=False)
 
     return embed

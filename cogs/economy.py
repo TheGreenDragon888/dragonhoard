@@ -35,7 +35,7 @@ from utils.responses import respond
 from utils.embeds import make_embed, add_multi_field, INVENTORY_COLOR, MARKET_COLOR
 from utils.formatting import format_currency, format_compact_price, DEFAULT_CURRENCY_EMOJI
 from utils.guild_helpers import human_member_count
-from utils.drills import drill_label, guild_name_map
+from utils.drills import drill_cell
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
     ensure_user_row,
@@ -68,6 +68,28 @@ TRADEABLE_MATERIALS = {**RAW_MATERIALS, **SMELTED_MATERIALS}
 # How many drills /inventory lists individually before collapsing the rest
 # into a count, mirroring the pending-jobs cap in /factory status.
 DRILL_DISPLAY_LIMIT = 20
+
+# How many drill cells /inventory fits on one line. Fewer than the six used for
+# the plain material grid because a drill cell carries a level and a container
+# emoji as well as its own, so it's roughly half again as wide.
+DRILL_GRID_COLUMNS = 4
+
+
+def max_affordable(unit_cost: float, balance: float) -> int:
+    """How many units a balance covers at a flat per-unit cost.
+
+    Exact arithmetic rather than a search, because _sell_price locks its rate
+    at the stock level the trade starts from - quantity scales the total but
+    never moves the price within one trade, so the total is simply linear.
+
+    The 1e-9 nudge is the same guard format_price uses: a balance that exactly
+    covers N units can land a hair under N on float division, and quoting N-1
+    back to someone who can afford N is precisely the confusion this message
+    exists to remove.
+    """
+    if unit_cost <= 0 or balance <= 0:
+        return 0
+    return int(balance / unit_cost + 1e-9)
 
 
 class EconomyCog(commands.Cog):
@@ -108,18 +130,57 @@ class EconomyCog(commands.Cog):
             return 0.0
         return ceiling_price * (1 + target_stock / (target_stock + current_stock)) * quantity
 
+    def _cannot_afford_message(
+        self,
+        ceiling_price: float,
+        current_stock: int,
+        target: int,
+        quantity: int,
+        total_cost: float,
+        balance: float,
+        currency_emoji: str | None,
+    ) -> str:
+        """The /market buy rejection, which also names the largest quantity the
+        user COULD buy right now. Being told only "you can't afford this" leaves
+        them bisecting by hand, which is a pointless thing to make someone do
+        when the answer is one division away."""
+        unit_cost = self._sell_price(ceiling_price, current_stock, 1, target)
+        affordable = max_affordable(unit_cost, balance)
+        # The requested quantity is by definition unaffordable - we're in this
+        # branch because of it - so float noise must never let it be quoted back
+        # as the answer.
+        affordable = min(affordable, quantity - 1)
+
+        shortfall = (
+            f"This costs {format_currency(total_cost, currency_emoji, True)}, "
+            f"but you only have {format_currency(balance, currency_emoji)}."
+        )
+        if affordable < 1:
+            return f"{shortfall} That isn't enough for even one."
+        return (
+            f"{shortfall} You can afford up to **{affordable:,}**, "
+            f"for {format_currency(unit_cost * affordable, currency_emoji, True)}."
+        )
+
     async def _currency_lines(self, interaction: discord.Interaction) -> list[str]:
         """Every server currency balance this user holds, formatted for
         display and labelled with the currency's own name. The current
         server's currency always comes first (even if the balance is 0),
         followed by every other server's currency ordered highest balance to
-        lowest."""
+        lowest.
+
+        Servers Dragonhoard has been removed from are filtered out by
+        bot_present: their balances are deliberately kept in the database (a
+        re-invite restores them untouched), but a currency you have no way to
+        earn or spend is just noise in a list you read to decide what to do
+        next. The current server needs no such guard - running a command in it
+        proves the bot is there."""
         rows = await self.db.fetchall(
             """
             SELECT scb.guild_id, scb.balance, sc.currency_name, sc.currency_emoji
             FROM server_currency_balances scb
             JOIN server_config sc ON sc.guild_id = scb.guild_id
-            WHERE scb.user_id = ?
+            WHERE scb.user_id = ? AND sc.bot_present = 1
             """,
             (interaction.user.id,),
         )
@@ -191,24 +252,31 @@ class EconomyCog(commands.Cog):
             grid_lines = [" ".join(cells[i:i + 6]) for i in range(0, len(cells), 6)]
             add_multi_field(embed, field_name, grid_lines)
 
-        # Drills get their own field rather than a cell in the grid above:
-        # they aren't stacks in user_materials any more but individual rows,
-        # each with its own level, container and location - none of which fits
-        # in a bare "{emoji} {count}" cell.
+        # Drills get their own field rather than sharing the grid above: they
+        # aren't stacks in user_materials any more but individual rows, each
+        # with its own level and container, so a bare "{emoji} {count}" cell
+        # can't say what any one of them actually is.
+        #
+        # Only UNPLACED drills are listed. A placed drill isn't in your
+        # inventory in any sense that matters - you can't craft with it, fit a
+        # container to it or place it somewhere else - so listing it here made
+        # the field read as a roster rather than as stock on hand. /mine status
+        # is where a server's placed drills are shown.
         drill_rows = await self.db.fetchall(
-            "SELECT * FROM drills WHERE owner_id = ? ORDER BY level DESC, drill_id ASC",
+            "SELECT * FROM drills WHERE owner_id = ? AND guild_id IS NULL "
+            "ORDER BY level DESC, drill_id ASC",
             (interaction.user.id,),
         )
         if drill_rows:
             has_items = True
-            names = guild_name_map(self.bot, drill_rows)
-            lines = [
-                drill_label(row, names.get(row["guild_id"]), with_emoji=True)
-                for row in drill_rows[:DRILL_DISPLAY_LIMIT]
+            cells = [drill_cell(row) for row in drill_rows[:DRILL_DISPLAY_LIMIT]]
+            grid_lines = [
+                " ".join(cells[i:i + DRILL_GRID_COLUMNS])
+                for i in range(0, len(cells), DRILL_GRID_COLUMNS)
             ]
             if len(drill_rows) > DRILL_DISPLAY_LIMIT:
-                lines.append(f"... and {len(drill_rows) - DRILL_DISPLAY_LIMIT} more")
-            add_multi_field(embed, "Drills", lines)
+                grid_lines.append(f"... and {len(drill_rows) - DRILL_DISPLAY_LIMIT} more")
+            add_multi_field(embed, "Drills", grid_lines)
 
         if not has_items:
             embed.add_field(name="Items", value="Your inventory is empty.", inline=False)
@@ -301,7 +369,10 @@ class EconomyCog(commands.Cog):
                 balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
                 if balance < total_cost:
                     await interaction.response.send_message(
-                        f"This costs {format_currency(total_cost, currency_emoji)}, but you only have {format_currency(balance, currency_emoji)}.",
+                        self._cannot_afford_message(
+                            ceiling_price, current_stock, target,
+                            quantity, total_cost, balance, currency_emoji,
+                        ),
                         ephemeral=True,
                     )
                     return
@@ -358,6 +429,10 @@ class EconomyCog(commands.Cog):
             lines.append(f"{info['emoji']} {currency_emoji} {sell_str} {currency_emoji} {buy_str}")
 
         embed = make_embed("Server Market", MARKET_COLOR)
+        # What you can actually spend, next to what everything costs - the two
+        # numbers are only useful together, and /balance is a separate command.
+        balance = await get_currency_balance(self.db, interaction.guild_id, interaction.user.id)
+        embed.description = f"Your balance: {format_currency(balance, currency_emoji)}"
         add_multi_field(embed, "Item · Sell · Buy", lines)
         await respond(interaction, self.db, embed=embed)
 

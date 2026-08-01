@@ -141,7 +141,9 @@ _add(ManualSection(
         "empties the lot. Your materials are yours wherever you earned them - only the "
         "drills, the pool and the currency belong to a particular server.\n\n"
         "Better drill types mine faster, and every level you add to a drill makes it faster "
-        "still. Drills are crafted and upgraded in the Factory."
+        "still - a level is worth a fifth of that drill's own base speed, so an upgrade "
+        "counts for as much on a Diamond Drill as it does on an Iron one. Drills are "
+        "crafted and upgraded in the Factory."
     ),
     commands=(
         ManualCommand(
@@ -255,7 +257,7 @@ _add(ManualSection(
         "finishes - so pull it out with `/mine remove` first, and expect it to be out of "
         "action for a while. Each level costs an Upgrade Pack plus that drill's own tier "
         "material, and the cost doubles with every level, so early levels are cheap and "
-        "late ones are a project.\n\n"
+        "late ones are a project. Each one adds a fifth of the drill's base speed.\n\n"
         "The factory levels up on the fees paid into it and crafts faster at higher levels."
     ),
     commands=(
@@ -279,7 +281,7 @@ _add(ManualSection(
         ),
     ),
     notes=(
-        ("Recipes", "`/recipe factory` lists every factory recipe, including container capacities."),
+        ("Recipes", "`/recipe factory <section>` lists the factory recipes for drill components, drills or containers."),
     ),
 ))
 
@@ -379,8 +381,9 @@ _add(ManualSection(
     commands=(
         ManualCommand(
             "/inventory", "/inventory",
-            "Everything you own - your balance, your materials grouped by kind, and every "
-            "drill you have, placed or not.",
+            "Everything you own - your balance, your materials grouped by kind, and the "
+            "drills you have spare. Drills already placed in a server aren't listed here; "
+            "`/mine status` shows those, in the server they're working in.",
         ),
         ManualCommand(
             "/balance", "/balance",
@@ -404,9 +407,10 @@ _add(ManualSection(
     ),
     commands=(
         ManualCommand(
-            "/recipe factory", "/recipe factory",
-            "Every factory recipe: components, drill bits, drills, storage containers with "
-            "the capacity each one adds, and upgrade materials.",
+            "/recipe factory", "/recipe factory <section>",
+            "The factory recipes, a section at a time: **Drill Components** (components and "
+            "drill bits), **Drills** (drills, upgrade packs and how upgrading works), or "
+            "**Containers** (with the capacity each one adds).",
         ),
         ManualCommand(
             "/recipe furnace", "/recipe furnace",

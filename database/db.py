@@ -306,6 +306,16 @@ class Database(_Executor):
                 if column not in config_columns:
                     conn.execute(f"ALTER TABLE server_config ADD COLUMN {column} {definition}")
 
+            # Tracks whether the bot is still in a server, so a removal can hide
+            # that server's currency without deleting anyone's balance. Also an
+            # in-place add: the DEFAULT backfills every existing row as present,
+            # which is right - the reconciliation pass in cogs/mining.py corrects
+            # any that aren't the first time the bot is ready.
+            if "bot_present" not in config_columns:
+                conn.execute(
+                    "ALTER TABLE server_config ADD COLUMN bot_present INTEGER NOT NULL DEFAULT 1"
+                )
+
             # Press jobs share production_jobs with the other two machines, but
             # its job_type CHECK constraint names them explicitly and SQLite
             # can only widen a CHECK by rebuilding the table. This is the table

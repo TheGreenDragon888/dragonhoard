@@ -48,24 +48,40 @@ class RecipeCog(commands.Cog):
 
     recipe_group = app_commands.Group(name="recipe", description="Browse the recipe book")
 
-    @recipe_group.command(name="factory", description="List every factory recipe")
-    async def recipe_factory(self, interaction: discord.Interaction):
-        embed = make_embed("🏭 Factory Recipes", RECIPE_COLOR)
-        add_multi_field(embed, "Components", build_recipe_lines(COMPONENT_RECIPES))
-        add_multi_field(embed, "Drill Bits", build_recipe_lines(DRILL_BIT_RECIPES))
-        add_multi_field(embed, "Drills", build_recipe_lines(DRILLS))
-        add_multi_field(embed, "Storage Containers", _container_lines())
-        add_multi_field(embed, "Upgrades", build_recipe_lines(UPGRADE_MATERIALS))
-        embed.add_field(
-            name="Drill Upgrades",
-            value=(
-                f"Every drill holds {BASE_STORAGE_CAPACITY} on its own and mines faster with each "
-                f"level. `/factory upgrade` raises a drill one level for an Upgrade Pack plus its "
-                f"tier material, and that cost doubles every level - run it to see what your drill "
-                f"needs next."
-            ),
-            inline=False,
-        )
+    @recipe_group.command(name="factory", description="List the factory recipes for one kind of item")
+    @app_commands.describe(section="Which part of the recipe book to open")
+    @app_commands.choices(section=[
+        app_commands.Choice(name="Drill Components", value="components"),
+        app_commands.Choice(name="Drills", value="drills"),
+        app_commands.Choice(name="Containers", value="containers"),
+    ])
+    async def recipe_factory(self, interaction: discord.Interaction, section: app_commands.Choice[str]):
+        """The factory builds far more than the furnace or the press do, and
+        listing all five of its groups at once produced an embed nobody read to
+        the bottom of. A section per lookup keeps each page to the thing the
+        player came for."""
+        embed = make_embed(f"🏭 Factory Recipes · {section.name}", RECIPE_COLOR)
+
+        if section.value == "components":
+            add_multi_field(embed, "Components", build_recipe_lines(COMPONENT_RECIPES))
+            add_multi_field(embed, "Drill Bits", build_recipe_lines(DRILL_BIT_RECIPES))
+        elif section.value == "drills":
+            add_multi_field(embed, "Drills", build_recipe_lines(DRILLS))
+            add_multi_field(embed, "Upgrades", build_recipe_lines(UPGRADE_MATERIALS))
+            embed.add_field(
+                name="Drill Upgrades",
+                value=(
+                    f"Every drill holds {BASE_STORAGE_CAPACITY} on its own. `/factory upgrade` "
+                    f"raises a drill one level for an Upgrade Pack plus its tier material, and "
+                    f"each level adds a fifth of that drill's own base speed - so an upgrade is "
+                    f"worth the same proportion whichever drill you spend it on. The cost doubles "
+                    f"every level; run the command to see what your drill needs next."
+                ),
+                inline=False,
+            )
+        else:
+            add_multi_field(embed, "Storage Containers", _container_lines())
+
         await respond(interaction, self.db, embed=embed)
 
     @recipe_group.command(name="furnace", description="List every furnace recipe")

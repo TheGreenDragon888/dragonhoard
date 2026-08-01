@@ -9,9 +9,12 @@ drills by ID from an autocomplete list.
 
 On trusting the autocomplete value: Discord does NOT enforce that the value a
 user submits came from the choices we offered, and drill_ids are small
-sequential integers, so anyone can type someone else's. Every command that
+sequential integers, so anyone can guess someone else's. Every command that
 takes a drill must therefore re-check ownership server-side via fetch_drill()
-rather than trusting that the ID came from its own autocomplete.
+rather than trusting that the ID came from its own autocomplete. Note that
+drill_ids are no longer shown to players anywhere - they're an internal
+identifier that rides along as the autocomplete's hidden value - but that is a
+presentation choice and NOT what makes any of this safe. fetch_drill is.
 """
 from discord import app_commands
 
@@ -57,11 +60,42 @@ def container_name(container_type: str | None) -> str:
     return STORAGE_CONTAINERS[container_type]["name"] if container_type else "No Container"
 
 
+def container_emoji(container_type: str | None) -> str:
+    """The container's own glyph, or nothing at all when none is fitted - so a
+    bare drill's cell is just the drill, not a gap or a placeholder."""
+    return STORAGE_CONTAINERS[container_type]["emoji"] if container_type else ""
+
+
+def drill_cell(drill_row) -> str:
+    """The compact form used in grids: the drill's emoji, its container's emoji
+    if one is fitted, and its level. Sized to sit alongside other drills in an
+    /inventory row rather than to be read on a line of its own, which is why it
+    carries no name, no fill and no location."""
+    return f"{drill_emoji(drill_row)}{container_emoji(drill_row['container_type'])} Lv.{drill_row['level']}"
+
+
+def drill_short_label(drill_row) -> str:
+    """Just which drill it is and how far it's levelled - no container, no
+    location, no fill.
+
+    For sentences that are ABOUT one of those things, or that describe a change
+    that has already been committed. The row a command is holding was read
+    before its own UPDATE, so a full drill_label there would name the container
+    that was just swapped out, or call a drill "inventory" in the same breath as
+    announcing it was placed."""
+    return f"{drill_name(drill_row)} Lv.{drill_row['level']}"
+
+
 def drill_label(drill_row, location: str | None = None, *, with_emoji: bool = False) -> str:
     """One line describing a drill: which one it is, how far it's been
     upgraded, what it's carrying and where it lives. `location` is the server
-    name for a placed drill; pass None to have it read as inventory."""
-    parts = [f"#{drill_row['drill_id']} {drill_name(drill_row)}", f"Lv{drill_row['level']}"]
+    name for a placed drill; pass None to have it read as inventory.
+
+    Deliberately carries no drill_id. Two drills that match on every part of
+    this label are interchangeable - same type, same level, same container,
+    both unplaced - so telling them apart buys the player nothing, and a raw
+    row id in a game menu is noise."""
+    parts = [drill_name(drill_row), f"Lv.{drill_row['level']}"]
 
     if drill_row["container_type"]:
         parts.append(container_name(drill_row["container_type"]))
@@ -134,9 +168,7 @@ async def drill_choices(
     for row in rows:
         location = (guild_names or {}).get(row["guild_id"])
         label = drill_label(row, location)
-        # Matching the ID as well as the label means typing a bare number
-        # jumps straight to that drill, which is how the labels read anyway.
-        if search and search not in label.lower() and not str(row["drill_id"]).startswith(search):
+        if search and search not in label.lower():
             continue
         choices.append(app_commands.Choice(name=label, value=row["drill_id"]))
         if len(choices) >= MAX_AUTOCOMPLETE_RESULTS:

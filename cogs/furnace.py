@@ -12,9 +12,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import make_embed, add_multi_field, FURNACE_COLOR
+from utils.embeds import (
+    add_multi_field,
+    job_owner_label,
+    make_infrastructure_embed,
+    queue_field_name,
+    FURNACE_COLOR,
+)
 from utils.responses import respond
-from utils.formatting import format_currency, format_duration, format_eta
+from utils.formatting import format_currency
 from utils.receipts import build_receipt_embed
 from utils.guild_helpers import human_member_count
 from database.db import InsufficientQuantity
@@ -40,6 +46,10 @@ from data.materials import (
 )
 
 PROCESS_TICK_MINUTES = 5
+
+# How many queued jobs a status embed names individually before collapsing the
+# rest into an "and N more" line.
+JOB_DISPLAY_LIMIT = 10
 
 # Discord snowflake IDs are always large positive integers, so 0 is safe to
 # reserve as a sentinel marking a production_jobs row as owned by the server
@@ -212,63 +222,53 @@ class FurnaceCog(commands.Cog):
         currency_emoji = cfg["currency_emoji"]
 
         rate = furnace_rate(level)
-        next_level = level + 1
-        upgrade_cost = upgrade_threshold(next_level)
+        upgrade_cost = upgrade_threshold(level + 1)
 
         jobs = await self.db.fetchall(
-            "SELECT job_id, user_id, target_id, quantity, status FROM production_jobs WHERE guild_id = ? AND job_type = 'furnace' AND status != 'complete' ORDER BY queued_at ASC",
+            "SELECT job_id, user_id, target_id, quantity FROM production_jobs WHERE guild_id = ? AND job_type = 'furnace' AND status != 'complete' ORDER BY queued_at ASC",
             (interaction.guild_id,),
         )
         # Listed in the order the furnace will actually work through them: the
         # drain loop puts the server's own auto-smelt jobs last, and a stable
-        # sort keeps everything else in queued_at order. Each job's wait is
-        # then just the running total of the items in front of it, plus its
-        # own, divided by the hourly rate.
+        # sort keeps everything else in queued_at order.
         jobs = sorted(jobs, key=lambda job: job["user_id"] == SERVER_JOB_USER_ID)
         pending_items = sum(job["quantity"] for job in jobs)
 
-        etas: dict[int, float] = {}
-        items_so_far = 0
-        for job in jobs:
-            items_so_far += job["quantity"]
-            etas[job["job_id"]] = items_so_far / rate
-
-        embed = make_embed("🔥 Furnace Status", FURNACE_COLOR)
-        embed.add_field(name="Level", value=f"**{level}**", inline=True)
-        embed.add_field(name="Speed", value=f"**{rate}** items/hour", inline=True)
-        embed.add_field(name="Queue Limit", value=f"**{max_queue}** items per user", inline=True)
-        embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
-        embed.add_field(name="Pending", value=f"**{pending_items}** items across **{len(jobs)}** job(s)", inline=True)
-
-        # An estimate at the current speed: it moves out if anyone queues more
-        # behind this, and in if the furnace levels up on their fees.
-        if pending_items:
-            embed.add_field(name="Queue Finishes", value=format_eta(pending_items / rate), inline=True)
-
-        # Levels are unbounded, so there is always a next one to show - each
-        # costs ten times the last, which is what keeps them in check.
-        progress = min(fees_collected, upgrade_cost)
-        embed.add_field(
-            name=f"Progress to Level {next_level}",
-            value=f"{format_currency(progress, currency_emoji)} / {format_currency(upgrade_cost, currency_emoji)} collected",
-            inline=False,
+        embed = make_infrastructure_embed(
+            emoji="🔥",
+            name="Furnace",
+            color=FURNACE_COLOR,
+            level=level,
+            speed_text=f"{rate} items/hour",
+            fees_collected=fees_collected,
+            upgrade_cost=upgrade_cost,
+            currency_emoji=currency_emoji,
         )
+        embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
+        embed.add_field(name="Queue Limit", value=f"**{max_queue}** items per user", inline=True)
 
-        if jobs:
-            lines = []
-            for job in jobs[:10]:  # Show first 10
-                info = get_material_info(job["target_id"])
-                emoji = info["emoji"] if info else "❓"
-                name = info["name"] if info else job["target_id"]
-                status_str = "In Progress" if job["status"] == "in_progress" else "Queued"
-                owner_str = " (🏛️ Server)" if job["user_id"] == SERVER_JOB_USER_ID else ""
-                lines.append(
-                    f"{emoji} {job['quantity']}x {name} - {status_str}{owner_str} "
-                    f"· done in {format_duration(etas[job['job_id']])}"
-                )
-            if len(jobs) > 10:
-                lines.append(f"... and {len(jobs) - 10} more")
-            add_multi_field(embed, "Pending Jobs", lines)
+        lines = []
+        for job in jobs[:JOB_DISPLAY_LIMIT]:
+            info = get_material_info(job["target_id"])
+            emoji = info["emoji"] if info else "❓"
+            name = info["name"] if info else job["target_id"]
+            # The server's own auto-smelt jobs have no member to mention.
+            owner = (
+                "🏛️ Server" if job["user_id"] == SERVER_JOB_USER_ID
+                else job_owner_label(job["user_id"])
+            )
+            lines.append(f"{job['quantity']}x {emoji} {name} • {owner}")
+        if len(jobs) > JOB_DISPLAY_LIMIT:
+            lines.append(f"... and {len(jobs) - JOB_DISPLAY_LIMIT} more")
+
+        add_multi_field(
+            embed,
+            # An estimate at the current speed: it moves out if anyone queues
+            # more behind this, and in if the furnace levels up on their fees.
+            queue_field_name(pending_items, len(jobs), pending_items / rate),
+            lines,
+            empty_text="Nothing queued.",
+        )
 
         await respond(interaction, self.db, embed=embed)
 

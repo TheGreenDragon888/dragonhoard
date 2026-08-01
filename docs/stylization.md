@@ -13,6 +13,40 @@ All embeds end with the footer:
 The version number comes from `config.VERSION` — bump it there when
 releasing a new version.
 
+## Infrastructure status embeds
+
+`/furnace status`, `/factory status` and `/press status` share one shape, built
+by `utils/embeds.py: make_infrastructure_embed()`. A fourth machine should use
+it rather than inventing its own layout.
+
+```
+author:      🏭 Factory • Level 1
+title:       5 items/hour
+description: 💰 4.50 / 💰 5.00 to level 2
+
+Fee  💰 0.25 per item        Queue Limit  5 items per user
+
+Queue • 12 items / 3 jobs (2h 24m wait)
+  5x 🪛 Steel Drill Bit • @alice
+  1x 🔧 ⛏ Iron Drill Lv.1 → 2 • @bob
+```
+
+The author line identifies the machine and its level, the title is what that
+level buys you, and the description is the one number a server is working
+towards. Fields are left for the two settings a manager can actually change,
+and for the queue — whose heading carries the counts and the total wait rather
+than spending two more fields on them.
+
+Two constraints the layout depends on:
+
+- The author line's emoji must be **unicode** (🏭 🔥 ⚙️). Discord renders
+  custom `<:Name:ID>` emoji in descriptions and field values, but not in author
+  lines, titles or field names.
+- The queue heading's wait uses `format_duration` ("2h 24m"), not a Discord
+  relative timestamp. Timestamp markup doesn't render in a field name either.
+  `format_relative_timestamp` is for descriptions and field values — which is
+  where the queue receipts use it.
+
 ## Embed colors
 
 All colors are **fully saturated**. The default is green `#00FF3C`; each

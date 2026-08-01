@@ -1,7 +1,7 @@
 """
 Tests for the display helpers in utils/formatting.py.
 
-Duration and ETA text is what the furnace, factory and press receipts promise a
+Duration text is what the furnace, factory and press status embeds promise a
 player, so the rounding direction matters: a machine may finish later than it
 said, never sooner. Pure string arithmetic - no database, no discord.py.
 """
@@ -9,9 +9,9 @@ import re
 import unittest
 from datetime import datetime, timezone
 
-from utils.formatting import format_duration, format_eta
+from utils.formatting import format_duration, format_relative_timestamp
 
-TIMESTAMP = re.compile(r"^\*\*(?P<duration>[^*]+)\*\* · <t:(?P<epoch>\d+):(?P<style>[tf])>$")
+TIMESTAMP = re.compile(r"^<t:(?P<epoch>\d+):R>$")
 
 
 class FormatDurationTests(unittest.TestCase):
@@ -54,29 +54,28 @@ class FormatDurationTests(unittest.TestCase):
         self.assertEqual(format_duration(-1), "under a minute")
 
 
-class FormatEtaTests(unittest.TestCase):
+class FormatRelativeTimestampTests(unittest.TestCase):
     def parse(self, hours):
-        match = TIMESTAMP.match(format_eta(hours))
-        self.assertIsNotNone(match, f"format_eta({hours}) didn't match the expected shape")
+        match = TIMESTAMP.match(format_relative_timestamp(hours))
+        self.assertIsNotNone(
+            match, f"format_relative_timestamp({hours}) didn't match the expected shape"
+        )
         return match
 
-    def test_it_pairs_the_duration_with_a_discord_timestamp(self):
+    def test_it_lands_the_requested_number_of_hours_out(self):
         match = self.parse(2.25)
-        self.assertEqual(match["duration"], "2h 15m")
-
         expected = datetime.now(timezone.utc).timestamp() + 2.25 * 3600
         self.assertAlmostEqual(int(match["epoch"]), expected, delta=5)
 
-    def test_short_waits_show_a_clock_time_and_long_ones_a_date(self):
-        # "8:15 PM" on its own is ambiguous once it's more than a day out.
-        self.assertEqual(self.parse(3)["style"], "t")
-        self.assertEqual(self.parse(11.9)["style"], "t")
-        self.assertEqual(self.parse(12)["style"], "f")
-        self.assertEqual(self.parse(27 * 24)["style"], "f")
+    def test_long_waits_are_expressed_the_same_way(self):
+        # The R style counts itself - there's no short/long variant to pick, so
+        # a month-out press job needs no special handling.
+        match = self.parse(27 * 24)
+        expected = datetime.now(timezone.utc).timestamp() + 27 * 24 * 3600
+        self.assertAlmostEqual(int(match["epoch"]), expected, delta=5)
 
     def test_a_negative_wait_lands_now_rather_than_in_the_past(self):
         match = self.parse(-5)
-        self.assertEqual(match["duration"], "under a minute")
         self.assertAlmostEqual(
             int(match["epoch"]), datetime.now(timezone.utc).timestamp(), delta=5
         )

@@ -11,6 +11,7 @@ from data.materials import (
     BASE_STORAGE_CAPACITY,
     DRILLS,
     DRILL_UPGRADE_JOB_TARGET,
+    LEVEL_RATE_ANCHOR,
     STORAGE_CONTAINERS,
     UPGRADE_MATERIALS,
     advance_harvest,
@@ -20,6 +21,7 @@ from data.materials import (
     raw_input_cost,
     upgrade_cost,
 )
+from utils.drills import drill_cell, drill_label
 
 # Matches HARVEST_TICK_MINUTES = 24 in cogs/mining.py.
 TICKS_PER_HOUR = 2.5
@@ -30,11 +32,41 @@ class EffectiveRateTests(unittest.TestCase):
         for drill_type, info in DRILLS.items():
             self.assertEqual(effective_rate(drill_type, 1), info["mines_per_hour"])
 
-    def test_each_level_adds_one_item_per_hour(self):
+    def test_each_level_adds_a_fifth_of_the_types_base_rate(self):
         for drill_type in DRILLS:
             base = effective_rate(drill_type, 1)
             for level in range(1, 12):
-                self.assertEqual(effective_rate(drill_type, level), base + (level - 1))
+                self.assertEqual(
+                    effective_rate(drill_type, level),
+                    base * (LEVEL_RATE_ANCHOR + level - 1) / LEVEL_RATE_ANCHOR,
+                )
+
+    def test_the_iron_ladder_is_unchanged(self):
+        # The anchor the whole scheme is derived from: the Iron Drill's
+        # 5 -> 6 -> 7 -> 8 predates percentage levelling and has to survive it,
+        # because "a level is a fifth of base" is just that ladder generalised.
+        self.assertEqual(
+            [effective_rate("iron_drill", level) for level in range(1, 5)],
+            [5, 6, 7, 8],
+        )
+
+    def test_a_level_is_worth_the_same_proportion_at_every_tier(self):
+        # The point of the change. Under the old flat +1 a level made an Iron
+        # Drill 20% faster and a Diamond Drill 6.7% faster, so the upgrade path
+        # got worse the better your drill was.
+        for level in range(1, 8):
+            gains = {
+                effective_rate(t, level + 1) / effective_rate(t, level) for t in DRILLS
+            }
+            self.assertEqual(len(gains), 1, f"tiers diverge at level {level}: {gains}")
+
+    def test_rates_stay_exact(self):
+        # Written as one rational expression precisely so these land on the nose
+        # - a 9.000000000000002 items/hour reaches an embed as "9.000000000000002".
+        self.assertEqual(effective_rate("steel_drill", 2), 9)
+        self.assertEqual(effective_rate("steel_drill", 3), 10.5)
+        self.assertEqual(effective_rate("obsidian_drill", 2), 15)
+        self.assertEqual(effective_rate("diamond_drill", 4), 24)
 
 
 class EffectiveCapacityTests(unittest.TestCase):
@@ -107,9 +139,17 @@ class AdvanceHarvestTests(unittest.TestCase):
         self.assertEqual(self._mine(7, 10), 28)     # iron level 3
         self.assertEqual(self._mine(9, 10), 36)     # iron level 5
 
+    def test_half_item_rates_land_exactly(self):
+        # Percentage levelling puts far more drills on fractional rates than
+        # the old flat +1 did - a steel drill is on a half at every odd level.
+        self.assertEqual(self._mine(10.5, 10), 42)   # steel level 3
+        self.assertEqual(self._mine(17.5, 10), 70)   # obsidian level 3
+
     def test_every_drill_and_level_averages_to_its_stated_rate(self):
         for drill_type in DRILLS:
-            for level in range(1, 6):
+            # Past level 5, where the fractional rates the carry exists for are
+            # thickest - a steel drill alternates whole and half from level 2 on.
+            for level in range(1, 12):
                 rate = effective_rate(drill_type, level)
                 # 100 hours, so any per-tick drift would be obvious.
                 self.assertEqual(self._mine(rate, int(100 * TICKS_PER_HOUR)), rate * 100)
@@ -124,6 +164,49 @@ class AdvanceHarvestTests(unittest.TestCase):
     def test_a_rate_below_one_item_per_tick_still_accumulates(self):
         # 2/hour is 0.8 items/tick - it must never floor to zero forever.
         self.assertEqual(self._mine(2, 10), 8)
+
+
+class DrillDisplayTests(unittest.TestCase):
+    """The compact form /inventory and /mine status render drills as."""
+
+    @staticmethod
+    def row(**columns):
+        base = {
+            "drill_id": 7, "guild_id": None, "owner_id": 1, "drill_type": "iron_drill",
+            "level": 1, "container_type": None, "stored_amount": 0,
+            "locked_job_id": None,
+        }
+        base.update(columns)
+        return base
+
+    def test_a_bare_drill_is_its_emoji_and_level(self):
+        self.assertEqual(
+            drill_cell(self.row()), f"{DRILLS['iron_drill']['emoji']} Lv.1"
+        )
+
+    def test_a_container_adds_its_own_glyph(self):
+        cell = drill_cell(self.row(container_type="steel_container", level=3))
+        self.assertEqual(
+            cell,
+            f"{DRILLS['iron_drill']['emoji']}{STORAGE_CONTAINERS['steel_container']['emoji']} Lv.3",
+        )
+
+    def test_no_container_leaves_no_gap_or_placeholder(self):
+        # The cells sit side by side in a grid, so a stand-in glyph for "no
+        # container" would read as a container the player doesn't have.
+        self.assertNotIn(" ", drill_cell(self.row()).split(" Lv.")[0])
+
+    def test_no_drill_id_is_shown(self):
+        for row in (self.row(drill_id=1234), self.row(drill_id=1234, container_type="iron_container")):
+            self.assertNotIn("1234", drill_cell(row))
+            self.assertNotIn("#", drill_cell(row))
+
+    def test_the_label_carries_no_id_either(self):
+        label = drill_label(self.row(drill_id=1234, level=2))
+        self.assertNotIn("1234", label)
+        self.assertNotIn("#", label)
+        self.assertIn("Iron Drill", label)
+        self.assertIn("Lv.2", label)
 
 
 class MaterialRegistryTests(unittest.TestCase):

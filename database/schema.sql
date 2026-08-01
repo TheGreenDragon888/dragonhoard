@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- 0/1 boolean: whether bot responses are public in this server instead of
     -- ephemeral (private). Off by default - see utils/responses.py.
     public_messages         INTEGER NOT NULL DEFAULT 0,
+    -- 0/1 boolean: whether Dragonhoard is currently in this server. The row is
+    -- kept rather than deleted when it's removed, so balances and market stock
+    -- survive intact and come back if the bot is re-invited. What changes is
+    -- that a departed server's currency stops appearing in /balance and
+    -- /inventory, and its placed drills are returned to their owners.
+    bot_present             INTEGER NOT NULL DEFAULT 1,
     -- The server-wide shared pool of unharvested raw materials that drills draw
     -- from. Topped up once/day by mining_pool_last_topup's date changing.
     mining_pool_remaining    INTEGER NOT NULL DEFAULT 0,
@@ -97,7 +103,10 @@ CREATE TABLE IF NOT EXISTS drills (
     guild_id         INTEGER,                       -- NULL = unplaced, in inventory
     owner_id         INTEGER NOT NULL,
     drill_type       TEXT NOT NULL,
-    level            INTEGER NOT NULL DEFAULT 1,    -- each level past 1 adds +1 item/hour
+    -- Each level past 1 adds a fifth of the drill type's base mining rate, so
+    -- an upgrade is worth the same proportion at every tier (LEVEL_RATE_ANCHOR
+    -- in data/materials.py).
+    level            INTEGER NOT NULL DEFAULT 1,
     container_type   TEXT,                          -- NULL = no container attached
     stored_amount    INTEGER NOT NULL DEFAULT 0,    -- raw materials waiting for /collect
     -- Fractional carry between harvest ticks. A tick is 24 minutes (2.5

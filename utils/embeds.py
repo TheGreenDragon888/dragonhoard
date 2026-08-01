@@ -7,6 +7,7 @@ color palette and standard footer (see docs/stylization.md).
 import discord
 
 import config
+from utils.formatting import format_currency, format_duration
 
 # Fully saturated brand colors - one per feature area (docs/stylization.md).
 DEFAULT_COLOR = discord.Color(0x00FF3C)    # bot settings, manual, and fallback
@@ -27,6 +28,63 @@ def make_embed(title: str, color: discord.Color = DEFAULT_COLOR, **kwargs) -> di
     embed = discord.Embed(title=title, color=color, **kwargs)
     embed.set_footer(text=FOOTER_TEXT)
     return embed
+
+
+def make_infrastructure_embed(
+    *,
+    emoji: str,
+    name: str,
+    color: discord.Color,
+    level: int,
+    speed_text: str,
+    fees_collected: float,
+    upgrade_cost: float,
+    currency_emoji: str | None,
+) -> discord.Embed:
+    """The shared shell of the /furnace, /factory and /press status embeds.
+
+    All three used to open with six inline fields - Level, Speed, Queue Limit,
+    Fee, Pending, Queue Finishes - four of which were one number each. The
+    embed's own furniture holds those for free: what the machine IS goes in the
+    author line, what it DOES goes in the title, and how close it is to the
+    next level is one sentence of description. That leaves the fields for the
+    two settings a server manager actually changes, and the queue.
+
+    `emoji` has to be a unicode glyph, not a custom <:Name:ID> - Discord
+    renders custom emoji in descriptions and field values but not in author
+    lines. Same constraint rules out a relative timestamp in the title.
+    """
+    embed = discord.Embed(title=speed_text, color=color)
+    embed.set_author(name=f"{emoji} {name} • Level {level}")
+    # Levels are unbounded - each threshold is ten times the last, which is what
+    # keeps them in check - so there is always a next one to show. The collected
+    # total is clamped so a machine that has banked far past the threshold reads
+    # as "5.00 / 5.00" rather than overshooting its own progress bar.
+    embed.description = (
+        f"{format_currency(min(fees_collected, upgrade_cost), currency_emoji)} / "
+        f"{format_currency(upgrade_cost, currency_emoji)} to level {level + 1}"
+    )
+    embed.set_footer(text=FOOTER_TEXT)
+    return embed
+
+
+def queue_field_name(items: int, jobs: int, wait_hours: float) -> str:
+    """The queue field's heading, which carries the counts and the total wait
+    that used to be their own "Pending" and "Queue Finishes" fields.
+
+    format_duration rather than a relative timestamp: this is a field NAME, and
+    Discord doesn't render <t:...> markup there."""
+    if not jobs:
+        return "Queue • empty"
+    item_word = "item" if items == 1 else "items"
+    job_word = "job" if jobs == 1 else "jobs"
+    return f"Queue • {items:,} {item_word} / {jobs:,} {job_word} ({format_duration(wait_hours)} wait)"
+
+
+def job_owner_label(user_id: int) -> str:
+    """Who queued a job. A raw mention: embeds never fire a notification, and
+    the client resolves it whether or not that member happens to be cached."""
+    return f"<@{user_id}>"
 
 
 def add_multi_field(embed: discord.Embed, name: str, lines: list[str], inline: bool = False, empty_text: str = "None"):

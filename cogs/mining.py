@@ -22,10 +22,12 @@ container have to survive being unplaced. Commands therefore take a drill_id
 picked from an autocomplete list rather than a drill type.
 
 HARVEST_TICK_MINUTES is 24, giving 2.5 ticks/hour. Every drill's base
-mines_per_hour is a multiple of 2.5, but a level's +1 item/hour is not, so
-per-tick amounts don't come out whole - drills carry the remainder in
-harvest_progress rather than rounding it away (see advance_harvest).
+mines_per_hour is a multiple of 2.5, but a level adds a fifth of that base
+(see LEVEL_RATE_ANCHOR) and those fifths are not, so per-tick amounts don't
+come out whole - drills carry the remainder in harvest_progress rather than
+rounding it away (see advance_harvest).
 """
+import logging
 import random
 from datetime import datetime, timezone
 
@@ -48,8 +50,10 @@ from utils.drills import (
     capacity_of,
     rate_of,
     collection_summary_lines,
+    drill_cell,
     drill_choices,
     drill_label,
+    drill_short_label,
     fetch_drill,
     guild_name_map,
     container_name,
@@ -67,6 +71,8 @@ from data.materials import (
     effective_capacity,
     get_material_info,
 )
+
+log = logging.getLogger("dragonhoard")
 
 HARVEST_TICK_MINUTES = 24
 POOL_TOPUP_CHECK_MINUTES = 60
@@ -121,6 +127,91 @@ class MiningCog(commands.Cog):
         # triggers on float rounding at the roll==1.0 edge - falls back to the
         # first (most common) material rather than ever returning nothing.
         return next(iter(RAW_MATERIALS))
+
+    async def _retract_guild_drills(self, guild_id: int) -> int:
+        """Pulls every drill placed in a server back to its owner's inventory,
+        crediting whatever it was holding. Called when the bot is removed from
+        that server: those drills can't mine any more, and leaving them placed
+        would strand them somewhere their owner can no longer run a command.
+
+        The materials are credited rather than dropped for the same reason
+        /mine remove credits them - the drill already mined them, and they're
+        the player's. It also isn't optional: the drills table CHECKs that an
+        unplaced drill holds nothing, so the contents have to go somewhere.
+
+        Level, container and harvest_progress ride along untouched, so a
+        re-invited server's players get their drills back exactly as they were.
+        Returns how many were retracted.
+        """
+        rows = await self.db.fetchall(
+            "SELECT * FROM drills WHERE guild_id = ?", (guild_id,)
+        )
+        retracted = 0
+        for row in rows:
+            breakdown = build_material_breakdown(row["stored_amount"], self._roll_raw_material)
+
+            # One transaction per drill, and the unplace goes FIRST: if a racing
+            # /collect or /mine remove already emptied this drill, the guarded
+            # UPDATE matches nothing and the credit below never runs. Crediting
+            # first would hand out a second copy of the same haul.
+            async with self.db.transaction() as tx:
+                changed = await tx.execute_changes(
+                    "UPDATE drills SET guild_id = NULL, stored_amount = 0, is_full = 0 "
+                    "WHERE drill_id = ? AND guild_id = ? AND stored_amount = ?",
+                    (row["drill_id"], guild_id, row["stored_amount"]),
+                )
+                if not changed:
+                    continue
+                await ensure_user_row(tx, row["owner_id"])
+                for material_id, qty in breakdown.items():
+                    await adjust_user_quantity(tx, row["owner_id"], material_id, qty)
+                retracted += 1
+        return retracted
+
+    async def _set_guild_presence(self, guild_id: int, present: bool):
+        await ensure_server_row(self.db, guild_id)
+        await self.db.execute(
+            "UPDATE server_config SET bot_present = ? WHERE guild_id = ?",
+            (1 if present else 0, guild_id),
+        )
+
+    @commands.Cog.listener()
+    async def on_guild_remove(self, guild: discord.Guild):
+        retracted = await self._retract_guild_drills(guild.id)
+        await self._set_guild_presence(guild.id, False)
+        log.info("Removed from guild %s - retracted %d drill(s).", guild.id, retracted)
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild):
+        # Balances, market stock and the mining pool were never deleted, so
+        # this is all a re-invite needs to put the server back in play.
+        await self._set_guild_presence(guild.id, True)
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        """Reconciles stored presence against the servers the bot is actually
+        in. This is what makes a removal that happened while the bot was OFFLINE
+        get cleaned up at all - on_guild_remove never fires for those, so
+        without this their drills would keep sitting in a server the bot left
+        and their currency would keep showing up in /balance forever.
+
+        Idempotent, because on_ready fires again on every reconnect."""
+        present_ids = {guild.id for guild in self.bot.guilds}
+        for guild_id in present_ids:
+            await self._set_guild_presence(guild_id, True)
+
+        stale = await self.db.fetchall(
+            "SELECT guild_id FROM server_config WHERE bot_present = 1"
+        )
+        for row in stale:
+            if row["guild_id"] in present_ids:
+                continue
+            retracted = await self._retract_guild_drills(row["guild_id"])
+            await self._set_guild_presence(row["guild_id"], False)
+            log.info(
+                "Guild %s was left while offline - retracted %d drill(s).",
+                row["guild_id"], retracted,
+            )
 
     async def _grant_fallback_drill(self, user_id: int) -> int | None:
         """If a player owns no drills at all, give them a free iron drill
@@ -251,7 +342,7 @@ class MiningCog(commands.Cog):
         else:
             await respond(
                 interaction, self.db,
-                content=f"⛏️ Placed **{drill_label(row)}** in this server.",
+                content=f"⛏️ Placed **{drill_short_label(row)}** in this server.",
             )
 
     async def _sole_unplaced_drill(self, interaction: discord.Interaction) -> int | None:
@@ -293,14 +384,14 @@ class MiningCog(commands.Cog):
         if not drills:
             embed.add_field(name="Your Drills", value="No drills placed yet.", inline=False)
         else:
+            # Same compact prefix /inventory uses, plus the two things that only
+            # mean anything for a drill that's actually in the ground: how full
+            # it is, and whether it's still working.
             lines = []
             for d in drills:
-                info = DRILLS[d["drill_type"]]
                 status = "FULL - awaiting /collect" if d["is_full"] else f"mining {rate_of(d):g}/hr"
-                container = f" [{container_name(d['container_type'])}]" if d["container_type"] else ""
                 lines.append(
-                    f"{info['emoji']} #{d['drill_id']} {info['name']} Lv{d['level']}{container}: "
-                    f"{d['stored_amount']}/{capacity_of(d)} - {status}"
+                    f"{drill_cell(d)} · {d['stored_amount']}/{capacity_of(d)} · {status}"
                 )
             add_multi_field(embed, "Your Drills", lines)
 
@@ -369,7 +460,7 @@ class MiningCog(commands.Cog):
         embed = make_embed("Drill Removed", MINING_COLOR)
         embed.add_field(
             name="Drill",
-            value=f"{DRILLS[row['drill_type']]['emoji']} **{drill_label(row)}** returned to your inventory",
+            value=f"{DRILLS[row['drill_type']]['emoji']} **{drill_short_label(row)}** returned to your inventory",
             inline=False,
         )
 
@@ -480,7 +571,7 @@ class MiningCog(commands.Cog):
         embed = make_embed("Container Fitted", MINING_COLOR)
         embed.description = (
             f"{STORAGE_CONTAINERS[container.value]['emoji']} Fitted a **{container.name}** to "
-            f"**#{row['drill_id']} {DRILLS[row['drill_type']]['name']}**."
+            f"**{drill_short_label(row)}**."
         )
         embed.add_field(name="Storage", value=f"{old_capacity} → **{new_capacity}**", inline=False)
         if previous:
@@ -530,7 +621,7 @@ class MiningCog(commands.Cog):
         embed = make_embed("Container Removed", MINING_COLOR)
         embed.description = (
             f"{STORAGE_CONTAINERS[removed]['emoji']} Pulled the **{container_name(removed)}** off "
-            f"**#{row['drill_id']} {DRILLS[row['drill_type']]['name']}** and returned it to your inventory."
+            f"**{drill_short_label(row)}** and returned it to your inventory."
         )
         embed.add_field(
             name="Storage",

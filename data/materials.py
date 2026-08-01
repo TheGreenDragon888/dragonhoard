@@ -23,8 +23,8 @@ RAW_MATERIALS = {
     "iron_ore":    {"name": "Iron Ore",    "emoji": "<:IronOre:1523432328028885034>",    "drop_chance": 0.5667,   "market_ceiling_price": 0.010588},
     "copper_ore":  {"name": "Copper Ore",  "emoji": "<:CopperOre:1523432342813933699>",  "drop_chance": 0.28335,  "market_ceiling_price": 0.017681},
     "coal":        {"name": "Coal",        "emoji": "<:Coal:1523432352318099456>",       "drop_chance": 0.14985,  "market_ceiling_price": 0.033333},
-    "ruby":        {"name": "Ruby",        "emoji": "<:Ruby:1523433101840089208>",       "drop_chance": 0.00009,  "market_ceiling_price": 5500.00},
-    "obsidian":    {"name": "Obsidian",    "emoji": "<:Obsidian:1523433115450736690>",   "drop_chance": 0.000009, "market_ceiling_price": 52500.00},
+    "ruby":        {"name": "Ruby",        "emoji": "<:Ruby:1532897325238980680>",       "drop_chance": 0.00009,  "market_ceiling_price": 5500.00},
+    "obsidian":    {"name": "Obsidian",    "emoji": "<:Obsidian:1532899466687021268>",   "drop_chance": 0.000009, "market_ceiling_price": 52500.00},
     "diamond":     {"name": "Diamond",     "emoji": "<:Diamond:1523433355708858612>",    "drop_chance": 0.000001, "market_ceiling_price": 500000.00},
 }
 
@@ -234,9 +234,21 @@ MAX_DRILLS_PER_USER_PER_SERVER = 3
 BASE_STORAGE_CAPACITY = 100
 
 # Every drill starts at level 1 with its type's base mines_per_hour, and each
-# level above that adds this much. There is no maximum level - the doubling
-# upgrade cost below is the only brake.
-LEVEL_RATE_BONUS_PER_HOUR = 1
+# level above that adds a fixed FRACTION of that base rather than a flat amount.
+# There is no maximum level - the doubling upgrade cost below is the only brake.
+#
+# The fraction is one fifth, and this number is where that comes from: the Iron
+# Drill's ladder has always been 5 -> 6 -> 7 -> 8, which is +1 per level on a
+# base of 5. Reading that as "a level is worth a fifth of the drill's OWN base"
+# rather than "a level is worth +1" is what makes the same ladder mean the same
+# thing at every tier. Under the old flat +1 a level made an Iron Drill 20%
+# faster and a Diamond Drill 6.7% faster, so the upgrade path got worse the
+# better your drill was - exactly backwards.
+#
+# The player-facing diminishing returns fall out of this on their own, with no
+# second mechanism: each level adds a constant amount to a growing total, so the
+# gain reads as +1/5, +1/6, +1/7 ... (20%, 16.7%, 14.3%) as the levels climb.
+LEVEL_RATE_ANCHOR = 5
 
 # What one level-up consumes, on top of the upgrade packs. Ore-tier drills pay
 # in their smelted material; gem-tier drills pay in 3 of their gem, matching
@@ -348,8 +360,17 @@ def effective_capacity(container_type: str | None) -> int:
 
 
 def effective_rate(drill_type: str, level: int) -> float:
-    """A drill's mining rate in items per hour at the given level."""
-    return DRILLS[drill_type]["mines_per_hour"] + LEVEL_RATE_BONUS_PER_HOUR * (level - 1)
+    """A drill's mining rate in items per hour at the given level - its base
+    rate scaled by LEVEL_RATE_ANCHOR's ladder, so every type gains the same
+    proportion per level that the Iron Drill always has.
+
+    Written as one rational expression rather than `base * (1 + 0.2 * (level -
+    1))` because 0.2 has no exact binary representation: the multiply-then-add
+    form makes a level 2 Steel Drill 9.000000000000002, and that figure ends up
+    in an embed and in harvest arithmetic. Dividing by the anchor last keeps
+    every rate here exact."""
+    base = DRILLS[drill_type]["mines_per_hour"]
+    return base * (LEVEL_RATE_ANCHOR + level - 1) / LEVEL_RATE_ANCHOR
 
 
 def upgrade_cost(drill_type: str, level: int) -> dict[str, int]:
@@ -367,10 +388,12 @@ def advance_harvest(progress: float, rate_per_hour: float, ticks_per_hour: float
     """Splits a tick's worth of mining into whole items now and a fraction to
     carry into the next tick.
 
-    The carry is what makes a level worth exactly its stated +1 item/hour. At
-    2.5 ticks/hour a level is +0.4 items/tick, so rounding each tick in
-    isolation would throw the bonus away entirely on half of all levels - a
-    level 2 iron drill mines 2.4/tick, which rounds to the same 2 as level 1.
+    The carry is what makes a level worth exactly its stated rate. At 2.5
+    ticks/hour an iron drill's level is +0.4 items/tick, so rounding each tick
+    in isolation would throw the bonus away entirely - a level 2 iron drill
+    mines 2.4/tick, which rounds to the same 2 as level 1. Since a level is now
+    a fraction of the drill's own base rate, hardly any drill lands on a whole
+    number of items per tick and the carry matters at every tier.
     The tiny nudge stops accumulated float error from turning a carry that
     should be exactly 1.0 into 0.999... and losing an item to truncation; the
     clamp then keeps the returned carry a genuine fraction, since that same

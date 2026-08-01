@@ -33,7 +33,7 @@ And `/honk` plays a honk. No further questions.
 | `/furnace smelt\|status\|queue` | Smelt ore (consumes coal) |
 | `/factory craft\|upgrade\|status\|queue` | Craft gear and drill upgrades |
 | `/press craft\|status\|queue` | Compress materials into gems |
-| `/recipe factory\|furnace\|press` | The recipe book |
+| `/recipe factory <section>\|furnace\|press` | The recipe book |
 | `/help`, `/manual`, `/man` | The in-Discord manual |
 | `/setup currency\|fee\|max_queue\|messages` | Server-manager configuration |
 | `/honk` | Honk |

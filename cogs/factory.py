@@ -19,9 +19,15 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from utils.embeds import make_embed, add_multi_field, FACTORY_COLOR
+from utils.embeds import (
+    add_multi_field,
+    job_owner_label,
+    make_infrastructure_embed,
+    queue_field_name,
+    FACTORY_COLOR,
+)
 from utils.responses import respond
-from utils.formatting import format_currency, format_duration, format_eta
+from utils.formatting import format_currency
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
@@ -35,6 +41,7 @@ from utils.db_helpers import (
 from utils.drills import (
     drill_choices,
     drill_label,
+    drill_short_label,
     describe_cost,
     fetch_drill,
 )
@@ -53,6 +60,10 @@ from data.materials import (
 )
 
 PROCESS_TICK_MINUTES = 5
+
+# How many queued jobs a status embed names individually before collapsing the
+# rest into an "and N more" line.
+JOB_DISPLAY_LIMIT = 10
 
 # Everything the factory can build, merged so app_commands.choices has one
 # flat list to offer. That list currently sits at 18 entries against Discord's
@@ -327,7 +338,7 @@ class FactoryCog(commands.Cog):
             action="upgrading",
             product_id=DRILL_UPGRADE_JOB_TARGET,
             quantity=1,
-            product_label=("🔧", f"{drill_label(row)} → Level {level + 1}"),
+            product_label=("🔧", f"{drill_short_label(row)} → Level {level + 1}"),
             consumed=[
                 (input_id, needed, have[input_id] - needed)
                 for input_id, needed in needs.items()
@@ -367,63 +378,60 @@ class FactoryCog(commands.Cog):
         currency_emoji = cfg["currency_emoji"]
 
         rate = factory_rate(level)
-        next_level = level + 1
-        upgrade_cost = upgrade_threshold(next_level)
+        upgrade_cost = upgrade_threshold(level + 1)
 
+        # LEFT JOIN so an upgrade job can name the drill it's working on: its
+        # own target_id is a sentinel rather than a material, so there is
+        # nothing to look up without the join. The joined level is the drill's
+        # CURRENT one, which is exactly what the "Lv.1 → 2" arrow wants.
         jobs = await self.db.fetchall(
-            "SELECT job_id, user_id, target_id, quantity, status, target_drill_id FROM production_jobs WHERE guild_id = ? AND job_type = 'factory' AND status != 'complete' ORDER BY queued_at ASC",
+            """
+            SELECT pj.job_id, pj.user_id, pj.target_id, pj.quantity, pj.target_drill_id,
+                   d.drill_type, d.level AS drill_level
+            FROM production_jobs pj
+            LEFT JOIN drills d ON d.drill_id = pj.target_drill_id
+            WHERE pj.guild_id = ? AND pj.job_type = 'factory' AND pj.status != 'complete'
+            ORDER BY pj.queued_at ASC
+            """,
             (interaction.guild_id,),
         )
         pending_items = sum(job["quantity"] for job in jobs)
 
-        # Plain FIFO, so each job's wait is the running total of everything in
-        # front of it plus its own quantity, at the current hourly rate.
-        etas: dict[int, float] = {}
-        items_so_far = 0
-        for job in jobs:
-            items_so_far += job["quantity"]
-            etas[job["job_id"]] = items_so_far / rate
-
-        embed = make_embed("🏭 Factory Status", FACTORY_COLOR)
-        embed.add_field(name="Level", value=f"**{level}**", inline=True)
-        embed.add_field(name="Speed", value=f"**{rate}** items/hour", inline=True)
-        embed.add_field(name="Queue Limit", value=f"**{max_queue}** items per user", inline=True)
-        embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
-        embed.add_field(name="Pending", value=f"**{pending_items}** items across **{len(jobs)}** job(s)", inline=True)
-
-        # An estimate at the current speed: it moves out if anyone queues more
-        # behind this, and in if the factory levels up on their fees.
-        if pending_items:
-            embed.add_field(name="Queue Finishes", value=format_eta(pending_items / rate), inline=True)
-
-        # Levels are unbounded, so there is always a next one to show - each
-        # costs ten times the last, which is what keeps them in check.
-        progress = min(fees_collected, upgrade_cost)
-        embed.add_field(
-            name=f"Progress to Level {next_level}",
-            value=f"{format_currency(progress, currency_emoji)} / {format_currency(upgrade_cost, currency_emoji)} collected",
-            inline=False,
+        embed = make_infrastructure_embed(
+            emoji="🏭",
+            name="Factory",
+            color=FACTORY_COLOR,
+            level=level,
+            # A level 1 factory really does produce one item an hour.
+            speed_text=f"{rate} item{'s' if rate != 1 else ''}/hour",
+            fees_collected=fees_collected,
+            upgrade_cost=upgrade_cost,
+            currency_emoji=currency_emoji,
         )
+        embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
+        embed.add_field(name="Queue Limit", value=f"**{max_queue}** items per user", inline=True)
 
-        if jobs:
-            lines = []
-            for job in jobs[:10]:  # Show first 10
-                status_str = "In Progress" if job["status"] == "in_progress" else "Queued"
-                done_in = f"· done in {format_duration(etas[job['job_id']])}"
-                if job["target_drill_id"] is not None:
-                    # An upgrade's target is a sentinel, not a material, so
-                    # there's nothing to look up - name the drill instead.
-                    lines.append(
-                        f"🔧 Drill Upgrade (drill #{job['target_drill_id']}) - {status_str} {done_in}"
-                    )
-                    continue
+        lines = []
+        for job in jobs[:JOB_DISPLAY_LIMIT]:
+            if job["target_drill_id"] is not None and job["drill_type"] is not None:
+                info = DRILLS[job["drill_type"]]
+                label = f"🔧 {info['emoji']} {info['name']} Lv.{job['drill_level']} → {job['drill_level'] + 1}"
+            else:
                 info = get_material_info(job["target_id"])
                 emoji = info["emoji"] if info else "❓"
-                name = info["name"] if info else job["target_id"]
-                lines.append(f"{emoji} {job['quantity']}x {name} - {status_str} {done_in}")
-            if len(jobs) > 10:
-                lines.append(f"... and {len(jobs) - 10} more")
-            add_multi_field(embed, "Pending Jobs", lines)
+                label = f"{emoji} {info['name'] if info else job['target_id']}"
+            lines.append(f"{job['quantity']}x {label} • {job_owner_label(job['user_id'])}")
+        if len(jobs) > JOB_DISPLAY_LIMIT:
+            lines.append(f"... and {len(jobs) - JOB_DISPLAY_LIMIT} more")
+
+        add_multi_field(
+            embed,
+            # An estimate at the current speed: it moves out if anyone queues
+            # more behind this, and in if the factory levels up on their fees.
+            queue_field_name(pending_items, len(jobs), pending_items / rate),
+            lines,
+            empty_text="Nothing queued.",
+        )
 
         await respond(interaction, self.db, embed=embed)
 
