@@ -24,6 +24,7 @@ from utils.embeds import (
     job_owner_label,
     make_infrastructure_embed,
     queue_field_name,
+    queue_limit_field_value,
     FACTORY_COLOR,
 )
 from utils.responses import respond
@@ -37,13 +38,21 @@ from utils.db_helpers import (
     deduct_user_quantity,
     get_currency_balance,
     charge_user_fee,
+    queue_room,
+    queue_full_message,
 )
 from utils.drills import (
+    DrillScope,
     drill_choices,
     drill_label,
     drill_short_label,
     describe_cost,
     fetch_drill,
+    guild_name_map,
+    is_local_drill,
+    material_breakdown_lines,
+    release_stale_drill_locks,
+    retract_drill,
 )
 
 from data.materials import (
@@ -119,21 +128,16 @@ class FactoryCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT factory_fee, factory_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
+                    "SELECT factory_fee, currency_emoji FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
                 fee_rate = cfg["factory_fee"]
                 currency_emoji = cfg["currency_emoji"]
-                max_queue = cfg["factory_max_queue"]
-                user_queue_row = await tx.fetchone(
-                    "SELECT COALESCE(SUM(quantity), 0) as queued_items FROM production_jobs WHERE guild_id = ? AND user_id = ? AND job_type = 'factory' AND status != 'complete'",
-                    (interaction.guild_id, interaction.user.id),
-                )
-                queued_items = user_queue_row["queued_items"] if user_queue_row else 0
-                if queued_items + quantity > max_queue:
+
+                room = await queue_room(tx, interaction.guild_id, interaction.user.id, "factory", quantity)
+                if not room.fits:
                     await interaction.response.send_message(
-                        f"You can only queue up to {max_queue} items worth of factory recipes per user at once. Complete some jobs first.",
-                        ephemeral=True,
+                        queue_full_message("factory", room), ephemeral=True
                     )
                     return
 
@@ -217,15 +221,25 @@ class FactoryCog(commands.Cog):
         return row["factory_level"]
 
     async def _upgradable_drill_autocomplete(self, interaction: discord.Interaction, current: str):
+        """Drills you can upgrade from here: the ones in your inventory, plus
+        the ones you have placed in THIS server. A drill placed elsewhere is
+        excluded because pulling it out of the ground (below) is only something
+        this command can do to a server it's actually looking at."""
+        rows = await self.db.fetchall(
+            "SELECT * FROM drills WHERE owner_id = ?", (interaction.user.id,)
+        )
         return await drill_choices(
-            self.db, interaction.user.id, current, unplaced_only=True
+            self.db, interaction.user.id, current,
+            scope=DrillScope.LOCAL, guild_id=interaction.guild_id,
+            guild_names=guild_name_map(self.bot, rows),
         )
 
     @factory_group.command(name="upgrade", description="Queue a level-up for one of your drills")
-    @app_commands.describe(drill="Which drill to upgrade - it must be in your inventory, not placed")
+    @app_commands.describe(drill="Which drill to upgrade - in your inventory, or placed in this server")
     @app_commands.autocomplete(drill=_upgradable_drill_autocomplete)
     async def factory_upgrade(self, interaction: discord.Interaction, drill: int):
         have: dict[str, int] = {}
+        retracted: dict[str, int] | None = None
         try:
             async with self.db.transaction() as tx:
                 # The drill is re-read inside the transaction, so its level -
@@ -235,10 +249,11 @@ class FactoryCog(commands.Cog):
                 if row is None:
                     await interaction.response.send_message("That isn't one of your drills.", ephemeral=True)
                     return
-                if row["guild_id"] is not None:
+                # The autocomplete's value is never trusted to have come from
+                # the list offered (see utils/drills.py's module docstring).
+                if not is_local_drill(row, interaction.guild_id):
                     await interaction.response.send_message(
-                        f"**{drill_label(row)}** is placed in a server. Run `/mine remove` first - "
-                        f"it keeps its level and container when you pull it out.",
+                        f"**{drill_label(row)}** is placed in another server - run this there instead.",
                         ephemeral=True,
                     )
                     return
@@ -247,6 +262,27 @@ class FactoryCog(commands.Cog):
                         f"**{drill_label(row)}** is already queued for an upgrade.", ephemeral=True
                     )
                     return
+
+                # A placed drill is pulled out of the ground here rather than
+                # being refused, so a player doesn't have to run /mine remove,
+                # /factory upgrade and /mine place to do one thing. Only the
+                # rule the player sees changes: everything downstream - the
+                # lock, the drain loop, the level-up - still only ever deals
+                # with an unplaced drill, which is the invariant that made the
+                # old refusal cheap to reason about.
+                #
+                # It happens after the ownership and lock checks and inside the
+                # same transaction as the job INSERT below, so an upgrade that
+                # turns out to be unaffordable never leaves the drill sitting
+                # in an inventory it didn't ask to be in.
+                if row["guild_id"] is not None:
+                    retracted = await retract_drill(tx, row)
+                    if retracted is None:
+                        await interaction.response.send_message(
+                            "That drill changed while this was going through. Try again.",
+                            ephemeral=True,
+                        )
+                        return
 
                 level = row["level"]
                 needs = drill_upgrade_cost(row["drill_type"], level)
@@ -265,24 +301,18 @@ class FactoryCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT factory_fee, factory_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
+                    "SELECT factory_fee, currency_emoji FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
                 fee_rate = cfg["factory_fee"]
                 currency_emoji = cfg["currency_emoji"]
-                max_queue = cfg["factory_max_queue"]
 
                 # An upgrade is one item of factory work, so it counts against
                 # the same per-user queue cap as any craft.
-                user_queue_row = await tx.fetchone(
-                    "SELECT COALESCE(SUM(quantity), 0) as queued_items FROM production_jobs WHERE guild_id = ? AND user_id = ? AND job_type = 'factory' AND status != 'complete'",
-                    (interaction.guild_id, interaction.user.id),
-                )
-                queued_items = user_queue_row["queued_items"] if user_queue_row else 0
-                if queued_items + 1 > max_queue:
+                room = await queue_room(tx, interaction.guild_id, interaction.user.id, "factory", 1)
+                if not room.fits:
                     await interaction.response.send_message(
-                        f"You can only queue up to {max_queue} items worth of factory recipes per user at once. Complete some jobs first.",
-                        ephemeral=True,
+                        queue_full_message("factory", room), ephemeral=True
                     )
                     return
 
@@ -358,6 +388,22 @@ class FactoryCog(commands.Cog):
             ),
             inline=False,
         )
+        if retracted is not None:
+            # Named after the fact rather than warned about beforehand: this
+            # only happens on a drill the player chose from a list that said
+            # where it was, and the one thing they'd want to know is what came
+            # out of the ground with it. interaction.guild.name is a cache read,
+            # so it happens here rather than inside the transaction.
+            collected = material_breakdown_lines(retracted)
+            embed.add_field(
+                name="Pulled Out Of The Ground",
+                value=(
+                    f"This drill was mining in **{interaction.guild.name}** and has been returned "
+                    f"to your inventory for the upgrade, keeping its level and container.\n"
+                    + ("\n".join(collected) if collected else "It was empty.")
+                ),
+                inline=False,
+            )
         embed.add_field(
             name="Locked",
             value="This drill can't be placed or modified until the upgrade finishes.",
@@ -409,7 +455,7 @@ class FactoryCog(commands.Cog):
             currency_emoji=currency_emoji,
         )
         embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
-        embed.add_field(name="Queue Limit", value=f"**{max_queue}** items per user", inline=True)
+        embed.add_field(name="Queue Limit", value=queue_limit_field_value(max_queue, level), inline=True)
 
         lines = []
         for job in jobs[:JOB_DISPLAY_LIMIT]:
@@ -519,22 +565,10 @@ class FactoryCog(commands.Cog):
                 (user_id, drill_type),
             )
 
-    async def _release_stale_drill_locks(self):
-        """Frees any drill still pointing at a job that has already finished or
-        no longer exists, which would otherwise lock that drill out of every
-        command forever.
-
-        Queueing and completing an upgrade are each one transaction now, so
-        this shouldn't find anything - it stays as a cheap backstop for rows
-        left behind by the pre-transaction code, and for anything that manages
-        to desync the two in future."""
-        await self.db.execute(
-            "UPDATE drills SET locked_job_id = NULL WHERE locked_job_id IS NOT NULL "
-            "AND locked_job_id NOT IN (SELECT job_id FROM production_jobs WHERE status != 'complete')"
-        )
-
     async def cog_load(self):
-        await self._release_stale_drill_locks()
+        # Job-type-agnostic, so this one call covers scrapper locks as well as
+        # the factory's own upgrade locks - see utils/drills.py.
+        await release_stale_drill_locks(self.db)
 
     async def _maybe_upgrade_factory(self, db, guild_id: int):
         """Takes an executor rather than using self.db, so it reads the fee

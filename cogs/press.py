@@ -35,6 +35,7 @@ from utils.embeds import (
     job_owner_label,
     make_infrastructure_embed,
     queue_field_name,
+    queue_limit_field_value,
     PRESS_COLOR,
 )
 from utils.responses import respond
@@ -48,6 +49,8 @@ from utils.db_helpers import (
     deduct_user_quantity,
     get_currency_balance,
     charge_user_fee,
+    queue_room,
+    queue_full_message,
 )
 
 from data.materials import (
@@ -120,25 +123,17 @@ class PressCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT press_fee, press_max_queue, press_level, press_progress, currency_emoji "
+                    "SELECT press_fee, press_level, press_progress, currency_emoji "
                     "FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
                 fee_rate = cfg["press_fee"]
                 currency_emoji = cfg["currency_emoji"]
-                max_queue = cfg["press_max_queue"]
 
-                user_queue_row = await tx.fetchone(
-                    "SELECT COALESCE(SUM(quantity), 0) as queued_items FROM production_jobs "
-                    "WHERE guild_id = ? AND user_id = ? AND job_type = 'press' AND status != 'complete'",
-                    (interaction.guild_id, interaction.user.id),
-                )
-                queued_items = user_queue_row["queued_items"] if user_queue_row else 0
-                if queued_items + quantity > max_queue:
+                room = await queue_room(tx, interaction.guild_id, interaction.user.id, "press", quantity)
+                if not room.fits:
                     await interaction.response.send_message(
-                        f"You can only have {max_queue} item(s) queued at the press at once. "
-                        f"Wait for your current job to finish.",
-                        ephemeral=True,
+                        queue_full_message("press", room), ephemeral=True
                     )
                     return
 
@@ -282,7 +277,7 @@ class PressCog(commands.Cog):
             inline=True,
         )
         embed.add_field(
-            name="Queue Limit", value=f"**{cfg['press_max_queue']}** items per user", inline=True
+            name="Queue Limit", value=queue_limit_field_value(cfg["press_max_queue"], level), inline=True
         )
 
         # Kept where the other two machines have nothing equivalent: a press job

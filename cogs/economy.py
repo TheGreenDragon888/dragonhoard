@@ -35,6 +35,7 @@ from utils.responses import respond
 from utils.embeds import make_embed, add_multi_field, INVENTORY_COLOR, MARKET_COLOR
 from utils.formatting import format_currency, format_compact_price, DEFAULT_CURRENCY_EMOJI
 from utils.guild_helpers import human_member_count
+from utils.job_board import credit_job_progress
 from utils.drills import drill_cell
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
@@ -54,8 +55,8 @@ from utils.db_helpers import (
 )
 
 from data.materials import (
-    RAW_MATERIALS,
-    SMELTED_MATERIALS,
+    ALL_MATERIALS,
+    TRADEABLE_ORDER,
     INVENTORY_CATEGORIES,
     get_material_info,
     target_stock,
@@ -63,7 +64,14 @@ from data.materials import (
 
 # Only raw and smelted materials are tradeable through the market - component
 # materials and drills are excluded (docs/market.md section 3).
-TRADEABLE_MATERIALS = {**RAW_MATERIALS, **SMELTED_MATERIALS}
+#
+# Built in TRADEABLE_ORDER rather than by merging the two tables, because dict
+# order IS display order here: this one mapping drives /market status's lines
+# and both /market sell's and /market buy's choice lists. That ordering - ores,
+# then smelted, then gemstones, each commonest first - lives in
+# data/materials.py, derived from drop chances and recipes, so retuning either
+# reorders all three surfaces without anyone remembering to.
+TRADEABLE_MATERIALS = {material_id: ALL_MATERIALS[material_id] for material_id in TRADEABLE_ORDER}
 
 # How many drills /inventory lists individually before collapsing the rest
 # into a count, mirroring the pending-jobs cap in /factory status.
@@ -324,6 +332,15 @@ class EconomyCog(commands.Cog):
                 await adjust_server_stock(tx, interaction.guild_id, material.value, quantity)
                 await adjust_currency_balance(tx, interaction.guild_id, interaction.user.id, total_value)
                 await record_minted(tx, interaction.guild_id, total_value)
+
+                # The day's job board task, if this sale counts towards it -
+                # in the same transaction as the sale, so the bonus and the
+                # sale that earned it can never come apart. Returns 0.0 unless
+                # this is the sale that completed it. See utils/job_board.py.
+                bonus = await credit_job_progress(
+                    tx, interaction.guild_id, interaction.user.id,
+                    material.value, quantity, member_count,
+                )
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your inventory changed while that was going through - nothing was sold. Try again.",
@@ -332,10 +349,16 @@ class EconomyCog(commands.Cog):
             return
 
         currency_emoji = await self._get_currency_emoji(interaction.guild_id)
-        await respond(
-            interaction, self.db,
-            content=f"Sold {quantity}x **{info['name']}** to the server for {format_currency(total_value, currency_emoji)}.",
+        message = (
+            f"Sold {quantity}x **{info['name']}** to the server for "
+            f"{format_currency(total_value, currency_emoji)}."
         )
+        if bonus > 0:
+            message += (
+                f"\n📋 That finished today's job board task - "
+                f"**{format_currency(bonus, currency_emoji)}** bonus."
+            )
+        await respond(interaction, self.db, content=message)
 
     @market_group.command(name="buy", description="Buy materials from the server's stock")
     @app_commands.describe(material="What to buy", quantity="How many to buy")
@@ -421,11 +444,11 @@ class EconomyCog(commands.Cog):
             # BUY = what you pay per unit buying from the server (/market buy).
             sell_price_each = self._buy_price(ceiling_price, current_stock, 1, target)
             buy_price_each = self._sell_price(ceiling_price, current_stock, 1, target)
-            sell_str = format_compact_price(sell_price_each)
+            sell_str = f"`{format_compact_price(sell_price_each)}`"
             if current_stock > 0:
-                buy_str = f"{format_compact_price(buy_price_each)} ({current_stock} in stock)"
+                buy_str = f"`{format_compact_price(buy_price_each)}` ({current_stock} in stock)"
             else:
-                buy_str = "N/A"
+                buy_str = "`N/A`"
             lines.append(f"{info['emoji']} {currency_emoji} {sell_str} {currency_emoji} {buy_str}")
 
         embed = make_embed("Server Market", MARKET_COLOR)

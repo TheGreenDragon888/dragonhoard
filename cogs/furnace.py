@@ -17,6 +17,7 @@ from utils.embeds import (
     job_owner_label,
     make_infrastructure_embed,
     queue_field_name,
+    queue_limit_field_value,
     FURNACE_COLOR,
 )
 from utils.responses import respond
@@ -34,6 +35,8 @@ from utils.db_helpers import (
     deduct_server_stock,
     get_currency_balance,
     charge_user_fee,
+    queue_room,
+    queue_full_message,
 )
 
 from data.materials import (
@@ -113,21 +116,16 @@ class FurnaceCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT furnace_fee, furnace_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
+                    "SELECT furnace_fee, currency_emoji FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
                 fee_rate = cfg["furnace_fee"]
                 currency_emoji = cfg["currency_emoji"]
-                max_queue = cfg["furnace_max_queue"]
-                user_queue_row = await tx.fetchone(
-                    "SELECT COALESCE(SUM(quantity), 0) as queued_items FROM production_jobs WHERE guild_id = ? AND user_id = ? AND job_type = 'furnace' AND status != 'complete'",
-                    (interaction.guild_id, interaction.user.id),
-                )
-                queued_items = user_queue_row["queued_items"] if user_queue_row else 0
-                if queued_items + quantity > max_queue:
+
+                room = await queue_room(tx, interaction.guild_id, interaction.user.id, "furnace", quantity)
+                if not room.fits:
                     await interaction.response.send_message(
-                        f"You can only queue up to {max_queue} items worth of furnace recipes per user at once. Complete some jobs first.",
-                        ephemeral=True,
+                        queue_full_message("furnace", room), ephemeral=True
                     )
                     return
 
@@ -245,7 +243,7 @@ class FurnaceCog(commands.Cog):
             currency_emoji=currency_emoji,
         )
         embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
-        embed.add_field(name="Queue Limit", value=f"**{max_queue}** items per user", inline=True)
+        embed.add_field(name="Queue Limit", value=queue_limit_field_value(max_queue, level), inline=True)
 
         lines = []
         for job in jobs[:JOB_DISPLAY_LIMIT]:

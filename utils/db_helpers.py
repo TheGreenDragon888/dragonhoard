@@ -10,9 +10,19 @@ statement standing alone) or a Transaction (all of them committing together).
 Pass a Transaction whenever the caller reads a value and then writes based on
 it - see Database.transaction for why that matters.
 """
+from typing import NamedTuple
+
 import config
 from database.db import Database, InsufficientQuantity, _Executor
-from data.materials import get_material_info
+from data.materials import get_material_info, effective_max_queue
+
+# Every machine whose per-server settings live in <machine>_level, _fee,
+# _fees_collected and _max_queue columns on server_config, and whose queued
+# work shares the production_jobs table. That uniform naming is what lets
+# /setup fee, /setup max_queue and queue_room below all be one implementation
+# instead of four - adding a fifth machine means adding it here and nowhere
+# else.
+MACHINES = ("furnace", "factory", "press", "scrapper")
 
 
 async def ensure_user_row(db: _Executor, user_id: int):
@@ -24,8 +34,79 @@ async def ensure_server_row(db: _Executor, guild_id: int):
     # a database created before a default changed keeps its old column
     # DEFAULT forever, so relying on it would give new servers stale fees.
     await db.execute(
-        "INSERT OR IGNORE INTO server_config (guild_id, furnace_fee, factory_fee) VALUES (?, ?, ?)",
-        (guild_id, config.DEFAULT_FURNACE_FEE, config.DEFAULT_FACTORY_FEE),
+        "INSERT OR IGNORE INTO server_config "
+        "(guild_id, furnace_fee, factory_fee, press_fee, scrapper_fee) VALUES (?, ?, ?, ?, ?)",
+        (
+            guild_id,
+            config.DEFAULT_FURNACE_FEE,
+            config.DEFAULT_FACTORY_FEE,
+            config.DEFAULT_PRESS_FEE,
+            config.DEFAULT_SCRAPPER_FEE,
+        ),
+    )
+
+
+class QueueRoom(NamedTuple):
+    """The answer to "may this user queue `adding` more items here?", along with
+    every number a caller needs to explain the answer."""
+
+    fits: bool
+    queued: int      # items this user already has outstanding on this machine
+    effective: int   # the cap actually enforced: base * level
+    base: int        # what /setup max_queue is set to
+    level: int
+
+
+async def queue_room(db: _Executor, guild_id: int, user_id: int, machine: str, adding: int) -> QueueRoom:
+    """Whether a user has room for `adding` more items on one of this server's
+    machines, counted in ITEMS outstanding rather than jobs - a job queueing ten
+    of something occupies ten of the cap.
+
+    The cap is per user, per guild, per machine, and it scales with the
+    machine's level (see effective_max_queue). status != 'complete' is the
+    liveness filter; the server's own auto-smelt jobs bypass this entirely
+    because they're inserted directly rather than through a command.
+
+    Call this inside the transaction that will do the queueing. It reads that
+    transaction's own writes, and a read-then-write across an await is exactly
+    the race Database.transaction exists to prevent - without it, two commands
+    fired at once both see the same outstanding total and both pass.
+    """
+    if machine not in MACHINES:
+        raise ValueError(f"unknown machine {machine!r}")
+
+    cfg = await db.fetchone(
+        f"SELECT {machine}_max_queue AS base, {machine}_level AS level "
+        f"FROM server_config WHERE guild_id = ?",
+        (guild_id,),
+    )
+    base, level = (cfg["base"], cfg["level"]) if cfg else (0, 1)
+
+    row = await db.fetchone(
+        "SELECT COALESCE(SUM(quantity), 0) AS queued FROM production_jobs "
+        "WHERE guild_id = ? AND user_id = ? AND job_type = ? AND status != 'complete'",
+        (guild_id, user_id, machine),
+    )
+    queued = row["queued"] if row else 0
+
+    effective = effective_max_queue(base, level)
+    return QueueRoom(
+        fits=queued + adding <= effective,
+        queued=queued,
+        effective=effective,
+        base=base,
+        level=level,
+    )
+
+
+def queue_full_message(machine: str, room: QueueRoom) -> str:
+    """The rejection when a queue is full. Names the effective cap and where it
+    came from, because a player who read "5 items" in /setup and is being
+    refused at 15 needs to see the level multiplier to believe the number."""
+    return (
+        f"You can only queue up to {room.effective:,} items worth of {machine} recipes "
+        f"per user at once ({room.base:,} per level, at level {room.level:,}), and you "
+        f"already have {room.queued:,}. Complete some jobs first."
     )
 
 

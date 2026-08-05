@@ -187,14 +187,16 @@ class Database(_Executor):
     """
 
     # production_jobs as schema.sql declares it, for the rebuild below. SQLite
-    # cannot widen a CHECK constraint in place, so admitting a third job type
-    # means building a new table and swapping it. Keep in sync with schema.sql.
+    # cannot widen a CHECK constraint in place, so admitting another job type
+    # means building a new table and swapping it. Keep in sync with schema.sql -
+    # a fresh database gets that CHECK and a migrated one gets this, so the two
+    # have to name exactly the same job types.
     _PRODUCTION_JOBS_REBUILD_DDL = """
         CREATE TABLE production_jobs_new (
             job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id        INTEGER NOT NULL,
             user_id         INTEGER NOT NULL,
-            job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'factory', 'press')),
+            job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'factory', 'press', 'scrapper')),
             target_id       TEXT NOT NULL,
             quantity        INTEGER NOT NULL,
             queued_at       TEXT NOT NULL DEFAULT (datetime('now')),
@@ -292,17 +294,28 @@ class Database(_Executor):
             if version < 2:
                 self._migrate_drill_stacks_to_instances(conn)
 
-            # The hydraulic press. Its per-server settings are plain nullable-
-            # free columns with defaults, which SQLite can add in place.
+            # Per-server settings added to server_config after it first
+            # shipped - the hydraulic press, then the scrapper and the
+            # designated bot channel. All plain columns with defaults (or
+            # nullable), which SQLite can add in place, so each is gated on
+            # simply not being there yet.
             config_columns = {row[1] for row in conn.execute("PRAGMA table_info(server_config)")}
-            press_columns = (
+            added_config_columns = (
                 ("press_level", "INTEGER NOT NULL DEFAULT 1"),
                 ("press_fee", f"REAL NOT NULL DEFAULT {config.DEFAULT_PRESS_FEE}"),
                 ("press_fees_collected", "REAL NOT NULL DEFAULT 0.0"),
                 ("press_max_queue", "INTEGER NOT NULL DEFAULT 1"),
                 ("press_progress", "REAL NOT NULL DEFAULT 0.0"),
+                ("scrapper_level", "INTEGER NOT NULL DEFAULT 1"),
+                ("scrapper_fee", f"REAL NOT NULL DEFAULT {config.DEFAULT_SCRAPPER_FEE}"),
+                ("scrapper_fees_collected", "REAL NOT NULL DEFAULT 0.0"),
+                ("scrapper_max_queue", "INTEGER NOT NULL DEFAULT 5"),
+                # Nullable with no default: NULL means "answer in every
+                # channel", which is what every existing server was doing
+                # before this column existed and should keep doing.
+                ("bot_channel_id", "INTEGER"),
             )
-            for column, definition in press_columns:
+            for column, definition in added_config_columns:
                 if column not in config_columns:
                     conn.execute(f"ALTER TABLE server_config ADD COLUMN {column} {definition}")
 
@@ -316,12 +329,19 @@ class Database(_Executor):
                     "ALTER TABLE server_config ADD COLUMN bot_present INTEGER NOT NULL DEFAULT 1"
                 )
 
-            # Press jobs share production_jobs with the other two machines, but
-            # its job_type CHECK constraint names them explicitly and SQLite
-            # can only widen a CHECK by rebuilding the table. This is the table
-            # holding every in-flight queue entry, so the rebuild copies each
-            # job_id across explicitly and runs inside one transaction.
-            if not self._job_type_allows_press(conn):
+            # Every machine shares production_jobs, but its job_type CHECK
+            # constraint names them explicitly and SQLite can only widen a CHECK
+            # by rebuilding the table. This is the table holding every in-flight
+            # queue entry, so the rebuild copies each job_id across explicitly
+            # and runs inside one transaction.
+            #
+            # Gating on 'scrapper' SUBSUMES the older press migration rather
+            # than dropping it: a database predating the press also predates the
+            # scrapper, so it fails this check too, and the one rebuild writes
+            # the DDL naming all four types. Deleting the separate press gate is
+            # deliberate - two gates against the same rebuild would just make
+            # the second one dead code.
+            if not self._job_type_allows(conn, "scrapper"):
                 conn.execute("BEGIN")
                 try:
                     conn.execute("DROP TABLE IF EXISTS production_jobs_new")
@@ -360,15 +380,25 @@ class Database(_Executor):
                     conn.execute("ROLLBACK")
                     raise
 
+            # user_version deliberately stays at 3 through 1.1. Everything that
+            # release added is structural and gated on introspection above: the
+            # scrapper's columns, bot_channel_id, the widened job_type CHECK,
+            # and two new tables that CREATE TABLE IF NOT EXISTS handles on its
+            # own. The max-queue change is a read-time reinterpretation of a
+            # column that already existed (see effective_max_queue), not a
+            # rewrite of stored data. Bump this only for a migration that has to
+            # CHANGE existing rows and can't tell from the schema alone whether
+            # it already ran.
+
     @staticmethod
-    def _job_type_allows_press(conn: sqlite3.Connection) -> bool:
-        """Whether production_jobs' job_type CHECK already permits press jobs.
+    def _job_type_allows(conn: sqlite3.Connection, job_type: str) -> bool:
+        """Whether production_jobs' job_type CHECK already permits `job_type`.
         Read off the stored CREATE statement rather than attempted by trial
         insert, so this never leaves a stray row behind."""
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'production_jobs'"
         ).fetchone()
-        return bool(row) and "'press'" in row[0]
+        return bool(row) and f"'{job_type}'" in row[0]
 
     @staticmethod
     def _migrate_drill_stacks_to_instances(conn: sqlite3.Connection):

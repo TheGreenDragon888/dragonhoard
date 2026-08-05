@@ -8,7 +8,56 @@ confusion the message exists to remove. Pure arithmetic - no database.
 """
 import unittest
 
-from cogs.economy import EconomyCog, max_affordable
+from cogs.economy import EconomyCog, TRADEABLE_MATERIALS, max_affordable
+from data.materials import (
+    GEMSTONES,
+    ORES,
+    RAW_MATERIALS,
+    SMELTED_MATERIALS,
+    TRADEABLE_ORDER,
+    raw_input_cost,
+)
+
+
+class TradeableOrderTests(unittest.TestCase):
+    """The market's display order. One mapping drives all three surfaces -
+    /market status's lines and both /market sell's and /market buy's choice
+    lists - so these pin the order once for all of them."""
+
+    def test_it_is_exactly_the_raw_and_smelted_materials(self):
+        # Changing the ORDER must not change the SET: components and drills
+        # stay out of the market entirely (docs/market.md section 3).
+        self.assertEqual(set(TRADEABLE_ORDER), set(RAW_MATERIALS) | set(SMELTED_MATERIALS))
+        self.assertEqual(len(TRADEABLE_ORDER), len(set(TRADEABLE_ORDER)))
+
+    def test_it_runs_raw_then_smelted_then_gemstones(self):
+        kinds = [
+            "gem" if m in GEMSTONES else "ore" if m in ORES else "smelted"
+            for m in TRADEABLE_ORDER
+        ]
+        self.assertEqual(kinds, ["ore"] * len(ORES)
+                         + ["smelted"] * len(SMELTED_MATERIALS)
+                         + ["gem"] * len(GEMSTONES))
+
+    def test_ores_and_gemstones_run_commonest_to_rarest(self):
+        for group in (ORES, GEMSTONES):
+            chances = [
+                RAW_MATERIALS[m]["drop_chance"] for m in TRADEABLE_ORDER if m in group
+            ]
+            self.assertEqual(chances, sorted(chances, reverse=True))
+
+    def test_smelted_materials_run_cheapest_to_dearest(self):
+        costs = [raw_input_cost(m) for m in TRADEABLE_ORDER if m in SMELTED_MATERIALS]
+        self.assertEqual(costs, sorted(costs))
+
+    def test_the_market_iterates_in_that_order(self):
+        # dict order IS display order here, so the mapping the commands read
+        # has to preserve it rather than merely contain the same keys.
+        self.assertEqual(tuple(TRADEABLE_MATERIALS), TRADEABLE_ORDER)
+
+    def test_every_tradeable_material_has_a_ceiling_price(self):
+        for material_id, info in TRADEABLE_MATERIALS.items():
+            self.assertIn("market_ceiling_price", info, material_id)
 
 
 class MaxAffordableTests(unittest.TestCase):

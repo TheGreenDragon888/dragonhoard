@@ -8,6 +8,7 @@ import discord
 
 import config
 from utils.formatting import format_currency, format_duration
+from data.materials import effective_max_queue
 
 # Fully saturated brand colors - one per feature area (docs/stylization.md).
 DEFAULT_COLOR = discord.Color(0x00FF3C)    # bot settings, manual, and fallback
@@ -17,7 +18,9 @@ MARKET_COLOR = discord.Color(0xFFE600)     # yellow
 FURNACE_COLOR = discord.Color(0xFF0059)    # purple-red
 FACTORY_COLOR = discord.Color(0xFF4000)    # red-orange
 RECIPE_COLOR = discord.Color(0x00FFEA)     # cyan
-PRESS_COLOR = discord.Color(0x0066FF)      # blue
+PRESS_COLOR = discord.Color(0x0066FF)       # blue
+SCRAPPER_COLOR = discord.Color(0x9EFF00)   # chartreuse
+JOBBOARD_COLOR = discord.Color(0xFF00AA)   # magenta
 
 FOOTER_TEXT = f"Dragonhoard by Isaac Day · Version {config.VERSION}"
 
@@ -79,6 +82,20 @@ def queue_field_name(items: int, jobs: int, wait_hours: float) -> str:
     item_word = "item" if items == 1 else "items"
     job_word = "job" if jobs == 1 else "jobs"
     return f"Queue • {items:,} {item_word} / {jobs:,} {job_word} ({format_duration(wait_hours)} wait)"
+
+
+def queue_limit_field_value(base: int, level: int) -> str:
+    """The "Queue Limit" field on every infrastructure status embed.
+
+    Shows the cap that is actually enforced, with the arithmetic underneath it.
+    The multiplication is otherwise invisible - a manager who set 5 with
+    /setup max_queue and is being allowed 15 has no way to tell that from a
+    bug - and spelling it out is also what advertises that levelling a machine
+    buys queue room as well as speed."""
+    effective = effective_max_queue(base, level)
+    if level <= 1:
+        return f"**{effective:,}** items per user"
+    return f"**{effective:,}** items per user\n({base:,} × level {level:,})"
 
 
 def job_owner_label(user_id: int) -> str:

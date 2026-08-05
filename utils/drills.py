@@ -16,6 +16,8 @@ drill_ids are no longer shown to players anywhere - they're an internal
 identifier that rides along as the autocomplete's hidden value - but that is a
 presentation choice and NOT what makes any of this safe. fetch_drill is.
 """
+import enum
+
 from discord import app_commands
 
 from database.db import Database
@@ -25,7 +27,9 @@ from data.materials import (
     effective_capacity,
     effective_rate,
     get_material_info,
+    roll_raw_material,
 )
+from utils.db_helpers import ensure_user_row, adjust_user_quantity
 
 # Discord truncates a choice name past 100 characters; leave room for the
 # server name, which is the only unbounded part of a label.
@@ -126,30 +130,60 @@ async def fetch_drill(db: Database, drill_id: int, owner_id: int):
     )
 
 
+class DrillScope(enum.Enum):
+    """Which of a player's drills a command is willing to act on.
+
+    This replaced a pair of booleans (unplaced_only / guild_id) that were read
+    as mutually exclusive branches, and so between them could not express LOCAL
+    - the "in your inventory, or placed right here" set that /factory upgrade
+    and /mine attach both need. Stacking a third flag onto two that already
+    interacted was the alternative, and one enum says what each caller means.
+    """
+
+    ANY = "any"            # every drill this user owns, wherever it is
+    UNPLACED = "unplaced"  # sitting in inventory
+    PLACED_HERE = "here"   # placed in guild_id
+    LOCAL = "local"        # unplaced OR placed in guild_id
+
+
+def is_local_drill(drill_row, guild_id: int | None) -> bool:
+    """A drill this player can act on from this server: sitting in their
+    inventory, or placed in the server the command was run in.
+
+    The predicate DrillScope.LOCAL expresses in SQL, for use after fetch_drill.
+    Narrowing an autocomplete list is presentation; this is the enforcement,
+    because the value a user submits need never have come from the list we
+    offered (see the module docstring).
+    """
+    return drill_row["guild_id"] is None or drill_row["guild_id"] == guild_id
+
+
 async def drill_choices(
     db: Database,
     owner_id: int,
     current: str,
     *,
+    scope: DrillScope = DrillScope.ANY,
     guild_id: int | None = None,
-    unplaced_only: bool = False,
     exclude_locked: bool = True,
     require_container: bool = False,
     guild_names: dict[int, str] | None = None,
 ) -> list[app_commands.Choice[int]]:
-    """Builds the drill list for an autocomplete callback.
+    """Builds the drill list for an autocomplete callback, restricted to
+    `scope` (see DrillScope)."""
+    if scope in (DrillScope.PLACED_HERE, DrillScope.LOCAL) and guild_id is None:
+        raise ValueError(f"DrillScope.{scope.name} needs a guild_id")
 
-    guild_id restricts to drills placed in that one server; unplaced_only
-    restricts to drills sitting in inventory. Neither means "any drill this
-    user owns, wherever it is".
-    """
     conditions = ["owner_id = ?"]
     params: list = [owner_id]
 
-    if unplaced_only:
+    if scope is DrillScope.UNPLACED:
         conditions.append("guild_id IS NULL")
-    elif guild_id is not None:
+    elif scope is DrillScope.PLACED_HERE:
         conditions.append("guild_id = ?")
+        params.append(guild_id)
+    elif scope is DrillScope.LOCAL:
+        conditions.append("(guild_id IS NULL OR guild_id = ?)")
         params.append(guild_id)
 
     if exclude_locked:
@@ -229,6 +263,129 @@ def collection_summary_lines(
     if len(ordered) > limit:
         lines.append(f"... and {len(ordered) - limit} more")
     return lines
+
+
+def build_material_breakdown(total_items: int, roll_material=roll_raw_material) -> dict[str, int]:
+    """Rolls `total_items` individual drops and tallies them per material.
+
+    A drill banks a plain count while it mines and only decides WHAT it mined
+    when the count is handed over, so this is what turns "47 items" into an
+    actual haul. Every path that empties a drill goes through it - /collect,
+    /mine remove, and retract_drill below."""
+    breakdown: dict[str, int] = {}
+    for _ in range(max(0, total_items)):
+        material_id = roll_material()
+        breakdown[material_id] = breakdown.get(material_id, 0) + 1
+    return breakdown
+
+
+def material_breakdown_lines(breakdown: dict[str, int], totals: dict[str, int] | None = None) -> list[str]:
+    """One line per material in a haul, sorted by id so the same haul always
+    renders in the same order. Shared by /mine remove, /collect and the
+    /factory upgrade receipt.
+
+    Pass `totals` to append what the player now holds of each, in the same
+    "(N total)" shape the queue receipts use for what's left after a deduction
+    (utils/receipts.py: _material_line). A haul is the one moment a player most
+    wants that number, and without it /collect was reliably followed by
+    /inventory to find out.
+
+    A material missing from `totals` falls back to the plain form rather than
+    claiming a total of zero - the player just received some of it, so zero is
+    the one answer that can't be true."""
+    lines = []
+    for material_id, quantity in sorted(breakdown.items()):
+        info = get_material_info(material_id)
+        if not info:
+            continue
+        line = f"{info['emoji']} **{quantity:,} {info['name']}**"
+        if totals and material_id in totals:
+            line += f" ({totals[material_id]:,} total)"
+        lines.append(line)
+    return lines
+
+
+async def retract_drill(tx, drill_row) -> dict[str, int] | None:
+    """Pulls a placed drill back to its owner's inventory and credits whatever
+    it was holding. Returns the breakdown credited (possibly empty, if the
+    drill was empty), or None if a racing command emptied it first.
+
+    The unplace goes FIRST and carries stored_amount in its WHERE clause. If
+    another command - a /collect, another retraction - already emptied this
+    drill, the guarded UPDATE matches nothing, this returns None and the credit
+    never runs. Crediting first would hand out a second copy of the same haul,
+    which is exactly the bug /mine remove used to have: it read the drill
+    outside its transaction and unplaced it with no stored_amount guard, so a
+    /collect committing in between paid the haul out twice.
+
+    All three columns move in one statement because the drills table CHECKs
+    that an unplaced drill holds nothing - setting guild_id on its own fails
+    the constraint and rolls the caller's whole transaction back.
+
+    Level, container and harvest_progress ride along untouched: they're
+    properties of the drill, and clearing them would only ever cost the player.
+
+    Must be handed a Transaction rather than the Database. The unplace and the
+    credit are one operation, and the materials in a drill exist nowhere but its
+    stored_amount - a failure between the two either duplicates the haul or
+    destroys it.
+    """
+    breakdown = build_material_breakdown(drill_row["stored_amount"])
+    changed = await tx.execute_changes(
+        "UPDATE drills SET guild_id = NULL, stored_amount = 0, is_full = 0 "
+        "WHERE drill_id = ? AND guild_id = ? AND stored_amount = ?",
+        (drill_row["drill_id"], drill_row["guild_id"], drill_row["stored_amount"]),
+    )
+    if not changed:
+        return None
+    if breakdown:
+        await ensure_user_row(tx, drill_row["owner_id"])
+        for material_id, quantity in breakdown.items():
+            await adjust_user_quantity(tx, drill_row["owner_id"], material_id, quantity)
+    return breakdown
+
+
+async def set_container(db, drill_row, container_type: str | None):
+    """Fits or removes a container and re-derives is_full against the new
+    capacity in the same statement.
+
+    That recompute is not optional. The harvest loop only ever selects drills
+    with is_full = 0, so a full drill that gains a container would never mine
+    again; and a drill that loses one while holding more than its bare capacity
+    would sit in the loop's result set forever, doing nothing while /mine status
+    called it "mining".
+
+    The container_type guard makes the swap safe to race: if another command
+    changed the container first, this matches nothing and its transaction rolls
+    back rather than returning the wrong item."""
+    return await db.execute_changes(
+        "UPDATE drills SET container_type = ?, "
+        "is_full = CASE WHEN stored_amount >= ? THEN 1 ELSE 0 END "
+        "WHERE drill_id = ? AND container_type IS ?",
+        (
+            container_type,
+            effective_capacity(container_type),
+            drill_row["drill_id"],
+            drill_row["container_type"],
+        ),
+    )
+
+
+async def release_stale_drill_locks(db):
+    """Frees any drill still pointing at a job that has already finished or no
+    longer exists, which would otherwise lock that drill out of every command
+    forever.
+
+    Queueing and completing a lock-taking job - a /factory upgrade or a
+    /scrapper drill - are each one transaction, so this shouldn't find
+    anything. It stays as a cheap backstop for rows left behind by the
+    pre-transaction code, and for anything that manages to desync the two in
+    future. Deliberately job-type-agnostic: it reads locked_job_id against
+    production_jobs and doesn't care which machine holds the lock."""
+    await db.execute(
+        "UPDATE drills SET locked_job_id = NULL WHERE locked_job_id IS NOT NULL "
+        "AND locked_job_id NOT IN (SELECT job_id FROM production_jobs WHERE status != 'complete')"
+    )
 
 
 def describe_cost(cost: dict[str, int]) -> str:

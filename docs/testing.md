@@ -13,6 +13,8 @@ packages, not the database, not the Discord application.
 | Runs as user | `dragonbot` | `isaac` |
 | Git branch | `main` only | wherever you're working |
 | Slash commands | synced globally (slow) | synced to one test guild (instant) |
+| Custom emoji | each icon's `live_id` | each icon's `beta_id` - see 1c below |
+| `.env` → `BOT_ENVIRONMENT` | unset (defaults to `live`) | `beta` |
 
 The golden rule: **you never edit files in `/opt/dragonhoard`.** That directory
 is a deployment target. Its only job is to be an exact copy of what's on
@@ -62,6 +64,38 @@ Note there is deliberately **no `enable`** here. `enable` means "start on boot",
 which is right for the live bot but wrong for a test bot - you don't want a
 half-finished experiment silently coming back up after a reboot. Start it when
 you want it, stop it when you're done.
+
+### 1c. Uploading beta copies of the game's custom emoji
+
+Custom Discord emoji belong to the application that uploaded them.
+Dragonhoard and Dragonhoard Beta are separate applications, so every
+material's icon has to be uploaded to *both* and ends up with two different
+numeric ids - this is why the live bot's icons don't show up when the beta
+bot sends them.
+
+Every custom emoji in the game is defined once, in `data/materials.py` (and
+one place in `cogs/mining.py`), as a call to `custom_emoji("Name", live_id,
+beta_id)` (see `data/emoji.py`). Right off a fresh clone, every `beta_id` is
+`None`, so on beta every one of those icons renders as `❓` instead of a
+real image - visible proof it hasn't been uploaded to Dragonhoard Beta yet,
+rather than a silent wrong image.
+
+To fix one:
+
+1. Save the icon (it's already been uploaded to the live "Dragonhoard"
+   application, so grab a copy from there - Developer Portal -> Dragonhoard
+   -> Emoji).
+2. Upload it to **Dragonhoard Beta** instead (Developer Portal -> Dragonhoard
+   Beta -> Emoji -> Upload Emoji). Give it the same name as the live one for
+   readability, though Discord only actually needs the id.
+3. Copy the new emoji's id (right-click it in Discord once it's usable
+   somewhere, or read it back from the Developer Portal) and fill it into
+   that item's `beta_id` in `data/materials.py`.
+4. Restart the beta bot and check the icon renders where you'd expect.
+
+`config.IS_BETA` (from `BOT_ENVIRONMENT` in `.env`) is what picks `beta_id`
+over `live_id` - that's also how the bot tells which of the two applications
+it's running as everywhere else this matters.
 
 ## Part 2: The day-to-day loop
 

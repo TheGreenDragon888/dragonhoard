@@ -1,2 +1,10 @@
 discord.py>=2.4.0
 python-dotenv>=1.0.0
+# The IANA timezone database, for zoneinfo.ZoneInfo("America/Phoenix") - the
+# clock the job board's day rolls over on (utils/job_board.py). zoneinfo reads
+# the system copy in /usr/share/zoneinfo when there is one and falls back to
+# this package when there isn't. Minimal container images frequently ship
+# without the system tzdata, and a missing timezone database is not a degraded
+# feature here: ZoneInfo raises at import time, so the bot would fail to start
+# at all. Listing it costs nothing on a host that already has one.
+tzdata>=2024.1

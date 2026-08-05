@@ -28,8 +28,6 @@ come out whole - drills carry the remainder in harvest_progress rather than
 rounding it away (see advance_harvest).
 """
 import logging
-import random
-from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -37,6 +35,7 @@ from discord.ext import commands, tasks
 
 from utils.responses import respond
 from utils.embeds import make_embed, add_multi_field, MINING_COLOR
+from utils.formatting import utc_today
 from utils.guild_helpers import human_member_count
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
@@ -47,6 +46,8 @@ from utils.db_helpers import (
     deduct_user_quantity,
 )
 from utils.drills import (
+    DrillScope,
+    build_material_breakdown,
     capacity_of,
     rate_of,
     collection_summary_lines,
@@ -57,11 +58,14 @@ from utils.drills import (
     fetch_drill,
     guild_name_map,
     container_name,
+    is_local_drill,
+    material_breakdown_lines,
+    retract_drill,
+    set_container,
 )
 
 from data.materials import (
     DRILLS,
-    RAW_MATERIALS,
     STORAGE_CONTAINERS,
     BASE_STORAGE_CAPACITY,
     MAX_DRILLS_PER_USER_PER_SERVER,
@@ -69,8 +73,8 @@ from data.materials import (
     MINING_POOL_CAP_MULTIPLIER,
     advance_harvest,
     effective_capacity,
-    get_material_info,
 )
+from data.emoji import MINING_POOL_EMOJI
 
 log = logging.getLogger("dragonhoard")
 
@@ -90,19 +94,6 @@ COLLECT_HERE_SQL = (
 )
 
 
-def build_material_breakdown(total_items: int, roll_material) -> dict[str, int]:
-    """Rolls `total_items` individual drops and tallies them per material."""
-    breakdown: dict[str, int] = {}
-    for _ in range(max(0, total_items)):
-        material_id = roll_material()
-        breakdown[material_id] = breakdown.get(material_id, 0) + 1
-    return breakdown
-
-
-def _today() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
-
-
 class MiningCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -115,18 +106,6 @@ class MiningCog(commands.Cog):
         self.pool_topup_loop.cancel()
 
     mine_group = app_commands.Group(name="mine", description="Manage mining drills")
-
-    def _roll_raw_material(self) -> str:
-        roll = random.random()
-        cumulative = 0.0
-        for mat_id, info in RAW_MATERIALS.items():
-            cumulative += info["drop_chance"]
-            if roll <= cumulative:
-                return mat_id
-        # RAW_MATERIALS' drop_chance values sum to exactly 1.0, so this only
-        # triggers on float rounding at the roll==1.0 edge - falls back to the
-        # first (most common) material rather than ever returning nothing.
-        return next(iter(RAW_MATERIALS))
 
     async def _retract_guild_drills(self, guild_id: int) -> int:
         """Pulls every drill placed in a server back to its owner's inventory,
@@ -148,24 +127,12 @@ class MiningCog(commands.Cog):
         )
         retracted = 0
         for row in rows:
-            breakdown = build_material_breakdown(row["stored_amount"], self._roll_raw_material)
-
-            # One transaction per drill, and the unplace goes FIRST: if a racing
-            # /collect or /mine remove already emptied this drill, the guarded
-            # UPDATE matches nothing and the credit below never runs. Crediting
-            # first would hand out a second copy of the same haul.
+            # One transaction per drill. retract_drill returns None when a
+            # racing /collect or /mine remove already emptied this one, which is
+            # simply not something to count.
             async with self.db.transaction() as tx:
-                changed = await tx.execute_changes(
-                    "UPDATE drills SET guild_id = NULL, stored_amount = 0, is_full = 0 "
-                    "WHERE drill_id = ? AND guild_id = ? AND stored_amount = ?",
-                    (row["drill_id"], guild_id, row["stored_amount"]),
-                )
-                if not changed:
-                    continue
-                await ensure_user_row(tx, row["owner_id"])
-                for material_id, qty in breakdown.items():
-                    await adjust_user_quantity(tx, row["owner_id"], material_id, qty)
-                retracted += 1
+                if await retract_drill(tx, row) is not None:
+                    retracted += 1
         return retracted
 
     async def _set_guild_presence(self, guild_id: int, present: bool):
@@ -237,29 +204,39 @@ class MiningCog(commands.Cog):
 
     async def _unplaced_drill_autocomplete(self, interaction: discord.Interaction, current: str):
         return await drill_choices(
-            self.db, interaction.user.id, current, unplaced_only=True
+            self.db, interaction.user.id, current, scope=DrillScope.UNPLACED
         )
 
     async def _placed_here_autocomplete(self, interaction: discord.Interaction, current: str):
         return await drill_choices(
-            self.db, interaction.user.id, current, guild_id=interaction.guild_id
+            self.db, interaction.user.id, current,
+            scope=DrillScope.PLACED_HERE, guild_id=interaction.guild_id
         )
 
-    async def _any_drill_autocomplete(self, interaction: discord.Interaction, current: str):
+    async def _local_drill_autocomplete(self, interaction: discord.Interaction, current: str):
+        """Drills you can fit a container to from here: the ones in your
+        inventory, plus the ones you have placed in THIS server.
+
+        Not every drill you own. A container is a physical thing being bolted
+        onto a machine, and a machine standing in another server isn't somewhere
+        you can reach from this one - see is_local_drill, which is what actually
+        enforces that."""
         rows = await self.db.fetchall(
             "SELECT * FROM drills WHERE owner_id = ?", (interaction.user.id,)
         )
         return await drill_choices(
             self.db, interaction.user.id, current,
+            scope=DrillScope.LOCAL, guild_id=interaction.guild_id,
             guild_names=guild_name_map(self.bot, rows),
         )
 
-    async def _containered_drill_autocomplete(self, interaction: discord.Interaction, current: str):
+    async def _local_containered_drill_autocomplete(self, interaction: discord.Interaction, current: str):
         rows = await self.db.fetchall(
             "SELECT * FROM drills WHERE owner_id = ?", (interaction.user.id,)
         )
         return await drill_choices(
             self.db, interaction.user.id, current,
+            scope=DrillScope.LOCAL, guild_id=interaction.guild_id,
             require_container=True,
             guild_names=guild_name_map(self.bot, rows),
         )
@@ -411,7 +388,7 @@ class MiningCog(commands.Cog):
             embed.add_field(name="Other Active Drills in Server", value="\n".join(lines), inline=False)
 
         embed.add_field(
-            name="<:MiningBlock:1523436645729173514> Server Mining Pool",
+            name=f"{MINING_POOL_EMOJI} Server Mining Pool",
             value=f"{pool_remaining}/{pool_cap} raw materials remaining",
             inline=False,
         )
@@ -422,40 +399,35 @@ class MiningCog(commands.Cog):
     @app_commands.describe(drill="Which drill to remove")
     @app_commands.autocomplete(drill=_placed_here_autocomplete)
     async def mine_remove(self, interaction: discord.Interaction, drill: int):
-        row = await fetch_drill(self.db, drill, interaction.user.id)
-        if row is None or row["guild_id"] != interaction.guild_id:
-            await interaction.response.send_message(
-                "You don't have that drill placed in this server.", ephemeral=True
-            )
-            return
-        if row["locked_job_id"] is not None:
-            await interaction.response.send_message(
-                f"**{drill_label(row)}** is being upgraded in the factory - it can't be removed until that finishes.",
-                ephemeral=True,
-            )
-            return
-
-        collected_breakdown = build_material_breakdown(row["stored_amount"], self._roll_raw_material)
-
-        # Crediting the contents and emptying the drill commit together - the
-        # drill's stored_amount is the only record of them, so a failure
-        # between the two would either duplicate the haul or destroy it.
+        # The drill is read INSIDE the transaction, so the stored_amount that
+        # decides the haul is the one retract_drill then guards its UPDATE on.
+        # Reading it outside is how this used to hand the same haul out twice:
+        # a /collect committing in between zeroed the drill, and the unplace -
+        # which guarded only on guild_id - still matched and credited a
+        # breakdown built from the pre-collect amount.
         async with self.db.transaction() as tx:
-            await ensure_user_row(tx, interaction.user.id)
-            for material_id, qty in collected_breakdown.items():
-                await adjust_user_quantity(tx, interaction.user.id, material_id, qty)
+            row = await fetch_drill(tx, drill, interaction.user.id)
+            if row is None or row["guild_id"] != interaction.guild_id:
+                await interaction.response.send_message(
+                    "You don't have that drill placed in this server.", ephemeral=True
+                )
+                return
+            if row["locked_job_id"] is not None:
+                await interaction.response.send_message(
+                    f"**{drill_label(row)}** is busy in the factory - it can't be removed until that finishes.",
+                    ephemeral=True,
+                )
+                return
 
             # Back to the inventory as the same drill, keeping its level and
             # container - that persistence is the whole reason drills are
-            # tracked per instance. harvest_progress rides along too; it's a
-            # property of the drill, and clearing it would only ever cost the
-            # player. The guild_id guard makes this a no-op if the drill was
-            # already pulled out by a racing command.
-            await tx.execute(
-                "UPDATE drills SET guild_id = NULL, stored_amount = 0, is_full = 0 "
-                "WHERE drill_id = ? AND guild_id = ?",
-                (row["drill_id"], interaction.guild_id),
-            )
+            # tracked per instance.
+            collected_breakdown = await retract_drill(tx, row)
+            if collected_breakdown is None:
+                await interaction.response.send_message(
+                    "That drill changed while this was going through. Try again.", ephemeral=True
+                )
+                return
 
         embed = make_embed("Drill Removed", MINING_COLOR)
         embed.add_field(
@@ -463,48 +435,15 @@ class MiningCog(commands.Cog):
             value=f"{DRILLS[row['drill_type']]['emoji']} **{drill_short_label(row)}** returned to your inventory",
             inline=False,
         )
-
-        if collected_breakdown:
-            lines = []
-            for mat_id, qty in sorted(collected_breakdown.items()):
-                info = get_material_info(mat_id)
-                if info:
-                    lines.append(f"{info['emoji']} {qty}x {info['name']}")
-            embed.add_field(name="Items Collected", value="\n".join(lines), inline=False)
-        else:
-            embed.add_field(name="Items Collected", value="None", inline=False)
-
-        await respond(interaction, self.db, embed=embed)
-
-    @staticmethod
-    async def _set_container(db, drill_row, container_type: str | None):
-        """Fits or removes a container and re-derives is_full against the new
-        capacity in the same statement.
-
-        That recompute is not optional. The harvest loop only ever selects
-        drills with is_full = 0, so a full drill that gains a container would
-        never mine again; and a drill that loses one while holding more than
-        its bare capacity would sit in the loop's result set forever, doing
-        nothing while /mine status called it "mining".
-
-        The container_type guard makes the swap safe to race: if another
-        command changed the container first, this matches nothing and its
-        transaction rolls back rather than returning the wrong item."""
-        return await db.execute_changes(
-            "UPDATE drills SET container_type = ?, "
-            "is_full = CASE WHEN stored_amount >= ? THEN 1 ELSE 0 END "
-            "WHERE drill_id = ? AND container_type IS ?",
-            (
-                container_type,
-                effective_capacity(container_type),
-                drill_row["drill_id"],
-                drill_row["container_type"],
-            ),
+        lines = material_breakdown_lines(collected_breakdown)
+        embed.add_field(
+            name="Items Collected", value="\n".join(lines) if lines else "None", inline=False
         )
+        await respond(interaction, self.db, embed=embed)
 
     @mine_group.command(name="attach", description="Fit a storage container to one of your drills")
     @app_commands.describe(drill="Which drill to fit", container="Which container to fit")
-    @app_commands.autocomplete(drill=_any_drill_autocomplete)
+    @app_commands.autocomplete(drill=_local_drill_autocomplete)
     @app_commands.choices(container=[
         app_commands.Choice(name=info["name"], value=key) for key, info in STORAGE_CONTAINERS.items()
     ])
@@ -518,9 +457,18 @@ class MiningCog(commands.Cog):
         if row is None:
             await interaction.response.send_message("That isn't one of your drills.", ephemeral=True)
             return
+        # The autocomplete only offers local drills, but its value is never
+        # trusted to have come from the list we offered (see utils/drills.py's
+        # module docstring) - this is what actually enforces the restriction.
+        if not is_local_drill(row, interaction.guild_id):
+            await interaction.response.send_message(
+                f"**{drill_label(row)}** is placed in another server - run this there instead.",
+                ephemeral=True,
+            )
+            return
         if row["locked_job_id"] is not None:
             await interaction.response.send_message(
-                f"**{drill_label(row)}** is being upgraded in the factory - fit the container once that finishes.",
+                f"**{drill_label(row)}** is busy in the factory - fit the container once that finishes.",
                 ephemeral=True,
             )
             return
@@ -547,7 +495,7 @@ class MiningCog(commands.Cog):
                     )
                     return
 
-                if not await self._set_container(tx, row, container.value):
+                if not await set_container(tx, row, container.value):
                     await interaction.response.send_message(
                         "That drill's container changed while this was going through. Try again.",
                         ephemeral=True,
@@ -584,11 +532,21 @@ class MiningCog(commands.Cog):
 
     @mine_group.command(name="detach", description="Pull the storage container off one of your drills")
     @app_commands.describe(drill="Which drill to pull the container from")
-    @app_commands.autocomplete(drill=_containered_drill_autocomplete)
+    @app_commands.autocomplete(drill=_local_containered_drill_autocomplete)
     async def mine_detach(self, interaction: discord.Interaction, drill: int):
         row = await fetch_drill(self.db, drill, interaction.user.id)
         if row is None:
             await interaction.response.send_message("That isn't one of your drills.", ephemeral=True)
+            return
+        # Detach follows the same rule as attach rather than letting you always
+        # pull your own container back: one rule to learn, and the paired
+        # commands offer identical lists. Nothing gets stranded by it - leaving
+        # a server retracts every drill in it, container and all.
+        if not is_local_drill(row, interaction.guild_id):
+            await interaction.response.send_message(
+                f"**{drill_label(row)}** is placed in another server - run this there instead.",
+                ephemeral=True,
+            )
             return
         if row["container_type"] is None:
             await interaction.response.send_message(
@@ -597,7 +555,7 @@ class MiningCog(commands.Cog):
             return
         if row["locked_job_id"] is not None:
             await interaction.response.send_message(
-                f"**{drill_label(row)}** is being upgraded in the factory - pull the container once that finishes.",
+                f"**{drill_label(row)}** is busy in the factory - pull the container once that finishes.",
                 ephemeral=True,
             )
             return
@@ -610,7 +568,7 @@ class MiningCog(commands.Cog):
             # Pull it off first: if another command got there already this
             # matches nothing, and the refund below never happens - otherwise
             # racing detaches would each hand back a copy of the same one.
-            if not await self._set_container(tx, row, None):
+            if not await set_container(tx, row, None):
                 await interaction.response.send_message(
                     "That drill's container changed while this was going through. Try again.",
                     ephemeral=True,
@@ -695,12 +653,27 @@ class MiningCog(commands.Cog):
                     continue
                 hauls.append((d["guild_id"], d["stored_amount"]))
                 total_collected += d["stored_amount"]
-                drill_breakdown = build_material_breakdown(d["stored_amount"], self._roll_raw_material)
+                drill_breakdown = build_material_breakdown(d["stored_amount"])
                 for material_id, qty in drill_breakdown.items():
                     collected_breakdown[material_id] = collected_breakdown.get(material_id, 0) + qty
 
             for material_id, qty in collected_breakdown.items():
                 await adjust_user_quantity(tx, interaction.user.id, material_id, qty)
+
+            # What the player now holds of everything that just came in, read
+            # after the credits and inside the same transaction so the numbers
+            # on the embed are the ones that were actually committed. One query
+            # rather than one per material: a drill only ever produces raw
+            # materials, so this IN list is at most six long.
+            totals: dict[str, int] = {}
+            if collected_breakdown:
+                placeholders = ",".join("?" * len(collected_breakdown))
+                rows = await tx.fetchall(
+                    f"SELECT material_id, quantity FROM user_materials "
+                    f"WHERE user_id = ? AND material_id IN ({placeholders})",
+                    (interaction.user.id, *collected_breakdown),
+                )
+                totals = {row["material_id"]: row["quantity"] for row in rows}
 
         # Naming the servers reads the gateway cache, so it happens after the
         # transaction has committed - see the note on Database.transaction.
@@ -713,13 +686,7 @@ class MiningCog(commands.Cog):
         if server_count > 1:
             embed.description += f" across **{server_count}** servers"
 
-        lines = []
-        for mat_id in sorted(collected_breakdown.keys()):
-            qty = collected_breakdown[mat_id]
-            info = get_material_info(mat_id)
-            if info:
-                lines.append(f"{info['emoji']} {qty}x {info['name']}")
-
+        lines = material_breakdown_lines(collected_breakdown, totals)
         if lines:
             add_multi_field(embed, "Materials", lines)
 
@@ -743,7 +710,7 @@ class MiningCog(commands.Cog):
         capped at MINING_POOL_CAP_MULTIPLIER times that daily amount. Bots
         are excluded from the count (utils/guild_helpers.py) the same way
         the market's target stock excludes them."""
-        today = _today()
+        today = utc_today()
         for guild in self.bot.guilds:
             await ensure_server_row(self.db, guild.id)
 

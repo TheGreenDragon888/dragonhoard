@@ -17,7 +17,8 @@ The core loop:
 1. **Mine** — `/mine place` puts a drill in the ground (your first Iron Drill is free). It mines on its own, online or not, pulling from a server-wide raw-material pool that tops up daily.
 2. **Collect** — `/collect` empties everything your drills have produced into your inventory.
 3. **Sell** — `/market sell` sells materials to the server for currency. The server is itself an economic actor: buying from players is the *only* way new currency enters circulation, and it resells its stock back at a markup via `/market buy`.
-4. **Reinvest** — smelt ore in the `/furnace`, craft better gear in the `/factory`, compress materials into gems with the hydraulic `/press`, and upgrade your drills so the whole loop runs faster. Production fees burn currency back out of the economy.
+4. **Reinvest** — smelt ore in the `/furnace`, craft better gear in the `/factory`, compress materials into gems with the hydraulic `/press`, break what you no longer want back down in the `/scrapper`, and upgrade your drills so the whole loop runs faster. Production fees burn currency back out of the economy.
+5. **Check the board** — `/jobboard` shows the one task your server is paying a bonus for today. Everyone can claim it, once each.
 
 Look anything up in-game with `/recipe` (the recipe book) or the built-in manual: `/help`, `/manual`, or `/man` — same book, three names.
 
@@ -33,12 +34,15 @@ And `/honk` plays a honk. No further questions.
 | `/furnace smelt\|status\|queue` | Smelt ore (consumes coal) |
 | `/factory craft\|upgrade\|status\|queue` | Craft gear and drill upgrades |
 | `/press craft\|status\|queue` | Compress materials into gems |
-| `/recipe factory <section>\|furnace\|press` | The recipe book |
+| `/scrapper scrap\|drill\|status\|queue` | Recycle components and drills back into materials |
+| `/jobboard` | Today's paid task for this server |
+| `/recipe factory <section>\|furnace\|press\|scrapper` | The recipe book |
 | `/help`, `/manual`, `/man` | The in-Discord manual |
-| `/setup currency\|fee\|max_queue\|messages` | Server-manager configuration |
+| `/changelog [version]` | What changed in each release |
+| `/setup currency\|channel\|fee\|max_queue\|messages` | Server-manager configuration |
 | `/honk` | Honk |
 
-By default every response is private (ephemeral) so the bot never clutters a channel; a server manager can flip that with `/setup messages public`.
+By default every response is private (ephemeral) so the bot never clutters a channel; a server manager can flip that with `/setup messages public`, or confine the bot to one channel entirely with `/setup channel`.
 
 ## Project structure
 
@@ -61,20 +65,25 @@ dragonhoard/
 │   ├── embeds.py             # Embed colors, footer, field helpers
 │   ├── formatting.py         # Currency/number display, job durations and ETAs
 │   ├── guild_helpers.py      # Per-guild config lookups
+│   ├── channel_guard.py      # The designated-bot-channel check (one place, on the command tree)
+│   ├── job_board.py          # Posting and claiming the daily job
 │   ├── receipts.py           # Job receipt embeds
 │   └── responses.py          # Public-vs-ephemeral response handling
 ├── assets/                   # Files the bot sends, plus branding (logo, banner)
 ├── docs/                     # Design docs (market, mining, stylization, deployment, ...)
 ├── tests/                    # unittest suite
 └── cogs/                     # One file per command group ("cog" = discord.py's plugin unit)
-    ├── setup.py              # /setup currency, /setup fee, /setup max_queue, /setup messages
+    ├── setup.py              # /setup currency, /setup channel, /setup fee, /setup max_queue, /setup messages
     ├── economy.py            # /balance, /inventory, /market sell|buy|status
     ├── mining.py             # /mine place|status|remove|attach|detach, /collect
     ├── furnace.py            # /furnace smelt|status|queue
     ├── factory.py            # /factory craft|upgrade|status|queue
     ├── press.py              # /press craft|status|queue (the hydraulic press)
-    ├── recipe.py             # /recipe factory|furnace|press (the recipe book)
+    ├── scrapper.py           # /scrapper scrap|drill|status|queue (recycling)
+    ├── jobboard.py           # /jobboard (the daily paid task)
+    ├── recipe.py             # /recipe factory|furnace|press|scrapper (the recipe book)
     ├── manual.py             # /help, /manual, /man (the same manual under three names)
+    ├── changelog.py          # /changelog (release notes, from 1.1 onward)
     └── fun.py                # /honk (and anything else that's purely for fun)
 ```
 

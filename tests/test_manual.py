@@ -19,8 +19,11 @@ from cogs.mining import MiningCog
 from cogs.furnace import FurnaceCog
 from cogs.factory import FactoryCog
 from cogs.press import PressCog
+from cogs.scrapper import ScrapperCog
+from cogs.jobboard import JobBoardCog
 from cogs.recipe import RecipeCog
 from cogs.manual import ManualCog
+from cogs.changelog import ChangelogCog
 from cogs.fun import FunCog
 
 from data.manual import SECTIONS, DEFAULT_SECTION, build_section_embed
@@ -34,8 +37,11 @@ COGS = (
     FurnaceCog,
     FactoryCog,
     PressCog,
+    ScrapperCog,
+    JobBoardCog,
     RecipeCog,
     ManualCog,
+    ChangelogCog,
     FunCog,
 )
 

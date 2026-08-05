@@ -49,6 +49,49 @@ single largest ungoverned faucet in the current design, leaving furnace
 fees, factory fees, and the market (below) as the primary — and now much
 more legible — forces shaping the money supply.
 
+### The daily job board (1.1)
+
+The job board is the second faucet the bot has, and the only one that isn't
+the market itself. Once per day a server posts a task — sell it N units
+of a material it is short of — and pays every player who completes it a
+bonus of that material's base ceiling price times N, once each, on top of
+what the sale already paid.
+
+The day rolls over at **midnight Arizona time** (`JOB_BOARD_TIMEZONE` in
+`utils/job_board.py`), chosen so the reset lands at a time that means
+something to the people playing. Note this is deliberately *not* the mining
+pool's schedule, which still tops up on UTC midnight — the two used to share
+one definition of "today" and no longer do.
+
+It is a faucet by design, so it is bounded by construction rather than by
+tuning:
+
+- **It cannot outpace what the goods are worth.** A normal sale pays between
+  half and one times the ceiling price per unit, so the bonus is at most a
+  100% top-up on the day's sale and never more than the goods' full ceiling
+  value. There is no configuration under which it pays for something that
+  wasn't produced.
+- **It requires real production.** The only way to claim it is to put
+  materials into the market, which raises the server's stock and lowers the
+  price it will pay next time — so the faucet partly closes its own tap.
+- **It is capped per player per day.** Not a rate that scales with activity,
+  a single fixed payout.
+- **Gemstones are excluded from it entirely.** Their ceiling prices run from
+  5,500 to 500,000 against ore at 0.01, so a single gemstone task would mint
+  more in one day than every other faucet combined. `JOB_BOARD_MATERIALS` in
+  `data/materials.py` is ores and smelted materials only.
+
+The quantity asked for is 10% of the material's target stock, which scales
+with member count. That keeps the task proportionate on small servers, but
+it also means both the task and the reward grow linearly with server size
+while one player's mining capacity does not — above roughly fifty members
+the ore tasks pass what a strong player can mine in a day. The lever if that
+becomes a problem is a maximum quantity (around 600 units), not a smaller
+fraction, since a clamp caps the task and the reward together.
+
+Every payout goes through `record_minted`, so section 4's accounting sees
+it.
+
 ---
 
 ## 2. Relevance to the Future Exchange
@@ -186,12 +229,12 @@ figures are worth tracking on an ongoing basis:
 - **Total currency in circulation** — the sum of all user currency
   balances within the server, representing the total money supply.
 - **Total currency minted (all-time and recent)** — cumulative currency
-  created through all faucets (market purchases from users, and any
-  future faucets), both as a running lifetime total and as a recent-window
-  figure to spot acceleration.
+  created through all faucets (market purchases from users, daily job board
+  rewards, and any future faucets), both as a running lifetime total and as
+  a recent-window figure to spot acceleration.
 - **Total currency burned (all-time and recent)** — cumulative currency
-  removed through all sinks (furnace fees, factory fees, market resale to
-  users), tracked the same way.
+  removed through all sinks (furnace, factory, press and scrapper fees, and
+  market resale to users), tracked the same way.
 - **Net mint/burn delta** — minted minus burned, ideally tracked over a
   rolling recent window rather than only all-time, since an all-time
   number can mask a recently-worsening trend.
@@ -209,9 +252,12 @@ figures are worth tracking on an ongoing basis:
   transactions through the server market over a given window, indicating
   how actively the market mechanic is actually being used relative to
   other parts of the economy.
-- **Furnace/factory fee volume** — currency drained through infrastructure
-  fees over a given window, useful both as a sink metric and as a possible
-  future input for calculating other dynamic values.
+- **Infrastructure fee volume** — currency drained through furnace, factory,
+  press and scrapper fees over a given window, useful both as a sink metric
+  and as a possible future input for calculating other dynamic values.
+- **Job board completion rate** — how many of a server's active players
+  claim the daily bonus, which is both the size of that faucet and a
+  reasonable proxy for how many people are playing on any given day.
 - **Active economic participants** — count of users who took an
   economically meaningful action (mined, smelted, crafted, or traded
   through the market) within a recent window, as a healthier engagement

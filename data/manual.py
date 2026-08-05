@@ -29,6 +29,8 @@ from utils.embeds import (
     FACTORY_COLOR,
     RECIPE_COLOR,
     PRESS_COLOR,
+    SCRAPPER_COLOR,
+    JOBBOARD_COLOR,
 )
 
 from data.materials import (
@@ -160,9 +162,9 @@ _add(ManualSection(
         ManualCommand(
             "/collect", "/collect [here]",
             "Empties every drill you have placed - in every server, not just this one - into "
-            "your inventory at once, and tells you what came from where. This is the command "
-            "you'll run most. Set `here` to True to collect only from your drills in this "
-            "server.",
+            "your inventory at once, tells you what came from where, and shows what you now "
+            "hold of each material altogether. This is the command you'll run most. Set "
+            "`here` to True to collect only from your drills in this server.",
         ),
         ManualCommand(
             "/mine remove", "/mine remove <drill>",
@@ -369,6 +371,37 @@ _add(ManualSection(
 
 
 _add(ManualSection(
+    key="jobboard",
+    label="Job Board",
+    emoji="📋",
+    color=JOBBOARD_COLOR,
+    summary="A daily task the server pays a bonus for",
+    body=(
+        "Every day, your server posts one job: sell it a certain amount of a material it's "
+        "running short of. Finish it and you're paid a bonus on top of what the sale itself "
+        "earned you.\n\n"
+        "The bonus is the material's full base price for every unit the job asked for, which is "
+        "roughly what the sale paid all over again - so a job you were going to do anyway is "
+        "worth doing today instead.\n\n"
+        "You complete it through `/market sell` like any other sale; there's no separate "
+        "hand-in. Progress adds up across as many sales as you like, so ten now and forty "
+        "later counts the same as fifty at once.\n\n"
+        "**Everyone can claim it, but only once each.** It isn't a race - the job doesn't run "
+        "out when the first player finishes it. A new one is posted at midnight Arizona time, and "
+        "unfinished progress doesn't carry over.\n\n"
+        "Which material gets asked for leans towards whatever the server's warehouse is "
+        "shortest on, so the job board and `/market status` usually point the same way."
+    ),
+    commands=(
+        ManualCommand(
+            "/jobboard", "/jobboard",
+            "Today's job, what it pays, and how far into it you are.",
+        ),
+    ),
+))
+
+
+_add(ManualSection(
     key="inventory",
     label="Inventory & Balance",
     emoji="🎒",
@@ -420,6 +453,68 @@ _add(ManualSection(
             "/recipe press", "/recipe press",
             "Every press recipe, with how many press-days each one occupies the press for.",
         ),
+        ManualCommand(
+            "/recipe scrapper", "/recipe scrapper",
+            "What the scrapper hands back for every item it accepts. Worth a look before "
+            "scrapping anything - some things come back better than others.",
+        ),
+    ),
+))
+
+
+_add(ManualSection(
+    key="scrapper",
+    label="Scrapper",
+    emoji="♻️",
+    color=SCRAPPER_COLOR,
+    summary="Break components and drills back down into materials",
+    body=(
+        "The scrapper is the factory in reverse. Feed it a component, a container, an upgrade "
+        "pack or a whole drill, and it gives you back **half** of what that thing was made "
+        "from.\n\n"
+        "It exists because components and drills can't be sold. The market only deals in raw "
+        "and smelted materials, so before the scrapper a mis-planned batch of drill bits or a "
+        "drill you'd outgrown just sat in your inventory forever. Now it's metal again.\n\n"
+        "It only undoes **one step** at a time. Scrapping an Iron Drill gives you a Drill "
+        "Chassis; scrapping that chassis gives you iron and copper; scrapping the iron gives "
+        "you ore. Chain it as far down as you need to go.\n\n"
+        "Two things are worth knowing before you commit. **A drill loses its levels** - a "
+        "Level 8 drill comes back as exactly the same parts as a Level 1, so upgrade the drill "
+        "you mean to keep. And **you never lose a gemstone to it**: the scrapper always returns "
+        "at least one of a recipe's most valuable part, so a Ruby Container gives its ruby "
+        "back. That same rule is what makes scrapping a drill worth anything at all, since a "
+        "drill's recipe is one of each part and half of one is nothing.\n\n"
+        "Like the other machines it takes a fee, works through a queue, and levels up on the "
+        "fees it collects - a level 1 scrapper gets through 2 items an hour, a level 2 gets "
+        "through 4."
+    ),
+    commands=(
+        ManualCommand(
+            "/scrapper scrap", "/scrapper scrap <item> <quantity>",
+            "Queues components, containers or upgrade packs to be broken down. They leave your "
+            "inventory when you queue them, like anything else at a machine.",
+        ),
+        ManualCommand(
+            "/scrapper drill", "/scrapper drill <drill>",
+            "Breaks down one of your drills. It has to be in your inventory, not placed - "
+            "`/mine remove` first. Any container on it is pulled off and handed back intact.",
+        ),
+        ManualCommand(
+            "/scrapper status", "/scrapper status",
+            "The scrapper's level, speed, fee and everything currently waiting in it.",
+        ),
+        ManualCommand(
+            "/scrapper queue", "/scrapper queue",
+            "The same page as `/scrapper status`, under the name you'll reach for when you "
+            "just want to know what's in the machine.",
+        ),
+    ),
+    notes=(
+        (
+            "This is permanent",
+            "A scrapped drill is gone, along with every level you put into it. The scrapper "
+            "will not stop you.",
+        ),
     ),
 ))
 
@@ -440,7 +535,11 @@ _add(ManualSection(
         "machines that never improve, and one that charges too much prices its players out - "
         "the fee is the main dial an admin has.\n\n"
         "Replies from the bot are private by default so it stays out of the way. A server "
-        "with a dedicated bot channel may prefer to make them public."
+        "with a dedicated bot channel may prefer to make them public.\n\n"
+        "Dragonhoard answers in every channel unless an admin points it at one with "
+        "`/setup channel`. That's a tidiness setting rather than a security one - it keeps the "
+        "bot's traffic in one place - and `/setup` and the manual always work anywhere, so "
+        "it's never possible to lock yourself out with it."
     ),
     commands=(
         ManualCommand(
@@ -453,14 +552,20 @@ _add(ManualSection(
             "Names this server's currency and picks the emoji shown beside it.",
         ),
         ManualCommand(
+            "/setup channel", "/setup channel [channel]",
+            "Restricts the bot to one channel, and to threads inside it. Leave the channel "
+            "blank to lift the restriction and allow every channel again.",
+        ),
+        ManualCommand(
             "/setup fee", "/setup fee <infrastructure> <amount>",
-            "Sets what the furnace, factory or press charges. Per item produced - except the "
-            "press, which charges per press-day.",
+            "Sets what the furnace, factory, press or scrapper charges. Per item produced - "
+            "except the press, which charges per press-day.",
         ),
         ManualCommand(
             "/setup max_queue", "/setup max_queue <infrastructure> <amount>",
             "Limits how many items one player can have queued on a machine at a time, so no "
-            "one person can tie it up.",
+            "one person can tie it up. Multiplied by the machine's level, so a machine that "
+            "gets faster gets roomier too.",
         ),
     ),
 ))
@@ -480,6 +585,11 @@ _add(ManualSection(
         ManualCommand(
             "/honk", "/honk",
             "Honks. The bot sends the sound as an audio clip, so hit play on it.",
+        ),
+        ManualCommand(
+            "/changelog", "/changelog [version]",
+            "What changed in each version of Dragonhoard, newest first. Worth a look if "
+            "something works differently to how you remember it.",
         ),
     ),
 ))

@@ -51,6 +51,18 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- press jobs run for days, so an in-memory total reset by every restart
     -- would mean a diamond never finishes on a bot that restarts weekly.
     press_progress      REAL NOT NULL DEFAULT 0.0,
+    -- The scrapper: recycles components, containers and drills back into the
+    -- materials they were made from. Keep scrapper_fee's DEFAULT in sync with
+    -- DEFAULT_SCRAPPER_FEE in config.py.
+    scrapper_level          INTEGER NOT NULL DEFAULT 1,
+    scrapper_fee            REAL NOT NULL DEFAULT 0.10,
+    scrapper_fees_collected REAL NOT NULL DEFAULT 0.0,
+    scrapper_max_queue      INTEGER NOT NULL DEFAULT 5,
+    -- The one channel Dragonhoard answers in. NULL (the default) means it
+    -- answers anywhere, which is what every server starts out doing. Set with
+    -- /setup channel; cleared automatically if that channel is deleted. See
+    -- utils/channel_guard.py for what is and isn't restricted.
+    bot_channel_id          INTEGER,
     -- 0/1 boolean: whether bot responses are public in this server instead of
     -- ephemeral (private). Off by default - see utils/responses.py.
     public_messages         INTEGER NOT NULL DEFAULT 0,
@@ -89,6 +101,39 @@ CREATE TABLE IF NOT EXISTS server_material_storage (
     material_id     TEXT NOT NULL,
     quantity        INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, material_id)
+);
+
+-- The daily job board: one task per server per UTC day, asking players to sell
+-- the market a material it's short of. Posted lazily the first time anyone
+-- looks at the board or sells into it (see utils/job_board.py) rather than by a
+-- background loop - unlike the mining pool, a task that nobody has looked at
+-- doesn't need to have accrued anything.
+--
+-- quantity and reward are frozen at posting time rather than recomputed on
+-- read, because both derive from member count: without that, someone joining
+-- halfway through the day would move the goalposts on a player already partway
+-- through the task.
+CREATE TABLE IF NOT EXISTS daily_jobs (
+    guild_id        INTEGER NOT NULL,
+    job_date        TEXT NOT NULL,      -- UTC ISO date, same convention as mining_pool_last_topup
+    material_id     TEXT NOT NULL,
+    quantity        INTEGER NOT NULL,
+    reward          REAL NOT NULL,      -- the material's market_ceiling_price * quantity
+    posted_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, job_date)
+);
+
+-- One row per user who has sold ANY of the day's material, so progress
+-- accumulates across as many /market sell calls as it takes. claimed_at is the
+-- once-per-user guard: the payout UPDATE carries "claimed_at IS NULL" in its
+-- WHERE clause, so two sells racing can't both pay the reward out.
+CREATE TABLE IF NOT EXISTS daily_job_progress (
+    guild_id        INTEGER NOT NULL,
+    job_date        TEXT NOT NULL,
+    user_id         INTEGER NOT NULL,
+    sold            INTEGER NOT NULL DEFAULT 0,
+    claimed_at      TEXT,
+    PRIMARY KEY (guild_id, job_date, user_id)
 );
 
 -- One row per drill for that drill's entire lifetime. A drill is never a
@@ -132,13 +177,15 @@ CREATE TABLE IF NOT EXISTS production_jobs (
     job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id        INTEGER NOT NULL,
     user_id         INTEGER NOT NULL,
-    job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'factory', 'press')),
+    job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'factory', 'press', 'scrapper')),
     target_id       TEXT NOT NULL,
     quantity        INTEGER NOT NULL,
     queued_at       TEXT NOT NULL DEFAULT (datetime('now')),
     status          TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'in_progress', 'complete')),
-    -- Set only on drill level-up jobs, which are ordinary 'factory' jobs whose
-    -- target_id is the DRILL_UPGRADE_JOB_TARGET sentinel rather than a
-    -- material. Points at the drills row being upgraded.
+    -- Set only on the two job kinds that act on one specific drill rather than
+    -- on a stack of some material: a 'factory' job whose target_id is the
+    -- DRILL_UPGRADE_JOB_TARGET sentinel, and a 'scrapper' job whose target_id
+    -- is DRILL_SCRAP_JOB_TARGET. Points at the drills row being upgraded or
+    -- broken down, which is locked (drills.locked_job_id) until the job ends.
     target_drill_id INTEGER
 );

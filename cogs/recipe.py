@@ -25,11 +25,28 @@ from data.materials import (
     PRESS_RECIPES,
     BASE_STORAGE_CAPACITY,
     effective_capacity,
+    get_material_info,
+    scrap_yield,
 )
 
 # DRILL_BITS/DRILL_COMPONENTS are id tuples; the book needs the recipe dicts.
 COMPONENT_RECIPES = {k: COMPONENT_MATERIALS[k] for k in DRILL_COMPONENTS}
 DRILL_BIT_RECIPES = {k: COMPONENT_MATERIALS[k] for k in DRILL_BITS}
+
+
+def _scrap_lines(items: dict) -> list[str]:
+    """One line per item: what it is, and what the scrapper hands back for it.
+    Shaped like build_recipe_lines' output so the two books read the same way -
+    the difference is that the arrow points the other direction."""
+    lines = []
+    for material_id, info in items.items():
+        returns = scrap_yield(material_id)
+        parts = []
+        for return_id, quantity in returns.items():
+            return_info = get_material_info(return_id)
+            parts.append(f"{return_info['emoji'] if return_info else '❓'} {quantity}")
+        lines.append(f"{info['emoji']} {info['name']} - {' , '.join(parts) or 'nothing'}")
+    return lines
 
 
 def _container_lines() -> list[str]:
@@ -113,6 +130,25 @@ class RecipeCog(commands.Cog):
             ),
             inline=False,
         )
+        await respond(interaction, self.db, embed=embed)
+
+
+    @recipe_group.command(name="scrapper", description="List what the scrapper gives back for each item")
+    async def recipe_scrapper(self, interaction: discord.Interaction):
+        embed = make_embed("♻️ Scrapper Returns", RECIPE_COLOR)
+        embed.description = (
+            "The scrapper undoes **one tier** of crafting and gives back **half** of that "
+            "recipe, rounded down - so a drill comes back as components, and those components "
+            "have to be scrapped again to reach metal.\n\n"
+            "It never returns less than one of a recipe's most valuable part. That's what makes "
+            "scrapping a drill worth anything at all (a drill's recipe is one of each part, and "
+            "half of one is nothing), and it's why a gem-tier item never has its gem destroyed."
+        )
+        add_multi_field(embed, "Components", _scrap_lines(COMPONENT_RECIPES))
+        add_multi_field(embed, "Drill Bits", _scrap_lines(DRILL_BIT_RECIPES))
+        add_multi_field(embed, "Drills", _scrap_lines(DRILLS))
+        add_multi_field(embed, "Containers", _scrap_lines(STORAGE_CONTAINERS))
+        add_multi_field(embed, "Upgrades", _scrap_lines(UPGRADE_MATERIALS))
         await respond(interaction, self.db, embed=embed)
 
 

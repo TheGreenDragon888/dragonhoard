@@ -19,6 +19,19 @@ _COMPACT_TIERS = [
 ]
 
 
+def utc_today() -> str:
+    """Today's date in UTC, ISO formatted.
+
+    Used by the mining pool top-up, which rolls over at UTC midnight. The job
+    board runs on a different clock (utils/job_board.py: JOB_BOARD_TIMEZONE) -
+    the two shared this function until the board moved to Arizona time, so
+    don't assume a change here reaches both.
+
+    Stored as text and compared as text, which is why the ISO format matters:
+    it sorts and compares chronologically as a plain string."""
+    return datetime.now(timezone.utc).date().isoformat()
+
+
 def format_price(amount: float, round_up: bool = False) -> str:
     """The bare numeric text (no currency emoji) for a price, rounded to the
     nearest cent (2 decimals) for display - DOWN by default, or UP if

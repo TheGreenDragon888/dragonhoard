@@ -17,6 +17,7 @@ from discord.ext import commands
 
 import config
 from database.db import Database
+from utils.channel_guard import DragonhoardTree
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("dragonhoard")
@@ -27,7 +28,11 @@ log = logging.getLogger("dragonhoard")
 intents = discord.Intents.default()
 intents.members = True  # needed for guild.member_count (mining pool, market target stock)
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+# tree_cls is what installs the designated-bot-channel check. It has to be
+# passed here rather than set later: Bot builds its CommandTree in __init__,
+# and every command registered by a cog goes into whichever tree already
+# exists. See utils/channel_guard.py for why the check lives on the tree.
+bot = commands.Bot(command_prefix="!", intents=intents, tree_cls=DragonhoardTree)
 
 # Every cog accesses this via `bot.db`, so it's created once here and shared,
 # rather than each cog opening its own separate connection pool.
@@ -42,8 +47,11 @@ INITIAL_EXTENSIONS = [
     "cogs.furnace",
     "cogs.factory",
     "cogs.press",
+    "cogs.scrapper",
+    "cogs.jobboard",
     "cogs.recipe",
     "cogs.manual",
+    "cogs.changelog",
     "cogs.fun",
 ]
 
