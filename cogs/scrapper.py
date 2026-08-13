@@ -49,6 +49,7 @@ from utils.formatting import (
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
+    apply_machine_upgrades,
     ensure_server_row,
     get_user_quantity,
     adjust_user_quantity,
@@ -189,7 +190,7 @@ class ScrapperCog(commands.Cog):
                         "UPDATE server_config SET scrapper_fees_collected = scrapper_fees_collected + ? WHERE guild_id = ?",
                         (fee_total, interaction.guild_id),
                     )
-                    await self._maybe_upgrade_scrapper(tx, interaction.guild_id)
+                    await apply_machine_upgrades(tx, interaction.guild_id, "scrapper")
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
                 await tx.execute(
@@ -309,7 +310,7 @@ class ScrapperCog(commands.Cog):
                         "UPDATE server_config SET scrapper_fees_collected = scrapper_fees_collected + ? WHERE guild_id = ?",
                         (fee_total, interaction.guild_id),
                     )
-                    await self._maybe_upgrade_scrapper(tx, interaction.guild_id)
+                    await apply_machine_upgrades(tx, interaction.guild_id, "scrapper")
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
 
@@ -528,24 +529,6 @@ class ScrapperCog(commands.Cog):
                             "UPDATE production_jobs SET quantity = ?, status = 'in_progress' WHERE job_id = ?",
                             (new_quantity, job["job_id"]),
                         )
-
-    async def _maybe_upgrade_scrapper(self, db, guild_id: int):
-        """Takes an executor rather than using self.db, so it reads the fee
-        total its caller just wrote rather than the pre-transaction value."""
-        cfg = await db.fetchone(
-            "SELECT scrapper_level, scrapper_fees_collected FROM server_config WHERE guild_id = ?",
-            (guild_id,),
-        )
-        # Loops because one expensive job can cross more than one threshold,
-        # and there's no cap to stop at.
-        level, collected = cfg["scrapper_level"], cfg["scrapper_fees_collected"]
-        while collected >= upgrade_threshold(level + 1):
-            level += 1
-        if level != cfg["scrapper_level"]:
-            await db.execute(
-                "UPDATE server_config SET scrapper_level = ? WHERE guild_id = ?",
-                (level, guild_id),
-            )
 
     @process_loop.before_loop
     async def before_process_loop(self):

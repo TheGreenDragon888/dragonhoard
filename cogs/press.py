@@ -43,6 +43,7 @@ from utils.formatting import format_currency
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
+    apply_machine_upgrades,
     ensure_server_row,
     get_user_quantity,
     adjust_user_quantity,
@@ -161,7 +162,7 @@ class PressCog(commands.Cog):
                         "UPDATE server_config SET press_fees_collected = press_fees_collected + ? WHERE guild_id = ?",
                         (fee_total, interaction.guild_id),
                     )
-                    await self._maybe_upgrade_press(tx, interaction.guild_id)
+                    await apply_machine_upgrades(tx, interaction.guild_id, "press")
 
                 # Press-days already spoken for by the jobs in front of this
                 # one. Recipes cost wildly different amounts of press time, so
@@ -386,22 +387,6 @@ class PressCog(commands.Cog):
             """,
             (guild_id,),
         )
-
-    async def _maybe_upgrade_press(self, db, guild_id: int):
-        """Takes an executor rather than using self.db, so it reads the fee
-        total its caller just wrote rather than the pre-transaction value.
-        Loops because a single expensive job can cross more than one threshold."""
-        cfg = await db.fetchone(
-            "SELECT press_level, press_fees_collected FROM server_config WHERE guild_id = ?",
-            (guild_id,),
-        )
-        level, collected = cfg["press_level"], cfg["press_fees_collected"]
-        while collected >= upgrade_threshold(level + 1):
-            level += 1
-        if level != cfg["press_level"]:
-            await db.execute(
-                "UPDATE server_config SET press_level = ? WHERE guild_id = ?", (level, guild_id)
-            )
 
     @process_loop.before_loop
     async def before_process_loop(self):

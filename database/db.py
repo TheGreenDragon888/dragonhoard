@@ -314,6 +314,11 @@ class Database(_Executor):
                 # channel", which is what every existing server was doing
                 # before this column existed and should keep doing.
                 ("bot_channel_id", "INTEGER"),
+                # Defaults to 0, so a server that predates the prompt gets it
+                # the next time the bot joins - not retroactively on startup,
+                # which would post into servers that have been running happily
+                # for months.
+                ("setup_prompt_sent", "INTEGER NOT NULL DEFAULT 0"),
             )
             for column, definition in added_config_columns:
                 if column not in config_columns:
@@ -380,6 +385,24 @@ class Database(_Executor):
                     conn.execute("ROLLBACK")
                     raise
 
+            # 1.2 gave drills and pools a composition: what used to be a bare
+            # count of "raw materials" is now a per-material breakdown, decided
+            # when an item is mined rather than when it is collected. Both
+            # backfills have to CHANGE existing rows and can't tell from the
+            # schema alone whether they already ran - the tables they fill are
+            # created empty by CREATE TABLE IF NOT EXISTS either way - so this
+            # is gated on user_version rather than on introspection.
+            if version < 4:
+                self._migrate_pools_and_drills_to_materials(conn)
+
+            # The daily top-up and its cap were removed outright: the pool is
+            # now a bag of MINING_POOL_BAG_SIZE items that refills when it runs
+            # out, so every server needs a real bag rather than the few thousand
+            # items its allowance had accrued. Pure data, and the schema can't
+            # tell whether it has run, so it is gated on user_version.
+            if version < 5:
+                self._migrate_pool_to_bag(conn)
+
             # user_version deliberately stays at 3 through 1.1. Everything that
             # release added is structural and gated on introspection above: the
             # scrapper's columns, bot_channel_id, the widened job_type CHECK,
@@ -444,6 +467,117 @@ class Database(_Executor):
                 (BASE_STORAGE_CAPACITY,),
             )
             conn.execute("PRAGMA user_version = 2")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    @staticmethod
+    def _migrate_pools_and_drills_to_materials(conn: sqlite3.Connection):
+        """Gives every existing drill and mining pool the per-material
+        composition 1.2 needs, derived from the bare counts they held before it.
+
+        Both are filled by rolling each item against the drop table - which is
+        exactly what /collect would have done to those same items a moment
+        later, since a drill decided what it had mined only at handover. So no
+        player gains or loses anything by this running: it fixes in advance an
+        answer that was previously computed on demand.
+
+        Rolling independently here rather than drawing from a pool is
+        deliberate, and is the one place that stays right. There is no pool
+        composition yet to draw from - creating it is what this is for - and the
+        material already in flight was mined under the old independent-roll
+        rules. Applying the new guarantee retroactively would conjure gemstones
+        into pools that never produced them.
+        """
+        from data.materials import roll_raw_material
+
+        conn.execute("BEGIN")
+        try:
+            # Pools first: a server's remaining count becomes a bag of that many
+            # rolled items. carry stays 0 - the guarantee starts accruing from
+            # the next top-up, not backdated.
+            pools = conn.execute(
+                "SELECT guild_id, mining_pool_remaining FROM server_config "
+                "WHERE mining_pool_remaining > 0"
+            ).fetchall()
+            for row in pools:
+                counts: dict[str, int] = {}
+                for _ in range(row["mining_pool_remaining"]):
+                    material_id = roll_raw_material()
+                    counts[material_id] = counts.get(material_id, 0) + 1
+                for material_id, quantity in counts.items():
+                    conn.execute(
+                        "INSERT INTO server_mining_pool (guild_id, material_id, quantity) "
+                        "VALUES (?, ?, ?) ON CONFLICT(guild_id, material_id) DO UPDATE "
+                        "SET quantity = excluded.quantity",
+                        (row["guild_id"], material_id, quantity),
+                    )
+
+            # Then whatever the drills are already holding. stored_amount is
+            # left exactly as it is: it stays the authoritative total, and these
+            # rows have to sum to it.
+            drills = conn.execute(
+                "SELECT drill_id, stored_amount FROM drills WHERE stored_amount > 0"
+            ).fetchall()
+            for row in drills:
+                counts = {}
+                for _ in range(row["stored_amount"]):
+                    material_id = roll_raw_material()
+                    counts[material_id] = counts.get(material_id, 0) + 1
+                for material_id, quantity in counts.items():
+                    conn.execute(
+                        "INSERT INTO drill_contents (drill_id, material_id, quantity) "
+                        "VALUES (?, ?, ?) ON CONFLICT(drill_id, material_id) DO UPDATE "
+                        "SET quantity = excluded.quantity",
+                        (row["drill_id"], material_id, quantity),
+                    )
+
+            conn.execute("PRAGMA user_version = 4")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    @staticmethod
+    def _migrate_pool_to_bag(conn: sqlite3.Connection):
+        """Tops every server's pool up to a full bag, and retires the daily
+        top-up's bookkeeping.
+
+        Every server gains material rather than losing any: the bag is added to
+        whatever the old allowance had accrued, so nothing anyone had mined
+        toward disappears. The old cap (three days of production) was at most a
+        few thousand items against a million, so in practice this is simply
+        "here is your bag".
+
+        mining_pool_last_topup goes with it. Nothing reads it any more - there
+        is no daily event left for it to record - and a column that no code
+        touches is one somebody later has to work out the meaning of.
+        """
+        from data.materials import pool_bag_contents
+
+        bag = pool_bag_contents()
+        conn.execute("BEGIN")
+        try:
+            for row in conn.execute("SELECT guild_id FROM server_config").fetchall():
+                for material_id, quantity in bag.items():
+                    conn.execute(
+                        "INSERT INTO server_mining_pool (guild_id, material_id, quantity) "
+                        "VALUES (?, ?, ?) ON CONFLICT(guild_id, material_id) DO UPDATE "
+                        "SET quantity = quantity + excluded.quantity",
+                        (row["guild_id"], material_id, quantity),
+                    )
+                conn.execute(
+                    "UPDATE server_config SET mining_pool_remaining = mining_pool_remaining + ? "
+                    "WHERE guild_id = ?",
+                    (sum(bag.values()), row["guild_id"]),
+                )
+
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(server_config)")}
+            if "mining_pool_last_topup" in columns:
+                conn.execute("ALTER TABLE server_config DROP COLUMN mining_pool_last_topup")
+
+            conn.execute("PRAGMA user_version = 5")
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

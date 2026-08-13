@@ -52,10 +52,9 @@ more legible — forces shaping the money supply.
 ### The daily job board (1.1)
 
 The job board is the second faucet the bot has, and the only one that isn't
-the market itself. Once per day a server posts a task — sell it N units
-of a material it is short of — and pays every player who completes it a
-bonus of that material's base ceiling price times N, once each, on top of
-what the sale already paid.
+the market itself. Once per day a server posts a task — sell it N units of a
+material it is short of — and pays every player who completes it a bonus,
+once each, on top of what the sale already paid.
 
 The day rolls over at **midnight Arizona time** (`JOB_BOARD_TIMEZONE` in
 `utils/job_board.py`), chosen so the reset lands at a time that means
@@ -63,14 +62,55 @@ something to the people playing. Note this is deliberately *not* the mining
 pool's schedule, which still tops up on UTC midnight — the two used to share
 one definition of "today" and no longer do.
 
-It is a faucet by design, so it is bounded by construction rather than by
-tuning:
+#### How the task is sized (1.2)
 
-- **It cannot outpace what the goods are worth.** A normal sale pays between
-  half and one times the ceiling price per unit, so the bonus is at most a
-  100% top-up on the day's sale and never more than the goods' full ceiling
-  value. There is no configuration under which it pays for something that
-  wasn't produced.
+The task is sized to **pay just over one unit of the server's currency**
+(`JOB_BOARD_TARGET_PAYOUT`): N is the fewest units that clear it. The bonus
+is what the server itself would pay for those N units, priced at the stock
+level when the job was posted — `sale_unit_price`, the same curve `/market
+sell` pays on.
+
+Pinning the payout rather than the quantity is what makes the task the same
+size for everybody. Both terms derive from member count and cancel:
+
+```
+N = TARGET_PAYOUT / (ceiling × target / (target + stock))
+  = TARGET_PAYOUT / ceiling × (1 + stock / target)
+```
+
+leaving only `stock / target` — a statement about how well supplied a server
+is, not how many people are in it. A five-member server and a five-hundred-
+member one at the same fraction of target stock are asked for exactly the
+same amount.
+
+This replaced a quantity of 10% of target stock, which scaled with member
+count. The task is completed *per player*, so sizing it from a server-wide
+total grew one person's quota every time somebody joined while nobody's
+mining rate grew to match — and if every member completed it the server took
+in a quantity quadratic in its own membership. Rarity scaling survived the
+change for free, because `1/ceiling` tracks how common a material is.
+
+`JOB_BOARD_MAX_QUANTITY` (600) caps it. Quantity has no natural bound as
+stock climbs — the price decays toward zero, so the units needed to clear a
+fixed payout grow without one. It binds past roughly five times target stock,
+and once it does the payout falls below target, which is the intended trade:
+a task nobody can finish pays nothing at all.
+
+#### Why it is bounded
+
+- **It cannot outpace what the goods are worth.** The bonus is what the
+  server would pay for the goods, so completing a job is worth about twice a
+  plain sale of the same materials and never more. There is no configuration
+  under which it pays for something that wasn't produced.
+- **Buying the goods back costs more than it paid.** Priced at the flat
+  ceiling (as 1.1 did) the board was very slightly printable: sell the task
+  quantity, claim, buy the same goods back at the higher stock your own sale
+  created, and the round trip came out ahead. Paying the server's own rate
+  closes that once a server holds a real amount of the material. It does not
+  close on a thinly stocked one — the leak scales with `N / target_stock`, so
+  it is worst on the smallest servers (about +0.02 at a hundred members,
+  +0.67 for a lone player). See `job_reward` in `data/materials.py` for the
+  measured thresholds and what closing it outright would cost.
 - **It requires real production.** The only way to claim it is to put
   materials into the market, which raises the server's stock and lowers the
   price it will pay next time — so the faucet partly closes its own tap.
@@ -78,16 +118,13 @@ tuning:
   a single fixed payout.
 - **Gemstones are excluded from it entirely.** Their ceiling prices run from
   5,500 to 500,000 against ore at 0.01, so a single gemstone task would mint
-  more in one day than every other faucet combined. `JOB_BOARD_MATERIALS` in
-  `data/materials.py` is ores and smelted materials only.
-
-The quantity asked for is 10% of the material's target stock, which scales
-with member count. That keeps the task proportionate on small servers, but
-it also means both the task and the reward grow linearly with server size
-while one player's mining capacity does not — above roughly fifty members
-the ore tasks pass what a strong player can mine in a day. The lever if that
-becomes a problem is a maximum quantity (around 600 units), not a smaller
-fraction, since a clamp caps the task and the reward together.
+  more in one day than every other faucet combined. Note the payout target
+  does *not* protect against this on its own — N floors at one unit, so
+  anything worth more than the target per unit simply pays what that unit is
+  worth. As of 1.2 this is no longer the board's own rule: gemstones left the
+  market entirely (section 3), and `JOB_BOARD_MATERIALS` is now an alias of
+  `TRADEABLE_ORDER`. A job can only be finished by selling, so the board's
+  vocabulary and the market's have to be the same list.
 
 Every payout goes through `record_minted`, so section 4's accounting sees
 it.
@@ -177,14 +214,37 @@ sold a given material (or the ore it smelts from) to the server yet, that
 material simply isn't available for purchase, and the server's storage —
 not an abstract formula — is the real constraint on what it can offer.
 
-**Scope of tradeable items:** Only raw materials and smelted materials are
-eligible to be bought or sold through the server market. Component
-materials, drills, and other crafted/finished goods are excluded
-entirely. This preserves the distinction covered earlier — the server
-trades in the inputs to its own economy (and the users'), not in the
-finished outputs of it. Allowing finished goods through the market would
-undercut the value of crafting and, eventually, undercut any player-driven
-trade the future order-book marketplace is meant to enable.
+**Scope of tradeable items:** Only **ores and smelted materials** are eligible
+to be bought or sold through the server market. Component materials, drills,
+and other crafted/finished goods are excluded entirely. This preserves the
+distinction covered earlier — the server trades in the inputs to its own
+economy (and the users'), not in the finished outputs of it. Allowing finished
+goods through the market would undercut the value of crafting and, eventually,
+undercut any player-driven trade the future order-book marketplace is meant to
+enable.
+
+**Gemstones are excluded too, as of 1.2.** This one was learned the hard way
+rather than designed in. A ruby's ceiling price is 5,500 against iron ore at
+0.01, and target stock for a gemstone is 1 on any server under about 33
+members — so the price curve barely damps successive sales, and the first four
+rubies sold into a server paid 5,500 + 2,750 + 1,833 + 1,375 = **11,458**. For
+scale, a whole day's job board pays a little over 1.00 and the beta server has
+minted 7.92 in its lifetime. One player selling one gem did not distort a
+server's economy so much as end it: every price, every fee and every
+infrastructure threshold in that server became meaningless in a single command.
+
+The exclusion covers buying as well as selling. Once no server can acquire a
+gemstone, leaving them in the buy list would only offer players something no
+server will ever have in stock.
+
+Note that this makes gemstones *purely* crafting inputs — drill bits,
+containers, drill upgrades, ultra dense matter, and the Mining Focus unlock.
+That is the intended shape. A gem's value should be what it builds, not what
+it fetches, and there was never a number for the latter that both respected a
+one-in-a-million drop rate and left the rest of the economy standing.
+
+The historical damage is repaired by `scripts/revert_gem_sales.py`, a one-time
+sweep documented in its own module docstring.
 
 **Target stock and ceiling price:** Each material's "target stock" — the
 equilibrium point the pricing curve is built around — scales with the

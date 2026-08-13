@@ -11,6 +11,7 @@ from data.materials import (
     RAW_MATERIALS,
     SMELTED_MATERIALS,
     UPGRADE_THRESHOLD_BASE,
+    UPGRADE_THRESHOLD_STEP,
     factory_rate,
     furnace_rate,
     get_material_info,
@@ -142,13 +143,28 @@ class UncappedLevelTests(unittest.TestCase):
 
     def test_thresholds_match_the_established_first_two(self):
         self.assertEqual(upgrade_threshold(2), 5.00)
-        self.assertEqual(upgrade_threshold(3), 50.00)
+        self.assertEqual(upgrade_threshold(3), 25.00)
 
-    def test_each_level_costs_ten_times_the_last(self):
+    def test_each_level_costs_the_step_times_the_last(self):
         for level in range(2, 12):
             self.assertAlmostEqual(
-                upgrade_threshold(level + 1), upgrade_threshold(level) * 10, places=4
+                upgrade_threshold(level + 1),
+                upgrade_threshold(level) * UPGRADE_THRESHOLD_STEP,
+                places=4,
             )
+
+    def test_the_ladder_is_reachable_by_a_real_server(self):
+        # The point of the 1.2 change. Under the old x10 step the cumulative fee
+        # to reach level 6 was 55,555 of a currency that the market mints about
+        # one unit of per hundred iron ore sold - no server was ever going to
+        # get there. Pinned as cumulative rather than per-level because the
+        # per-level figure understates what a step change does to a ladder that
+        # compounds.
+        cumulative = [
+            sum(upgrade_threshold(l) for l in range(2, level + 1))
+            for level in range(2, 9)
+        ]
+        self.assertEqual(cumulative, [5, 30, 155, 780, 3905, 19530, 97655])
 
     def test_there_is_always_a_next_threshold(self):
         # Nothing returns None any more, so no caller needs a max-level branch.

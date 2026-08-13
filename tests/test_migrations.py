@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 
 from database.db import Database
+from data.materials import MINING_POOL_BAG_SIZE
 
 GUILD = 8484
 USER = 4242
@@ -88,13 +89,25 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
 
         conn = sqlite3.connect(self.path)
         conn.executescript(_PRE_1_1_SCHEMA)
-        conn.execute("INSERT INTO server_config (guild_id) VALUES (?)", (GUILD,))
+        # A pool with something in it, so 1.2's composition backfill has
+        # material to explode into per-material rows.
+        conn.execute(
+            "INSERT INTO server_config (guild_id, mining_pool_remaining) VALUES (?, 2884)",
+            (GUILD,),
+        )
         # An in-flight queue entry of each pre-1.1 job type, including a drill
         # upgrade - the rows the rebuild has to carry across untouched.
         conn.execute(
             "INSERT INTO drills (drill_id, guild_id, owner_id, drill_type, level) "
             "VALUES (7, NULL, ?, 'iron_drill', 3)",
             (USER,),
+        )
+        # A placed drill holding a bare count, which is what every drill looked
+        # like before 1.2 gave them a per-material composition.
+        conn.execute(
+            "INSERT INTO drills (drill_id, guild_id, owner_id, drill_type, level, stored_amount, is_full) "
+            "VALUES (8, ?, ?, 'iron_drill', 1, 100, 1)",
+            (GUILD, USER),
         )
         conn.executemany(
             "INSERT INTO production_jobs (job_id, guild_id, user_id, job_type, target_id, "
@@ -194,12 +207,68 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
                 )
                 self.assertIsNotNone(row)
 
-    async def test_user_version_is_untouched(self):
-        """1.1 adds no pure-data migration - everything it changes is gated on
-        introspecting the schema. Bumping this would make the next release's
-        version-gated migration skip databases that need it."""
+    async def test_it_lands_on_the_current_user_version(self):
+        """1.1 added no pure-data migration - everything it changed was gated on
+        introspecting the schema - so a database opened on 1.1 sat at 3. 1.2
+        adds two, both pure data (the tables they fill are created empty either
+        way, so the schema can't say whether they've run): 4 gave pools and
+        drills a per-material composition, and 5 replaced the daily allowance
+        with a full bag."""
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 3)
+        self.assertEqual(row[0], 5)
+
+    async def test_the_daily_top_ups_bookkeeping_is_gone(self):
+        # There is no daily event left for it to record, and a column nothing
+        # reads is one somebody later has to work out the meaning of.
+        columns = {
+            row[1] for row in await self.db.fetchall("PRAGMA table_info(server_config)")
+        }
+        self.assertNotIn("mining_pool_last_topup", columns)
+
+    async def test_every_server_ends_up_with_a_full_bag(self):
+        # The migration adds a bag rather than replacing what was there, so a
+        # server keeps whatever its old allowance had accrued on top.
+        rows = await self.db.fetchall(
+            "SELECT guild_id, mining_pool_remaining FROM server_config"
+        )
+        self.assertTrue(rows)
+        for row in rows:
+            with self.subTest(guild=row["guild_id"]):
+                self.assertGreaterEqual(row["mining_pool_remaining"], MINING_POOL_BAG_SIZE)
+
+    async def test_the_drill_keeps_its_items_and_gains_a_composition(self):
+        """The 1.2 backfill. A drill that was holding a bare count now has to
+        say WHAT it holds, and the two have to agree - stored_amount stays
+        authoritative, and drill_contents has to sum to it or the player loses
+        material at the next /collect."""
+        drills = await self.db.fetchall(
+            "SELECT drill_id, stored_amount FROM drills WHERE stored_amount > 0"
+        )
+        self.assertTrue(drills, "fixture should have a drill holding something")
+        for drill in drills:
+            with self.subTest(drill=drill["drill_id"]):
+                rows = await self.db.fetchall(
+                    "SELECT quantity FROM drill_contents WHERE drill_id = ?",
+                    (drill["drill_id"],),
+                )
+                self.assertEqual(
+                    sum(row["quantity"] for row in rows), drill["stored_amount"]
+                )
+
+    async def test_the_pool_keeps_its_size_and_gains_a_composition(self):
+        pools = await self.db.fetchall(
+            "SELECT guild_id, mining_pool_remaining FROM server_config "
+            "WHERE mining_pool_remaining > 0"
+        )
+        for pool in pools:
+            with self.subTest(guild=pool["guild_id"]):
+                rows = await self.db.fetchall(
+                    "SELECT quantity FROM server_mining_pool WHERE guild_id = ?",
+                    (pool["guild_id"],),
+                )
+                self.assertEqual(
+                    sum(row["quantity"] for row in rows), pool["mining_pool_remaining"]
+                )
 
     async def test_opening_it_again_changes_nothing(self):
         # init_schema runs on every boot, so it has to be idempotent.

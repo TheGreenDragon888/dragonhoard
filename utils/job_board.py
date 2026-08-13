@@ -5,12 +5,19 @@ The daily job board: once per day, a server posts one task asking players to
 sell it a material it's short of, and pays a bonus to everyone who does. The
 day rolls over at midnight Arizona time (see JOB_BOARD_TIMEZONE).
 
-The reward is the material's base market_ceiling_price times the quantity
-asked for, and it stacks on top of what selling the goods earned in the first
-place. That makes it a genuine bonus without being an unbounded one: a normal
-sale already pays between half and one times the ceiling price per unit
-(cogs/economy.py: _buy_price), so the task can at most double what the day's
-sale was worth, and it can never pay more than the goods' full ceiling value.
+The task is sized to pay just over one unit of the server's currency, whatever
+it picks and whatever size the server is (data/materials.py:
+JOB_BOARD_TARGET_PAYOUT). The bonus is what the server itself would pay for
+those goods at the moment the job was posted, and it stacks on top of what
+selling them earned in the first place - so completing the job is worth about
+twice a plain sale of the same materials.
+
+Pricing the bonus off the server's own rate rather than the flat ceiling price
+is what stops the board being printable: once a server holds a real amount of
+the material, buying the goods back afterwards costs more than the sale and the
+bonus together paid out. On a thinly stocked server a few tenths still leak,
+worst on the smallest ones. See data/materials.py: job_reward for the shape of
+it and what closing it outright would cost.
 
 Two design decisions worth knowing before changing anything here:
 
@@ -21,9 +28,10 @@ Two design decisions worth knowing before changing anything here:
     keep running.
 
   * quantity and reward are frozen into the daily_jobs row at posting time
-    rather than recomputed on read. Both derive from member count, so without
-    that a member joining halfway through the day would move the goalposts on
-    someone already partway through the task.
+    rather than recomputed on read. Both derive from how well stocked the
+    server is, and the day's own selling moves that constantly - recomputing
+    would grow the task under someone already partway through it, every time
+    anybody sold anything.
 
 Everything that decides WHAT the task is lives in data/materials.py
 (JOB_BOARD_MATERIALS, pick_job_material, job_quantity, job_reward) so it can be
@@ -111,7 +119,14 @@ async def ensure_todays_job(tx, guild_id: int, member_count: int):
     # How far below target stock the server is on each eligible material, as a
     # fraction of that target - so the shortfalls of a hundred-member server
     # and a five-member one are on the same scale.
+    #
+    # The stock and target themselves are kept, not just the deficit they
+    # produce: the task's size and its bonus are both priced off the chosen
+    # material's stock level, and re-reading it after the pick would be a
+    # second look at a number that can have moved in between.
     deficits: dict[str, float] = {}
+    stocks: dict[str, int] = {}
+    targets: dict[str, int] = {}
     for material_id in JOB_BOARD_MATERIALS:
         target = target_stock(member_count, material_id)
         row = await tx.fetchone(
@@ -120,13 +135,16 @@ async def ensure_todays_job(tx, guild_id: int, member_count: int):
         )
         stock = row["quantity"] if row else 0
         deficits[material_id] = max(0.0, target - stock) / target
+        stocks[material_id] = stock
+        targets[material_id] = target
 
     material_id = pick_job_material(deficits)
-    quantity = job_quantity(member_count, material_id)
+    stock, target = stocks[material_id], targets[material_id]
+    quantity = job_quantity(material_id, stock, target)
     await tx.execute(
         "INSERT OR IGNORE INTO daily_jobs (guild_id, job_date, material_id, quantity, reward) "
         "VALUES (?, ?, ?, ?, ?)",
-        (guild_id, today, material_id, quantity, job_reward(material_id, quantity)),
+        (guild_id, today, material_id, quantity, job_reward(material_id, quantity, stock, target)),
     )
 
     # Once per guild per day, on the one branch that isn't a plain read. The

@@ -17,6 +17,7 @@ identifier that rides along as the autocomplete's hidden value - but that is a
 presentation choice and NOT what makes any of this safe. fetch_drill is.
 """
 import enum
+import logging
 
 from discord import app_commands
 
@@ -30,6 +31,9 @@ from data.materials import (
     roll_raw_material,
 )
 from utils.db_helpers import ensure_user_row, adjust_user_quantity
+from utils.mining_focus import convert_haul
+
+log = logging.getLogger("dragonhoard")
 
 # Discord truncates a choice name past 100 characters; leave room for the
 # server name, which is the only unbounded part of a label.
@@ -268,15 +272,71 @@ def collection_summary_lines(
 def build_material_breakdown(total_items: int, roll_material=roll_raw_material) -> dict[str, int]:
     """Rolls `total_items` individual drops and tallies them per material.
 
-    A drill banks a plain count while it mines and only decides WHAT it mined
-    when the count is handed over, so this is what turns "47 items" into an
-    actual haul. Every path that empties a drill goes through it - /collect,
-    /mine remove, and retract_drill below."""
+    This used to be how a haul was decided: a drill banked a plain count while
+    it mined and only worked out WHAT it had mined when the count was handed
+    over. As of 1.2 a drill knows what it holds the moment it mines it
+    (drill_contents), because the server pool it draws from has a real finite
+    composition and a guaranteed diamond in a shared pool cannot be drawn
+    per-player at collection time.
+
+    What survives here is the repair path in take_drill_contents, plus the 1.2
+    migration that gave existing drills their composition - both of which need
+    exactly this: turn a bare count into a plausible haul under the old
+    independent-roll rules."""
     breakdown: dict[str, int] = {}
     for _ in range(max(0, total_items)):
         material_id = roll_material()
         breakdown[material_id] = breakdown.get(material_id, 0) + 1
     return breakdown
+
+
+async def add_drill_contents(tx, drill_id: int, drawn: dict[str, int]) -> None:
+    """Adds a tick's harvest to what a drill is holding. Must run in the same
+    transaction as the matching drills.stored_amount update - the two are one
+    fact stored twice (see drill_contents in schema.sql)."""
+    for material_id, quantity in drawn.items():
+        if quantity <= 0:
+            continue
+        await tx.execute(
+            "INSERT INTO drill_contents (drill_id, material_id, quantity) VALUES (?, ?, ?) "
+            "ON CONFLICT(drill_id, material_id) DO UPDATE SET quantity = quantity + excluded.quantity",
+            (drill_id, material_id, quantity),
+        )
+
+
+async def take_drill_contents(tx, drill_row) -> dict[str, int]:
+    """Reads what a drill is holding and clears it, in one transaction with
+    whatever is about to credit it.
+
+    Falls back to rolling the difference if the rows come to LESS than
+    stored_amount. That shortfall shouldn't happen - every write to one goes in
+    the same transaction as the write to the other - but the failure it guards
+    is a player watching a full drill hand them nothing, and material the drill
+    genuinely mined is not something to lose to a bookkeeping disagreement. It
+    is also the path a drill that predates 1.2 takes if it somehow reaches here
+    without the migration having filled it in.
+
+    A surplus is left alone deliberately: stored_amount is what capacity and
+    is_full are enforced against, so crediting more than it says would let a
+    drill hand over more than it was ever allowed to hold.
+    """
+    rows = await tx.fetchall(
+        "SELECT material_id, quantity FROM drill_contents WHERE drill_id = ? AND quantity > 0",
+        (drill_row["drill_id"],),
+    )
+    contents = {row["material_id"]: row["quantity"] for row in rows}
+
+    shortfall = drill_row["stored_amount"] - sum(contents.values())
+    if shortfall > 0:
+        log.warning(
+            "Drill %s holds %d items but only %d are itemised - rolling the difference.",
+            drill_row["drill_id"], drill_row["stored_amount"], sum(contents.values()),
+        )
+        for material_id, quantity in build_material_breakdown(shortfall).items():
+            contents[material_id] = contents.get(material_id, 0) + quantity
+
+    await tx.execute("DELETE FROM drill_contents WHERE drill_id = ?", (drill_row["drill_id"],))
+    return contents
 
 
 def material_breakdown_lines(breakdown: dict[str, int], totals: dict[str, int] | None = None) -> list[str]:
@@ -327,10 +387,15 @@ async def retract_drill(tx, drill_row) -> dict[str, int] | None:
 
     Must be handed a Transaction rather than the Database. The unplace and the
     credit are one operation, and the materials in a drill exist nowhere but its
-    stored_amount - a failure between the two either duplicates the haul or
-    destroys it.
+    own rows - a failure between the two either duplicates the haul or destroys
+    it.
+
+    The unplace runs BEFORE the contents are read, so a racing command that
+    already emptied this drill leaves nothing to read and nothing to credit.
+    The player's mining focus is applied on the way out, exactly as /collect
+    applies it - pulling a drill early is a collection, and shouldn't be a way
+    to receive ore the focus says you no longer mine.
     """
-    breakdown = build_material_breakdown(drill_row["stored_amount"])
     changed = await tx.execute_changes(
         "UPDATE drills SET guild_id = NULL, stored_amount = 0, is_full = 0 "
         "WHERE drill_id = ? AND guild_id = ? AND stored_amount = ?",
@@ -338,6 +403,9 @@ async def retract_drill(tx, drill_row) -> dict[str, int] | None:
     )
     if not changed:
         return None
+
+    breakdown = await take_drill_contents(tx, drill_row)
+    breakdown = await convert_haul(tx, drill_row["owner_id"], breakdown)
     if breakdown:
         await ensure_user_row(tx, drill_row["owner_id"])
         for material_id, quantity in breakdown.items():

@@ -76,14 +76,42 @@ class EffectiveCapacityTests(unittest.TestCase):
     def test_container_bonus_is_additive(self):
         expected = {
             "iron_container": 250,
-            "steel_container": 300,
-            "ruby_container": 400,
-            "obsidian_container": 500,
-            "diamond_container": 600,
+            "steel_container": 500,
+            "ruby_container": 1000,
+            "obsidian_container": 2000,
+            "diamond_container": 4000,
         }
         self.assertEqual(
             {c: effective_capacity(c) for c in STORAGE_CONTAINERS}, expected
         )
+
+    def test_each_tier_holds_twice_the_one_below(self):
+        # The ladder is defined on the totals rather than on storage_bonus, which
+        # is why the bonuses are the unround half of the pair. Pinning it here so
+        # a future retune that edits the bonuses directly has to say so.
+        totals = [effective_capacity(c) for c in STORAGE_CONTAINERS]
+        for lower, higher in zip(totals, totals[1:]):
+            self.assertEqual(higher, lower * 2)
+
+    def test_a_dearer_container_buys_more_runtime_than_a_cheaper_one(self):
+        # The failure this guards is subtle and shipped once: the old ladder's
+        # totals were in the same ratio as the matched drills' rates, so steel
+        # through diamond all held exactly 40 hours and a ruby bought less
+        # autonomy than iron did. Rising bonuses alone don't prove anything -
+        # runtime is the unit that matters.
+        matched = (
+            ("iron_container", "iron_drill"),
+            ("steel_container", "steel_drill"),
+            ("ruby_container", "ruby_drill"),
+            ("obsidian_container", "obsidian_drill"),
+            ("diamond_container", "diamond_drill"),
+        )
+        hours = [
+            effective_capacity(container) / effective_rate(drill, 1)
+            for container, drill in matched
+        ]
+        for lower, higher in zip(hours, hours[1:]):
+            self.assertGreater(higher, lower)
 
 
 class UpgradeCostTests(unittest.TestCase):

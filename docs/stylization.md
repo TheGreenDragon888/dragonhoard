@@ -47,10 +47,12 @@ where there is no multiplication to explain.
 Two constraints the layout depends on:
 
 - The author line's emoji must be **unicode** (🏭 🔥 ⚙️). Discord renders
-  custom `<:Name:ID>` emoji in descriptions and field values, but not in author
-  lines, titles or field names.
+  custom `<:Name:ID>` emoji in descriptions, field names and field values, but
+  not in author lines or titles — there they come out as the literal text
+  `<:IronOre:1533714268560691281>`. Field **names** are fine and several embeds
+  rely on it: `/mine status`'s pool heading and every heading in `/focus`.
 - The queue heading's wait uses `format_duration` ("2h 24m"), not a Discord
-  relative timestamp. Timestamp markup doesn't render in a field name either.
+  relative timestamp. Timestamp markup doesn't render in a field name.
   `format_relative_timestamp` is for descriptions and field values — which is
   where the queue receipts use it.
 
@@ -72,7 +74,15 @@ feature's own design doc where one exists.
 | Hydraulic press menus (`/press`)    | blue        | `#0066FF` | `PRESS_COLOR`    |
 | Scrapper menus (`/scrapper`)        | chartreuse  | `#9EFF00` | `SCRAPPER_COLOR` |
 | Job board (`/jobboard`)             | magenta     | `#FF00AA` | `JOBBOARD_COLOR` |
+| Global notifications                | red         | `#FF0000` | `GLOBAL_NOTICE_COLOR` |
+| Server notifications                | spring green | `#00FF9E` | `SERVER_NOTICE_COLOR` |
 | Extras manual page (`/help extras`) | green (default) | `#00FF3C` | `DEFAULT_COLOR` |
+
+The two notification colors are the one pair that has to be told apart at a
+glance rather than merely recognised, because the embeds are otherwise
+identical in shape and arrive unbidden alongside whatever command the player
+actually ran (`utils/notifications.py`). Red is the bot announcing something
+about itself to everyone; spring green is one server's own business.
 
 Future games/features should claim their own fully saturated color here (and
 in their design doc) before implementation.

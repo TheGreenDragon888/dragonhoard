@@ -14,19 +14,135 @@ Server" permission, matching the design doc:
 A "cog" is discord.py's term for a self-contained module of commands/events
 that gets loaded into the bot at startup (see bot.py's load_extension calls).
 """
+import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from utils.formatting import format_currency
 from utils.db_helpers import ensure_server_row, MACHINES
+from utils.embeds import make_embed, DEFAULT_COLOR
+from utils.notifications import post_server_notification
 from data.materials import effective_max_queue
+
+log = logging.getLogger("dragonhoard")
+
+
+def setup_guide_embed(guild_name: str) -> discord.Embed:
+    """The "get your server going" card, posted once when the bot joins.
+
+    Leads on the currency because it is the one setting that is genuinely
+    missing rather than merely defaulted - until it is named, every price in
+    the server reads with a placeholder symbol. The other two are here because
+    they are the settings a server notices the absence of within a day: fees are
+    what level the machines up, and whether replies are public decides whether
+    the bot feels like a shared game or a private one.
+    """
+    embed = make_embed(f"Welcome to Dragonhoard, {guild_name}", DEFAULT_COLOR)
+    embed.description = (
+        "Everyone can start mining right away - `/mine place` puts a drill in the ground "
+        "and `/help` explains the rest. There are three things an admin should set, though, "
+        "and the first one matters most."
+    )
+    embed.add_field(
+        name="1. Name your currency  ⭐",
+        value=(
+            "```/setup currency <name> <emoji>```"
+            "Every server has its own money with its own name and symbol, and until you pick "
+            "one, prices show a placeholder. It's the only setting with no sensible default - "
+            "the other two below already work."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="2. Set your machine fees",
+        value=(
+            "```/setup fee <machine> <amount>```"
+            "Fees are what level your furnace, factory, press and scrapper up - a server "
+            "charging nothing has machines that never improve, and one charging too much "
+            "prices its players out. This is the main dial you have."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="3. Decide how the bot talks",
+        value=(
+            "```/setup messages <public|private>\n/setup channel [channel]```"
+            "Replies are private by default so the bot stays out of the way. If you'd rather "
+            "everyone saw each other's hauls, make them public - and `/setup channel` keeps "
+            "all of it in one room."
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="All /setup commands need the Manage Server permission.")
+    return embed
 
 
 class SetupCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db  # the shared Database instance, attached in bot.py
+
+    def _welcome_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
+        """Where to post the setup prompt: the server's system channel if the
+        bot can talk there, otherwise the first channel it can.
+
+        Deliberately not a DM to whoever has Manage Server. DMs from bots are
+        blocked by a great many people and by some servers outright, so the
+        message most likely to be silently dropped is the one explaining why
+        nothing has a currency symbol. Posting in the server also lets ordinary
+        members see what to ask their admins for."""
+        candidates = []
+        if guild.system_channel is not None:
+            candidates.append(guild.system_channel)
+        candidates.extend(guild.text_channels)
+        for channel in candidates:
+            permissions = channel.permissions_for(guild.me)
+            if permissions.send_messages and permissions.embed_links:
+                return channel
+        return None
+
+    @commands.Cog.listener()
+    async def on_guild_join(self, guild: discord.Guild):
+        """Posts the setup prompt once, the first time the bot joins a server.
+
+        Guarded on a stored flag rather than on "is the currency still unset",
+        because a server that has decided not to name one should not be nagged
+        every time the bot reconnects - and the flag survives a re-invite, which
+        is the whole reason server_config rows aren't deleted on removal.
+        """
+        await ensure_server_row(self.db, guild.id)
+        claimed = await self.db.execute_changes(
+            "UPDATE server_config SET setup_prompt_sent = 1 "
+            "WHERE guild_id = ? AND setup_prompt_sent = 0",
+            (guild.id,),
+        )
+        if not claimed:
+            return
+
+        embed = setup_guide_embed(guild.name)
+        channel = self._welcome_channel(guild)
+        if channel is not None:
+            try:
+                await channel.send(
+                    content="Thanks for the invite! A couple of things to set up 👇",
+                    embed=embed,
+                )
+                return
+            except discord.HTTPException:
+                log.warning("Could not post the setup prompt in guild %s.", guild.id)
+
+        # Nowhere to post - no channel the bot may speak in, or Discord refused.
+        # Falling back to a server notification means the prompt reaches whoever
+        # runs the first command instead of being lost entirely.
+        await post_server_notification(
+            self.db, guild.id, embed.title,
+            "An admin needs to run `/setup currency <name> <emoji>` to name this server's "
+            "money - until then prices show a placeholder symbol. `/setup fee` sets what the "
+            "machines charge (which is what levels them up), and `/setup messages public` "
+            "makes the bot reply where everyone can see. All of them need Manage Server.",
+        )
 
     # A "group" bundles related slash commands under one parent, so users
     # see them in Discord as /setup currency, /setup fee, /setup messages.

@@ -9,8 +9,7 @@ Implements:
   - /mine remove <drill>      - pull a drill back out early, refunding it + its contents
   - /mine attach <drill> <container> - fit a storage container, swapping any existing one
   - /mine detach <drill>      - pull a drill's container back off
-  - A background loop that tops up each server's shared raw-material pool once
-    per day, and another loop that has drills harvest from that pool periodically.
+  - A background loop that has drills harvest from their server's pool.
 
 Mining is server-wide, not channel-scoped - there's no designated "dig site"
 channel. Every server has a single raw-material pool that all of that
@@ -34,8 +33,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from utils.responses import respond
-from utils.embeds import make_embed, add_multi_field, MINING_COLOR
-from utils.formatting import utc_today
+from utils.embeds import make_embed, add_multi_field, FOOTER_TEXT, MINING_COLOR
+from utils.job_board import job_board_today
 from utils.guild_helpers import human_member_count
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
@@ -47,7 +46,8 @@ from utils.db_helpers import (
 )
 from utils.drills import (
     DrillScope,
-    build_material_breakdown,
+    add_drill_contents,
+    take_drill_contents,
     capacity_of,
     rate_of,
     collection_summary_lines,
@@ -64,22 +64,25 @@ from utils.drills import (
     set_container,
 )
 
+from utils.mining_focus import convert_haul, focus_label, get_focus, set_focus
+from utils.mining_pool import pool_contents, pool_display_lines, take_from_pool
+
 from data.materials import (
     DRILLS,
+    MINING_FOCUSES,
+    MINING_FOCUS_UNLOCK_COST,
     STORAGE_CONTAINERS,
     BASE_STORAGE_CAPACITY,
     MAX_DRILLS_PER_USER_PER_SERVER,
-    MINING_POOL_DAILY_PER_MEMBER,
-    MINING_POOL_CAP_MULTIPLIER,
     advance_harvest,
     effective_capacity,
+    get_material_info,
 )
 from data.emoji import MINING_POOL_EMOJI
 
 log = logging.getLogger("dragonhoard")
 
 HARVEST_TICK_MINUTES = 24
-POOL_TOPUP_CHECK_MINUTES = 60
 
 # The two drill sets /collect can empty, kept at module level so tests can run
 # them against a real database rather than restating them. The default reaches
@@ -99,11 +102,9 @@ class MiningCog(commands.Cog):
         self.bot = bot
         self.db = bot.db
         self.harvest_loop.start()
-        self.pool_topup_loop.start()
 
     def cog_unload(self):
         self.harvest_loop.cancel()
-        self.pool_topup_loop.cancel()
 
     mine_group = app_commands.Group(name="mine", description="Manage mining drills")
 
@@ -355,7 +356,7 @@ class MiningCog(commands.Cog):
         )
         pool_remaining = cfg["mining_pool_remaining"] if cfg else 0
         member_count = await human_member_count(interaction.guild) if interaction.guild else 0
-        pool_cap = member_count * MINING_POOL_DAILY_PER_MEMBER * MINING_POOL_CAP_MULTIPLIER
+        contents = await pool_contents(self.db, interaction.guild_id)
 
         embed = make_embed("Mining Status", MINING_COLOR)
         if not drills:
@@ -387,11 +388,29 @@ class MiningCog(commands.Cog):
             ]
             embed.add_field(name="Other Active Drills in Server", value="\n".join(lines), inline=False)
 
+        # Every line here is a FACT read from the database. There is no
+        # forecast field any more and no estimate anywhere in this embed,
+        # because with a real bag there is nothing left to predict - the
+        # gemstones are either in it or they are not.
+        #
+        # The version this replaced had both kinds of number side by side and
+        # unlabelled: ore counts were real while gemstone lines were projected
+        # from an accrual rate, and the gemstone line silently changed from a
+        # prediction into a statement of fact depending on whether a gem
+        # happened to be in the pool that moment. Removing the daily top-up
+        # removed the accrual rate, and with it the only thing there was to
+        # estimate.
         embed.add_field(
             name=f"{MINING_POOL_EMOJI} Server Mining Pool",
-            value=f"{pool_remaining}/{pool_cap} raw materials remaining",
+            value="\n".join(pool_display_lines(pool_remaining, contents)),
             inline=False,
         )
+
+        focus_id, _, _, unlocked = await get_focus(self.db, interaction.user.id)
+        if unlocked:
+            embed.add_field(
+                name="Your Mining Focus", value=focus_label(focus_id), inline=False
+            )
 
         await respond(interaction, self.db, embed=embed)
 
@@ -653,9 +672,19 @@ class MiningCog(commands.Cog):
                     continue
                 hauls.append((d["guild_id"], d["stored_amount"]))
                 total_collected += d["stored_amount"]
-                drill_breakdown = build_material_breakdown(d["stored_amount"])
-                for material_id, qty in drill_breakdown.items():
+                # Real materials, drawn from the server's pool when they were
+                # mined, rather than rolled here at handover.
+                for material_id, qty in (await take_drill_contents(tx, d)).items():
                     collected_breakdown[material_id] = collected_breakdown.get(material_id, 0) + qty
+
+            # The focus converts the WHOLE haul at once, not drill by drill.
+            # Its rounding carry is per player, so converting each drill
+            # separately would give a different answer depending on how many
+            # drills someone happened to have going.
+            focus_id, _, _, _ = await get_focus(tx, interaction.user.id)
+            collected_breakdown = await convert_haul(
+                tx, interaction.user.id, collected_breakdown
+            )
 
             for material_id, qty in collected_breakdown.items():
                 await adjust_user_quantity(tx, interaction.user.id, material_id, qty)
@@ -681,10 +710,21 @@ class MiningCog(commands.Cog):
 
         embed = make_embed("Collection Complete", MINING_COLOR)
         embed.description = (
-            f"📦 Collected **{total_collected}** raw materials from **{len(hauls)}** drill(s)"
+            f"📦 Emptied **{total_collected}** raw materials from **{len(hauls)}** drill(s)"
         )
         if server_count > 1:
             embed.description += f" across **{server_count}** servers"
+
+        # A focus changes the item count as well as the mix - a coal focus
+        # returns fewer, denser items and an iron focus more - so the haul and
+        # what landed in the inventory are two different numbers and the embed
+        # has to say which is which rather than quietly contradicting itself.
+        received = sum(collected_breakdown.values())
+        if received != total_collected:
+            embed.description += (
+                f", which your **{focus_label(focus_id)}** focus turned into "
+                f"**{received:,}**"
+            )
 
         lines = material_breakdown_lines(collected_breakdown, totals)
         if lines:
@@ -702,48 +742,158 @@ class MiningCog(commands.Cog):
 
         await respond(interaction, self.db, embed=embed)
 
-    @tasks.loop(minutes=POOL_TOPUP_CHECK_MINUTES)
-    async def pool_topup_loop(self):
-        """Checks every server the bot is in once an hour; if that server's UTC
-        calendar date has changed since its last top-up, adds
-        (human_member_count * MINING_POOL_DAILY_PER_MEMBER) to its pool,
-        capped at MINING_POOL_CAP_MULTIPLIER times that daily amount. Bots
-        are excluded from the count (utils/guild_helpers.py) the same way
-        the market's target stock excludes them."""
-        today = utc_today()
-        for guild in self.bot.guilds:
-            await ensure_server_row(self.db, guild.id)
+    @app_commands.command(
+        name="focus",
+        description="Choose which ore everything you mine arrives as (costs one Ruby to unlock)",
+    )
+    @app_commands.describe(focus="Leave blank to see your current focus and what the others do")
+    # Names and nothing else. Discord's picker is not the place for either of
+    # the two decorations the embed carries:
+    #
+    #   * No icon. A choice name is rendered as plain text, so a custom
+    #     <:IronOre:...> arrives in the menu as that literal markup.
+    #   * No "(selected)" marker. This list is built once, when the class is
+    #     defined, and is served identically to every player - a per-player mark
+    #     is not something it can express, and hard-coding one would be wrong
+    #     for everyone it didn't apply to. `/focus` on its own is where a player
+    #     sees what they're on.
+    #
+    # Static rather than an autocomplete callback precisely because there is
+    # nothing per-player left to compute: this way Discord validates the
+    # submitted value against the list for us, which an autocomplete - a
+    # suggestion list, not a constraint - does not do.
+    @app_commands.choices(focus=[
+        app_commands.Choice(name=info["name"], value=focus_id)
+        for focus_id, info in MINING_FOCUSES.items()
+    ])
+    async def focus(
+        self,
+        interaction: discord.Interaction,
+        focus: app_commands.Choice[str] | None = None,
+    ):
+        """Sets, or shows, this player's mining focus.
 
-            # Counting members can chunk the guild over the gateway, so it
-            # happens before the transaction is opened - see the note on
-            # Database.transaction about not awaiting Discord under the lock.
-            daily_amount = await human_member_count(guild) * MINING_POOL_DAILY_PER_MEMBER
-            cap = daily_amount * MINING_POOL_CAP_MULTIPLIER
+        Global rather than per-server, matching user_materials: /collect empties
+        drills across every server in one call, so a per-server focus would
+        convert each drill's haul differently inside a single receipt.
 
-            # The top-up writes an absolute figure derived from what it read,
-            # so it has to read and write atomically: a drill harvesting in
-            # between would have its take silently restored, minting raw
-            # materials back into the pool. The last_topup guard in the WHERE
-            # clause also makes the once-a-day rule safe against two ticks
-            # overlapping.
+        The ruby is charged ONCE, on the first call that actually chooses a
+        focus. Charging it per change would price the choice far above its own
+        worth - a ruby is about a month of a starting player's entire output,
+        against a benefit measured in fractions of a coin - and nobody would
+        ever revise a focus, which defeats the point of having them. Changes are
+        free and limited to one a day instead.
+        """
+        current, _, last_changed, unlocked = await get_focus(self.db, interaction.user.id)
+        today = job_board_today()
+
+        if focus is None:
+            await respond(interaction, self.db, embed=self._focus_embed(current, unlocked))
+            return
+
+        chosen = focus.value
+        # Deliberately NOT gated on `unlocked`. A player who hasn't paid yet
+        # reads as Balance, so this also catches someone picking Balance as
+        # their first focus - which would charge them a ruby for exactly the
+        # mining they already had. Balance is worth choosing only as a way back
+        # from a real focus, and by then they've unlocked it.
+        if chosen == current:
+            await interaction.response.send_message(
+                f"You're already mining **{focus_label(current)}**."
+                + ("" if unlocked else " It's the default - choosing it wouldn't change anything, "
+                   "so it isn't worth a Ruby. Pick one of the others."),
+                ephemeral=True,
+            )
+            return
+        if unlocked and last_changed == today:
+            await interaction.response.send_message(
+                "You've already changed your mining focus today. It resets at "
+                "midnight Arizona time - changing is free, just not more than once a day.",
+                ephemeral=True,
+            )
+            return
+
+        # Taking the ruby, recording the focus and clearing the rounding carry
+        # commit together: a failure between them either charges for nothing or
+        # hands the feature out free.
+        try:
             async with self.db.transaction() as tx:
-                cfg = await tx.fetchone(
-                    "SELECT mining_pool_remaining, mining_pool_last_topup FROM server_config WHERE guild_id = ?",
-                    (guild.id,),
-                )
-                if cfg["mining_pool_last_topup"] == today:
-                    continue  # already topped up today
+                await ensure_user_row(tx, interaction.user.id)
+                if not unlocked:
+                    for material_id, quantity in MINING_FOCUS_UNLOCK_COST.items():
+                        have = await get_user_quantity(tx, interaction.user.id, material_id)
+                        if have < quantity:
+                            info = get_material_info(material_id)
+                            await interaction.response.send_message(
+                                f"Choosing a mining focus costs {info['emoji']} "
+                                f"**{quantity} {info['name']}**, and you have {have}. "
+                                f"Mine one, or press one with `/press craft`.",
+                                ephemeral=True,
+                            )
+                            return
+                        await deduct_user_quantity(tx, interaction.user.id, material_id, quantity)
+                await set_focus(tx, interaction.user.id, chosen, today)
+        except InsufficientQuantity:
+            await interaction.response.send_message(
+                "Your inventory changed while that was going through - nothing was spent. Try again.",
+                ephemeral=True,
+            )
+            return
 
-                new_remaining = min(cfg["mining_pool_remaining"] + daily_amount, cap)
-                await tx.execute(
-                    "UPDATE server_config SET mining_pool_remaining = ?, mining_pool_last_topup = ? "
-                    "WHERE guild_id = ? AND mining_pool_last_topup IS NOT ?",
-                    (new_remaining, today, guild.id, today),
-                )
+        embed = self._focus_embed(chosen, True)
+        embed.title = "Mining Focus Set" if unlocked else "Mining Focus Unlocked"
+        if not unlocked:
+            costs = ", ".join(
+                f"{get_material_info(m)['emoji']} {q}" for m, q in MINING_FOCUS_UNLOCK_COST.items()
+            )
+            embed.set_footer(text=f"{FOOTER_TEXT} · unlocked for {costs}")
+        await respond(interaction, self.db, embed=embed)
 
-    @pool_topup_loop.before_loop
-    async def before_pool_topup_loop(self):
-        await self.bot.wait_until_ready()
+    def _focus_embed(self, current: str, unlocked: bool) -> discord.Embed:
+        """The focus menu: what you're on, and what each of the others does.
+
+        Every focus is described in full even when the player hasn't unlocked
+        one, because the two facts that decide the choice are both bad news and
+        both easy to discover too late - copper and coal can't make steel at
+        all, and iron helps steel far less than doubling your iron ore sounds
+        like it should.
+        """
+        embed = make_embed("Mining Focus", MINING_COLOR)
+        if unlocked:
+            embed.description = f"You're mining **{focus_label(current)}**."
+        else:
+            costs = ", ".join(
+                f"{get_material_info(m)['emoji']} **{q} {get_material_info(m)['name']}**"
+                for m, q in MINING_FOCUS_UNLOCK_COST.items()
+            )
+            embed.description = (
+                f"A mining focus converts the ore you don't want into the one you do. Copper is "
+                f"worth two iron because iron drops around twice as often "
+                f"— you get more of what you want and none of what you don't.\n\n"
+                f"Unlocking it costs {costs}, once. After that, changing is free, once a day.\n\n"
+                f"Gemstones are unaffected by focus; rubies, obsidian and diamonds are equally "
+                f"likely whatever you choose."
+            )
+
+        # Icon and marker both belong in the heading: the icon because it is how
+        # every ore is identified everywhere else in the bot, and the marker
+        # because "which one am I on" is the only question this embed exists to
+        # answer that the blurbs don't. Field names DO render custom emoji -
+        # /mine status has done it since 1.0 - unlike author lines and footers.
+        # Marked whether or not they've unlocked it. Someone who has never spent
+        # the ruby genuinely IS mining Balance - it's what convert_haul does
+        # with them - so leaving every heading unmarked would answer "what am I
+        # on?" with nothing at all, and make Balance read as something they
+        # can't have rather than the thing they already have.
+        for focus_id, info in MINING_FOCUSES.items():
+            marker = " (selected)" if focus_id == current else ""
+            embed.add_field(
+                name=f"{info['emoji']} {info['name']}{marker}",
+                value=info["blurb"],
+                inline=False,
+            )
+
+        return embed
 
     @tasks.loop(minutes=HARVEST_TICK_MINUTES)
     async def harvest_loop(self):
@@ -761,16 +911,12 @@ class MiningCog(commands.Cog):
             # the same remainder and between them mine more than the pool held,
             # driving it negative and inventing raw materials from nothing.
             async with self.db.transaction() as tx:
-                cfg = await tx.fetchone(
-                    "SELECT mining_pool_remaining FROM server_config WHERE guild_id = ?",
-                    (d["guild_id"],),
-                )
-                pool_remaining = cfg["mining_pool_remaining"] if cfg else 0
-                # Bail out before touching harvest_progress: a drill shouldn't
-                # bank credit for hours it couldn't have mined anyway, or it
-                # would dump the whole backlog the moment the pool tops up.
-                if pool_remaining <= 0:
-                    continue
+                # No "has the pool got anything left" check, and no clamping the
+                # take to what's in it. The bag refills the moment it empties
+                # (take_from_pool), so a drill is never stopped by the server
+                # running out - that was the daily allowance, and it's gone. The
+                # only thing that stops a drill now is its own storage filling
+                # up, which is what space_left below is.
 
                 # Re-read rather than trusting the row from the batch select:
                 # a /collect or /mine attach may have landed since then.
@@ -794,24 +940,31 @@ class MiningCog(commands.Cog):
                 amount, carry = advance_harvest(
                     current["harvest_progress"], rate_of(current), ticks_per_hour
                 )
-                harvested = min(amount, space_left, pool_remaining)
+
+                # What comes out is decided HERE rather than at /collect, which
+                # is the 1.2 change this all turns on: the pool has a real
+                # finite composition, and a guaranteed diamond sitting in a
+                # shared bag can't be drawn per-player at handover without every
+                # player drawing their own copy of it. take_from_pool removes
+                # what it returns, so this is the one place the material becomes
+                # the drill's.
+                drawn = await take_from_pool(
+                    tx, current["guild_id"], min(amount, space_left)
+                )
+                harvested = sum(drawn.values())
                 new_stored = current["stored_amount"] + harvested
 
                 # The carry is written even when harvested is 0, so a drill
                 # that mines less than one item per tick still accumulates
-                # toward one instead of resetting every tick. Any whole items
-                # lost to the space_left/pool_remaining clamp are dropped
-                # rather than banked, matching how the pool has always been
-                # first-come-first-served.
+                # toward one instead of resetting every tick. Whole items lost
+                # to the space_left clamp are dropped rather than banked: a
+                # drill that filled up mid-tick shouldn't pay out the rest of
+                # that tick the instant it's emptied.
                 await tx.execute(
                     "UPDATE drills SET stored_amount = ?, is_full = ?, harvest_progress = ? WHERE drill_id = ?",
                     (new_stored, 1 if new_stored >= capacity else 0, carry, current["drill_id"]),
                 )
-                if harvested > 0:
-                    await tx.execute(
-                        "UPDATE server_config SET mining_pool_remaining = mining_pool_remaining - ? WHERE guild_id = ?",
-                        (harvested, current["guild_id"]),
-                    )
+                await add_drill_contents(tx, current["drill_id"], drawn)
 
     @harvest_loop.before_loop
     async def before_harvest_loop(self):

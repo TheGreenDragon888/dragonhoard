@@ -26,6 +26,7 @@ from utils.receipts import build_receipt_embed
 from utils.guild_helpers import human_member_count
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
+    apply_machine_upgrades,
     ensure_server_row,
     get_user_quantity,
     adjust_user_quantity,
@@ -152,7 +153,7 @@ class FurnaceCog(commands.Cog):
                         "UPDATE server_config SET furnace_fees_collected = furnace_fees_collected + ? WHERE guild_id = ?",
                         (fee_total, interaction.guild_id),
                     )
-                    await self._maybe_upgrade_furnace(tx, interaction.guild_id)
+                    await apply_machine_upgrades(tx, interaction.guild_id, "furnace")
 
                 # Everything already waiting that will be smelted before this
                 # job. The server's own auto-smelt jobs are excluded because
@@ -455,24 +456,6 @@ class FurnaceCog(commands.Cog):
                 # The market sold the ore out from under this tick. Nothing was
                 # taken; the next tick reconsiders from current stock.
                 continue
-
-    async def _maybe_upgrade_furnace(self, db, guild_id: int):
-        """Takes an executor rather than using self.db, so it reads the fee
-        total its caller just wrote rather than the pre-transaction value."""
-        cfg = await db.fetchone(
-            "SELECT furnace_level, furnace_fees_collected FROM server_config WHERE guild_id = ?",
-            (guild_id,),
-        )
-        # Loops because one expensive job can cross more than one threshold,
-        # and there's no cap to stop at.
-        level, collected = cfg["furnace_level"], cfg["furnace_fees_collected"]
-        while collected >= upgrade_threshold(level + 1):
-            level += 1
-        if level != cfg["furnace_level"]:
-            await db.execute(
-                "UPDATE server_config SET furnace_level = ? WHERE guild_id = ?",
-                (level, guild_id),
-            )
 
     @process_loop.before_loop
     async def before_process_loop(self):

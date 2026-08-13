@@ -3,9 +3,27 @@ All mining menu embeds (/mine, /collect) are purple, #8C00FF (see docs/stylizati
 
 Materials are stored universally (per user). Raw materials can be mined from anywhere in the server - there is no designated "dig site" channel. Users can individually place up to three drills per server.
 
-Each server holds a single pool of raw materials instead of separate blocks or per-channel pools. Once per day, (server human member count * 200) raw materials are added to that server's pool, up to a cap of 3x that daily amount (human member count * 600) - so a server that goes unharvested can bank up to 3 days' worth of production before the pool stops growing. Bots are excluded from this count, same as the market's target stock (docs/market.md).
+Each server holds a single pool of raw materials instead of separate blocks or per-channel pools. As of 1.2 that pool is a BAG of exactly 1,000,000 items, and it refills the instant it empties. There is no daily top-up and no cap - both were removed.
 
-Mining drills automatically harvest raw materials from their server's pool until their storage capacity fills; then they stop until their owner runs /collect. If the pool runs dry, drills sit idle until the next daily top-up. Use /mine status to see your active drills and the server's remaining pool size, from any channel.
+Why they went: the pool used to gain (human member count * 200) items a day, capped at three days of that. That made mining a rate limit dressed up as a resource. A server's output was fixed by its member count, so building better drills bought you nothing once you were already draining the daily allowance, and the only real answer to "how do we mine more?" was "recruit more people". What a server produces is now decided by how many drills it has running, how good they are, and how often somebody empties them. Bots are still excluded wherever member count is used elsewhere (the market's target stock - docs/market.md).
+
+A bag holds each material in its exact drop-chance proportion:
+
+Iron Ore   566,700     Ruby          90
+Copper Ore 283,350     Obsidian       9
+Coal       149,850     Diamond        1
+
+Those gemstone counts are the point. A drill draws from what is genuinely in the bag, without replacement, so a diamond is not a one-in-a-million chance re-rolled forever - it is a single object sitting in there that somebody WILL dig up before the bag runs out. Drain a bag, get a diamond. Every time, on every server. The average is exactly the published drop rate; what the bag removes is the variance.
+
+The bag is deliberately NOT scaled to server size. A smaller bag for a smaller server would make its diamonds commoner per item mined, which is a different game rather than the same one at a different pace.
+
+How long a bag lasts is now entirely a matter of investment. At 3 drills per player: 5 members on level 1 Iron Drills mine 1,800/day and take 556 days; the same 5 on level 10 Diamond Drills mine 15,120/day and take 66; 200 members on level 1 Iron Drills take 14. A lone player on starter drills waits years. That is the accepted trade for removing the ceiling - gem timing is now the player's own choice, where before it was their member count's. An earlier design floored it at one diamond a year by injecting gems on a timer; that was dropped along with the daily top-up it hung off.
+
+/mine status shows what is actually in the bag, including exactly which gemstones are still in it. Every number it prints is a fact read from the database; there are no estimates anywhere in that embed.
+
+Drills likewise hold specific materials rather than a count, from the moment they mine them. A drill's stored_amount is still the total it is holding (that is what capacity and "FULL" are measured against), with drill_contents saying what those items are.
+
+Mining drills automatically harvest raw materials from their server's pool until their storage capacity fills; then they stop until their owner runs /collect. A full drill is the ONLY thing that stops mining - the bag refills the moment it empties, so a drill is never left idle waiting on a clock. Use /mine status to see your active drills and what is left in the server's bag, from any channel.
 
 /collect is cross-server: one call empties every drill you have placed anywhere, wherever you run it from, and its embed breaks the haul down per server when more than one contributed. Everything else about mining stays per-server - each server has its own pool, its own three-drill-per-player cap, and its own /mine status. Collection can be global because materials are stored per user, not per server, so a drill's haul was always going to land in the same inventory regardless of where the drill sat. Drills in servers you or the bot have since left are collected too; they kept mining, and the material is already yours. Pass here:True to collect only from the drills you have in the server you're running it from.
 
@@ -25,6 +43,24 @@ Obsidian Drill - 3 Obsidian
 Diamond Drill - 3 Diamond
 
 So an Iron Drill costs 1 pack + 10 Iron to reach level 2, 2 packs + 20 Iron to reach level 3, 4 packs + 40 Iron to reach level 4, and so on. Gem drills pay 3 of their gem rather than 10, matching the 3 gems their drill bit already costs - at a one-in-a-million drop chance, 10 Diamonds per upgrade would put those drills permanently out of reach.
+
+Mining Focus
+A player who has reached the ruby stage can spend one Ruby, once, to unlock a mining focus with /focus. A focus commits their mining to one ore: everything they would have dug up of the other ores arrives as their chosen one instead. Unlocking costs a Ruby; changing afterwards is free, once per day (midnight Arizona time, the job board's clock).
+
+The four options are Balanced (the default, no conversion), Iron & Coal, Copper & Coal, and Coal. Coal is kept by every focus that has one because the furnace burns a coal per item smelted whatever the recipe - a focus that converted coal away would stop the player smelting the very ore they chose.
+
+Conversion is at the RARITY ratio, not one-for-one: iron ore drops exactly twice as often as copper ore, so one copper ore becomes two iron ore and one iron ore becomes half a copper. The trade is even measured in how long each took to dig up. Because the ratio is rarity rather than price, and iron ore's price x drop chance is 0.0060 against 0.0050 for the other two, a focus is not exactly value-neutral: iron is about +6% in market value, copper -6% and coal -6.4%. Converting at the price ratio instead would be exactly neutral (a copper would become 1.67 iron) and was rejected - 6% is noise beside everything else a focus changes, and "iron drops twice as often, so a copper is worth two of it" is a rule a player can hold in their head.
+
+Focus is per user and global, not per server, matching how materials are stored. /collect empties drills in every server in one call, so a per-server focus would convert each drill's haul differently inside a single receipt.
+
+Conversion happens at COLLECTION, not while mining. A drill banks the real materials it drew from its server's pool - that is what keeps the pool's gemstone guarantee honest - and the focus is applied when they are handed over. So changing focus re-aims ore already sitting in a drill, which is harmless (the rule is fixed, so there is nothing to time) and spares a player emptying every drill before switching. Rounding leftovers are banked per player in a carry, so twenty single-item collections yield exactly what one twenty-item collection does; without that, a coal focus (1 iron ore -> 0.264 coal) would either destroy small hauls or mint 3.8x by collecting one item at a time.
+
+Gemstones are never affected by any focus. Rubies, obsidian and diamonds drop at exactly the same rate whatever a player chooses.
+
+Three consequences worth stating plainly, because two of them are bad news that is easy to discover too late:
+- Copper & Coal and Coal focus make steel impossible to self-supply, because steel needs iron ore and neither produces any. That rules out every steel component, both steel drill bits, the Steel Container, and diamonds via the press.
+- Iron & Coal helps steel far less than doubling your iron ore sounds like it should. It takes the stream to 7.56 iron ore per coal and steel wants 5:1, so coal becomes the binding input instead - steel per item mined improves by about 32%, not 100%.
+- It roughly halves the mining behind a pressed ruby or obsidian, since the press is priced at ~95% of what a player would have mined alongside finding that gem naturally. That is intended - accelerating the gem economy is the point - but it is the largest downstream effect of the feature.
 
 Storage Containers
 Every drill holds 100 raw materials on its own regardless of type. Storage containers are crafted in the factory and fitted with /mine attach, adding their capacity on top of that 100. A drill holds at most one container at a time, and any container fits any drill - the tier names describe what the container costs and how much it adds, not which drill it belongs to.
@@ -62,10 +98,12 @@ Rates below are at level 1; every level adds 1 raw material / hour. Every drill 
 
 (Storage containers, produced in a factory - attach with /mine attach)
 📦 Iron Container (10 Iron, 5 Copper) [+150 storage, so 250 on a drill]
-🗃️ Steel Container (10 Steel, 10 Copper) [+200 storage, so 300 on a drill]
-💼 Ruby Container (1 Ruby, 20 Copper) [+300 storage, so 400 on a drill]
-🧳 Obsidian Container (1 Obsidian, 40 Copper) [+400 storage, so 500 on a drill]
-🎁 Diamond Container (1 Diamond, 80 Copper) [+500 storage, so 600 on a drill]
+🗃️ Steel Container (10 Steel, 10 Copper) [+400 storage, so 500 on a drill]
+💼 Ruby Container (1 Ruby, 20 Copper) [+900 storage, so 1000 on a drill]
+🧳 Obsidian Container (1 Obsidian, 40 Copper) [+1900 storage, so 2000 on a drill]
+🎁 Diamond Container (1 Diamond, 80 Copper) [+3900 storage, so 4000 on a drill]
+
+Each tier holds twice what the one below it does. A drill holding 1000 is a day's mining from a level 10 Diamond Drill, the fastest rig you're likely to field, so the gemstone containers are worth roughly one, two and four days of it.
 
 (Upgrade materials, produced in a factory)
 🧰 Drill Upgrade Pack (5 Copper) [consumed by /factory upgrade]
@@ -75,7 +113,9 @@ Each server comes with a level 1 furnace, factory and hydraulic press. Infrastru
 
 Furnace menu embeds are purple-red, #FF0059; factory menu embeds are red-orange, #FF4000; press menu embeds are blue, #0066FF (see docs/stylization.md).
 
-Infrastructure has no maximum level. Every machine's output scales linearly with its level, and every level costs ten times the fees the last one did - 5 to reach level 2, 50 for level 3, 500 for level 4, and so on. The cost is what puts a ceiling on it, not a hard cap.
+Infrastructure has no maximum level. Every machine's output scales linearly with its level, and every level costs five times the fees the last one did - 5 to reach level 2, 25 for level 3, 125 for level 4, and so on. The cost is what puts a ceiling on it, not a hard cap.
+
+That step was ten until 1.2, and the resulting ladder (5, 50, 500, 5000) was unreachable in practice: fees are fractions of a currency unit and the market pays about 1.00 per hundred iron ore, so level 4 meant tens of thousands of items smelted. Because the cost compounds, halving the step is far more than a halving - the cumulative fee to reach level 6 drops from 55,555 to 3,905, and level 8 from 5.5 million to 97,655.
 
 Furnaces: (/furnace smelt <smelt material result> <quantity>)
 5 smelted materials / hour, per level
@@ -89,7 +129,7 @@ Hydraulic presses: (/press craft <gemstone or ultra dense matter> <quantity>)
 
 The press turns bulk smelted material into gemstones. Every recipe costs a little under what a player would have received alongside that gem on average before mining one - the stretch between two rubies yields about 6,297 Iron Ore, which smelts into 630 Iron, and a pressed ruby costs 600. So the press doesn't create gems out of nothing; it trades an enormous pile of ore for the certainty of a gem instead of the one-in-a-million chance of digging one up, with a ~4.7% discount as the reward for having built one.
 
-That discount is deliberately identical for every recipe. The three costs sit in a fixed 1 : 5 : 45 ratio that falls out of the drop rates (gem rarities are 90:9:1, Copper Ore drops at half Iron Ore's rate, and Steel takes 20 ore per unit against Iron's 10), and that ratio is what makes the three recipes worth the same as each other per unit of mining effort. Discounting one gem more than the others would quietly make it the only one worth pressing. Pressed gemstones are identical to mined ones and can be sold on the market.
+That discount is deliberately identical for every recipe. The three costs sit in a fixed 1 : 5 : 45 ratio that falls out of the drop rates (gem rarities are 90:9:1, Copper Ore drops at half Iron Ore's rate, and Steel takes 20 ore per unit against Iron's 10), and that ratio is what makes the three recipes worth the same as each other per unit of mining effort. Discounting one gem more than the others would quietly make it the only one worth pressing. Pressed gemstones are identical to mined ones. Neither can be sold on the market - gemstones left it in 1.2 (docs/market.md section 3), so the press's output is a crafting material rather than a payday.
 
 A recipe's cost in press time is measured in press-days, against a ruby. A press earns one press-day per day for each level it has, so a level 1 press spends nine days on a diamond while a level 3 press spends three. A press earns nothing while its queue is empty - it can't bank weeks of idle time and then finish a diamond the instant one is queued.
 
@@ -112,7 +152,7 @@ Any server member with "Manage Server" permission can set up the currency - it j
 
 (Planned, not yet implemented: when the bot joins a new server, it should privately prompt a "Manage Server" member to run this setup.)
 
-Server currencies are earned by selling raw and smelted materials to the server through its market (/market sell) - see docs/market.md for the full design. There is no passive chat-based payout; currency only enters circulation through genuine economic activity.
+Server currencies are earned by selling ores and smelted materials to the server through its market (/market sell) - gemstones are not tradeable - see docs/market.md for the full design. There is no passive chat-based payout; currency only enters circulation through genuine economic activity.
 
 Each server's currency is currently the only spendable currency in the game - a previously-planned universal "DragonCoin" currency remains a non-spendable, non-earnable unit reserved for a future cross-server exchange rate (docs/market.md).
 
@@ -120,4 +160,10 @@ Server managers can set up a fee to use their server's infrastructure using thei
 
 /setup fee <furnace / factory> <amount per item>
 
-If a server collects 5.00 of the server's currency in fees, then the respective furnace / factory will upgrade from level 1 to level 2. The same thing will happen upon reaching 50.00 in fees, but instead from level 2 to level 3.
+If a server collects 5.00 of the server's currency in fees, then the respective furnace / factory will upgrade from level 1 to level 2. The same thing will happen upon reaching 25.00 in fees, but instead from level 2 to level 3.
+
+Players can also pay into a machine directly with /donate infrastructure <machine> <amount>. It goes into the same fees_collected pot the machine's own fees do and levels it the same way - a machine's level is meant to say how much the server has put into it, and money is money, so splitting donations into a separate fund would only produce a server that had "donated 500" next to a level 1 furnace. Donated currency is burned exactly as a fee is (docs/market.md section 1).
+
+/donate player <member> <amount> moves currency between two members of the same server instead. No fee is taken, and it is neither minted nor burned - the supply is unchanged, just in different hands - so it deliberately does not touch the section 4 ledger.
+
+When Dragonhoard joins a server it posts a one-off setup card naming the three settings worth touching, currency first. It fires once and sets server_config.setup_prompt_sent, so a re-invited server is not nagged again and a server that has deliberately chosen to run without a named currency is left alone. If there is no channel the bot may post in, it falls back to a server notification instead, which reaches whoever runs the first command.

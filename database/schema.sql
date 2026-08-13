@@ -66,16 +66,22 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- 0/1 boolean: whether bot responses are public in this server instead of
     -- ephemeral (private). Off by default - see utils/responses.py.
     public_messages         INTEGER NOT NULL DEFAULT 0,
+    -- 0/1 boolean: whether the "set your currency up" prompt has been posted in
+    -- this server. It fires once on joining and stays fired, so re-inviting the
+    -- bot doesn't re-nag a server that has already been told - and a server
+    -- that deliberately runs without a named currency isn't pestered forever.
+    setup_prompt_sent       INTEGER NOT NULL DEFAULT 0,
     -- 0/1 boolean: whether Dragonhoard is currently in this server. The row is
     -- kept rather than deleted when it's removed, so balances and market stock
     -- survive intact and come back if the bot is re-invited. What changes is
     -- that a departed server's currency stops appearing in /balance and
     -- /inventory, and its placed drills are returned to their owners.
     bot_present             INTEGER NOT NULL DEFAULT 1,
-    -- The server-wide shared pool of unharvested raw materials that drills draw
-    -- from. Topped up once/day by mining_pool_last_topup's date changing.
+    -- How many raw materials are left in this server's current mining bag. The
+    -- authoritative total; server_mining_pool holds the same figure broken down
+    -- by material and the two must agree. There is deliberately no daily top-up
+    -- and no cap - the bag refills when it empties (utils/mining_pool.py).
     mining_pool_remaining    INTEGER NOT NULL DEFAULT 0,
-    mining_pool_last_topup   TEXT NOT NULL DEFAULT '',
     -- Lifetime faucet/sink running totals for this server's currency, per
     -- docs/market.md section 4. Minted only by the market buying materials
     -- from users; burned by furnace/factory fees and the market selling
@@ -115,10 +121,16 @@ CREATE TABLE IF NOT EXISTS server_material_storage (
 -- through the task.
 CREATE TABLE IF NOT EXISTS daily_jobs (
     guild_id        INTEGER NOT NULL,
-    job_date        TEXT NOT NULL,      -- UTC ISO date, same convention as mining_pool_last_topup
+    -- ISO date on the board's OWN clock (midnight America/Phoenix), which is
+    -- deliberately not the mining pool's UTC schedule - see JOB_BOARD_TIMEZONE
+    -- in utils/job_board.py. Compared as text, so ISO is load-bearing.
+    job_date        TEXT NOT NULL,
     material_id     TEXT NOT NULL,
-    quantity        INTEGER NOT NULL,
-    reward          REAL NOT NULL,      -- the material's market_ceiling_price * quantity
+    -- Both frozen at posting time. They derive from the server's stock of the
+    -- material, which the day's own selling moves constantly, so recomputing
+    -- either on read would grow the task under someone partway through it.
+    quantity        INTEGER NOT NULL,   -- fewest units paying JOB_BOARD_TARGET_PAYOUT, capped
+    reward          REAL NOT NULL,      -- data/materials.py: job_reward
     posted_at       TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (guild_id, job_date)
 );
@@ -134,6 +146,51 @@ CREATE TABLE IF NOT EXISTS daily_job_progress (
     sold            INTEGER NOT NULL DEFAULT 0,
     claimed_at      TEXT,
     PRIMARY KEY (guild_id, job_date, user_id)
+);
+
+-- One-off notices shown to a player the next time they use the bot, once each.
+-- Two scopes, which are deliberately independent feeds rather than one list
+-- with a filter: 'global' is an announcement or disclaimer from the bot itself
+-- and is read once per USER, 'server' belongs to one guild and is read once per
+-- user PER GUILD, so somebody in five servers sees a global notice once and
+-- each server's notice once.
+--
+-- Only the newest notice of each scope is ever shown (see utils/notifications.py
+-- - the read marker stores an id, so anything older is skipped rather than
+-- queued up). That is a brevity rule, not a retention one: superseded rows stay
+-- here as a record of what was announced and when.
+CREATE TABLE IF NOT EXISTS notifications (
+    notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope           TEXT NOT NULL CHECK (scope IN ('global', 'server')),
+    guild_id        INTEGER,               -- NULL for global, the guild for 'server'
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    -- Stable identifier for a notice that ships WITH a release as data
+    -- (data/notifications.py) rather than being posted at runtime. Seeding is
+    -- an INSERT OR IGNORE on this column, so restarting the bot - which reseeds
+    -- every time - can't repost the same announcement to everyone. NULL for
+    -- notices raised at runtime by a feature.
+    notice_key      TEXT UNIQUE,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    -- A global notice belongs to no guild and a server notice must name one.
+    -- Without this a 'global' row carrying a guild_id would be invisible to
+    -- both lookups at once.
+    CHECK ((scope = 'global') = (guild_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_scope ON notifications(scope, guild_id);
+
+-- How far through each feed a user has read. One row per (user, feed), where
+-- the feed is a guild_id or 0 for the global one.
+--
+-- 0 is a sentinel rather than NULL because SQLite treats NULLs in a PRIMARY KEY
+-- as distinct from each other, so a nullable column here would let one user
+-- accumulate unlimited global markers and be shown the same announcement on
+-- every single command forever. Discord snowflakes are never 0.
+CREATE TABLE IF NOT EXISTS notification_reads (
+    user_id         INTEGER NOT NULL,
+    guild_id        INTEGER NOT NULL,   -- 0 = the global feed
+    last_seen_id    INTEGER NOT NULL,
+    PRIMARY KEY (user_id, guild_id)
 );
 
 -- One row per drill for that drill's entire lifetime. A drill is never a
@@ -169,6 +226,72 @@ CREATE TABLE IF NOT EXISTS drills (
 );
 CREATE INDEX IF NOT EXISTS idx_drills_owner ON drills(owner_id);
 CREATE INDEX IF NOT EXISTS idx_drills_guild ON drills(guild_id);
+
+-- What a drill is actually holding, by material. Added in 1.2.
+--
+-- Before it, a drill banked a bare count and only decided WHAT it had mined
+-- when /collect rolled each item at handover. That was fine while every roll
+-- was independent, and became impossible the moment the server's pool acquired
+-- a finite composition: a guaranteed diamond sitting in a shared pool cannot be
+-- drawn per-player at collection time, because two players collecting would
+-- each draw their own copy of it.
+--
+-- drills.stored_amount is kept as the total and MUST equal SUM(quantity) here
+-- for that drill. It is denormalised on purpose - capacity, is_full, the CHECK
+-- on unplaced drills and /mine status are all counts, and rewriting them to
+-- aggregate this table would buy nothing. Every write to one goes in the same
+-- transaction as the write to the other; tests/test_mining_focus.py pins that
+-- they agree.
+CREATE TABLE IF NOT EXISTS drill_contents (
+    drill_id        INTEGER NOT NULL,
+    material_id     TEXT NOT NULL,
+    quantity        INTEGER NOT NULL,
+    PRIMARY KEY (drill_id, material_id),
+    FOREIGN KEY (drill_id) REFERENCES drills(drill_id)
+);
+
+-- The composition of a server's mining pool: how many of each raw material are
+-- actually sitting in it, and the fraction of one still accruing from daily
+-- top-ups. Added in 1.2 alongside drill_contents.
+--
+-- `carry` is what delivers the gemstone guarantee. A five-member server's pool
+-- gains 0.00274 diamonds a day; banking that here until it reaches a whole one
+-- is what turns "one in a million, forever" into "one a year at worst" (see
+-- GEM_GUARANTEE_DAYS and pool_daily_shares in data/materials.py).
+--
+-- As with drill_contents, server_config.mining_pool_remaining stays as the
+-- authoritative TOTAL and must equal SUM(quantity) here for that guild. The
+-- cap, the top-up and the /mine status line all work in items.
+CREATE TABLE IF NOT EXISTS server_mining_pool (
+    guild_id        INTEGER NOT NULL,
+    material_id     TEXT NOT NULL,
+    quantity        INTEGER NOT NULL DEFAULT 0,
+    carry           REAL NOT NULL DEFAULT 0.0,
+    PRIMARY KEY (guild_id, material_id)
+);
+
+-- A player's mining focus: which ore everything they mine arrives as. Global
+-- per user, not per server, matching user_materials - /collect empties drills
+-- across every server in one call, so a per-server focus would convert each
+-- drill's haul differently inside one receipt.
+--
+-- THE ROW'S EXISTENCE IS THE UNLOCK. A player with no row is on the default
+-- focus and has never paid the ruby; inserting the row is what the payment buys.
+-- There is deliberately no separate `unlocked` flag to fall out of sync with it.
+--
+-- `carry` is the fraction of the focus's primary ore still owed from rounding
+-- (see apply_mining_focus). It must be reset to 0 whenever focus_id changes, or
+-- a fraction of a copper owed under one focus is paid out as iron under the next.
+CREATE TABLE IF NOT EXISTS user_mining_focus (
+    user_id         INTEGER PRIMARY KEY,
+    focus_id        TEXT NOT NULL,
+    carry           REAL NOT NULL DEFAULT 0.0,
+    -- ISO date of the last change, on the job board's Arizona clock, which is
+    -- what rate-limits switching to once a day. Empty string means never
+    -- changed since unlocking.
+    last_changed    TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
 
 -- A queued furnace (smelting), factory (crafting) or press job for a user in a
 -- guild. target_id is the material_id being produced (e.g. "iron", "wiring",

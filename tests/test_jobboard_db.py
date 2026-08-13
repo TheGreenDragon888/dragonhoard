@@ -21,6 +21,13 @@ from utils.job_board import (
     get_progress,
     job_board_today,
 )
+from data.materials import (
+    JOB_BOARD_MATERIALS,
+    JOB_BOARD_TARGET_PAYOUT,
+    job_quantity,
+    job_reward,
+    target_stock,
+)
 
 GUILD = 8484
 USER = 4242
@@ -80,13 +87,45 @@ class PostingTests(JobBoardTestCase):
         self.assertEqual(row["n"], 1)
 
     async def test_the_quantity_and_reward_are_frozen_at_posting(self):
-        # Both derive from member count, so recomputing on read would let
-        # someone joining mid-day move the goalposts.
+        """Both derive from how well stocked the server is, and the day's own
+        selling moves that constantly - so recomputing on read would grow the
+        task under someone already partway through it every time anybody sold
+        anything. Stock is the goalpost worth nailing down; member count can no
+        longer reach either figure at all (see test_jobboard.py:
+        test_it_does_not_scale_with_member_count)."""
         job = await self.post()
+        await self.db.execute(
+            "INSERT INTO server_material_storage (guild_id, material_id, quantity) "
+            "VALUES (?, ?, ?) ON CONFLICT (guild_id, material_id) "
+            "DO UPDATE SET quantity = excluded.quantity",
+            (GUILD, job["material_id"], 10_000_000),
+        )
         async with self.db.transaction() as tx:
             later = await ensure_todays_job(tx, GUILD, MEMBERS * 10)
         self.assertEqual(later["quantity"], job["quantity"])
         self.assertEqual(later["reward"], job["reward"])
+
+    async def test_the_task_is_priced_off_the_stock_it_was_posted_against(self):
+        """The wiring the arithmetic tests can't see: that ensure_todays_job
+        hands job_quantity and job_reward the CHOSEN material's own stock and
+        target, not another material's or a stale read. Every eligible material
+        is stocked to a different fraction of its target, so crossing the wires
+        gives a different answer for all but one of them."""
+        fractions = {m: (i + 1) / 10 for i, m in enumerate(JOB_BOARD_MATERIALS)}
+        for material_id, fraction in fractions.items():
+            await self.db.execute(
+                "INSERT INTO server_material_storage (guild_id, material_id, quantity) VALUES (?, ?, ?)",
+                (GUILD, material_id, int(target_stock(MEMBERS, material_id) * fraction)),
+            )
+
+        job = await self.post()
+        material_id = job["material_id"]
+        target = target_stock(MEMBERS, material_id)
+        stock = int(target * fractions[material_id])
+
+        self.assertEqual(job["quantity"], job_quantity(material_id, stock, target))
+        self.assertAlmostEqual(job["reward"], job_reward(material_id, job["quantity"], stock, target))
+        self.assertGreaterEqual(job["reward"], JOB_BOARD_TARGET_PAYOUT)
 
     async def test_it_asks_for_what_the_server_is_short_of(self):
         # The selection is weighted, not deterministic, so this checks the

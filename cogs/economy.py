@@ -35,7 +35,7 @@ from utils.responses import respond
 from utils.embeds import make_embed, add_multi_field, INVENTORY_COLOR, MARKET_COLOR
 from utils.formatting import format_currency, format_compact_price, DEFAULT_CURRENCY_EMOJI
 from utils.guild_helpers import human_member_count
-from utils.job_board import credit_job_progress
+from utils.job_board import credit_job_progress, ensure_todays_job
 from utils.drills import drill_cell
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
@@ -59,6 +59,7 @@ from data.materials import (
     TRADEABLE_ORDER,
     INVENTORY_CATEGORIES,
     get_material_info,
+    sale_unit_price,
     target_stock,
 )
 
@@ -114,15 +115,21 @@ class EconomyCog(commands.Cog):
     def _buy_price(self, ceiling_price: float, current_stock: int, quantity: int, target_stock: int) -> float:
         """Total the server pays to acquire `quantity` units, priced at the
         flat per-unit rate for the stock level at the start of the trade -
-        ceiling_price * target / (target + current_stock) - full price at
-        zero stock, half price at target_stock, approaching (but never
-        reaching) zero beyond it. Target stock is an equilibrium point, not
-        a maximum: the server always buys, and every unit is paid the same
-        rate within a trade - quantity doesn't move the price mid-trade,
-        only the stock change persisted afterward does, for the next trade."""
+        full price at zero stock, half price at target_stock, approaching
+        (but never reaching) zero beyond it. Target stock is an equilibrium
+        point, not a maximum: the server always buys, and every unit is paid
+        the same rate within a trade - quantity doesn't move the price
+        mid-trade, only the stock change persisted afterward does, for the
+        next trade.
+
+        The per-unit rate comes from data/materials.py: sale_unit_price, which
+        the job board prices its bonus off too. One definition of the curve, so
+        the two cannot drift - if they did, the gap between what a sale pays
+        and what the board pays for the same goods is exactly the gap someone
+        would farm."""
         if target_stock <= 0 or quantity <= 0:
             return 0.0
-        return ceiling_price * target_stock / (target_stock + current_stock) * quantity
+        return sale_unit_price(ceiling_price, current_stock, target_stock) * quantity
 
     def _sell_price(self, ceiling_price: float, current_stock: int, quantity: int, target_stock: int) -> float:
         """Total a user pays to buy `quantity` units from the server, priced
@@ -316,6 +323,15 @@ class EconomyCog(commands.Cog):
             async with self.db.transaction() as tx:
                 await ensure_user_row(tx, interaction.user.id)
                 await ensure_server_row(tx, interaction.guild_id)
+
+                # Post the day's job BEFORE this sale moves the stock. The
+                # board sizes its task and prices its bonus off how well
+                # stocked the server is, so posting it afterwards would let
+                # whoever sells first each day set both from a warehouse they
+                # had just topped up - a smaller task and a cheaper bonus,
+                # chosen by the one person it benefits. Idempotent, so the
+                # credit_job_progress call below finds this same row.
+                await ensure_todays_job(tx, interaction.guild_id, member_count)
 
                 have = await get_user_quantity(tx, interaction.user.id, material.value)
                 if have < quantity:

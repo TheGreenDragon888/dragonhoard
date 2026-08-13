@@ -11,6 +11,7 @@ import unittest
 from cogs.economy import EconomyCog, TRADEABLE_MATERIALS, max_affordable
 from data.materials import (
     GEMSTONES,
+    JOB_BOARD_MATERIALS,
     ORES,
     RAW_MATERIALS,
     SMELTED_MATERIALS,
@@ -24,27 +25,36 @@ class TradeableOrderTests(unittest.TestCase):
     /market status's lines and both /market sell's and /market buy's choice
     lists - so these pin the order once for all of them."""
 
-    def test_it_is_exactly_the_raw_and_smelted_materials(self):
+    def test_it_is_exactly_the_ores_and_smelted_materials(self):
         # Changing the ORDER must not change the SET: components and drills
-        # stay out of the market entirely (docs/market.md section 3).
-        self.assertEqual(set(TRADEABLE_ORDER), set(RAW_MATERIALS) | set(SMELTED_MATERIALS))
+        # stay out of the market entirely, and as of 1.2 so do gemstones
+        # (docs/market.md section 3).
+        self.assertEqual(set(TRADEABLE_ORDER), set(ORES) | set(SMELTED_MATERIALS))
         self.assertEqual(len(TRADEABLE_ORDER), len(set(TRADEABLE_ORDER)))
 
-    def test_it_runs_raw_then_smelted_then_gemstones(self):
-        kinds = [
-            "gem" if m in GEMSTONES else "ore" if m in ORES else "smelted"
-            for m in TRADEABLE_ORDER
-        ]
-        self.assertEqual(kinds, ["ore"] * len(ORES)
-                         + ["smelted"] * len(SMELTED_MATERIALS)
-                         + ["gem"] * len(GEMSTONES))
+    def test_no_gemstone_can_be_traded(self):
+        # The 1.2 economy fix, pinned on the list that drives all three market
+        # surfaces at once. A ruby's ceiling price is 5,500 against iron ore at
+        # 0.01, so a single sale mints more than a server earns by playing; the
+        # first four alone paid 11,458. Re-adding one here would reopen it on
+        # /market sell, /market buy AND the job board in one edit, since
+        # JOB_BOARD_MATERIALS is now an alias of this.
+        for gem in GEMSTONES:
+            self.assertNotIn(gem, TRADEABLE_ORDER)
+            self.assertNotIn(gem, TRADEABLE_MATERIALS)
+            self.assertNotIn(gem, JOB_BOARD_MATERIALS)
 
-    def test_ores_and_gemstones_run_commonest_to_rarest(self):
-        for group in (ORES, GEMSTONES):
-            chances = [
-                RAW_MATERIALS[m]["drop_chance"] for m in TRADEABLE_ORDER if m in group
-            ]
-            self.assertEqual(chances, sorted(chances, reverse=True))
+    def test_it_runs_raw_then_smelted(self):
+        kinds = ["ore" if m in ORES else "smelted" for m in TRADEABLE_ORDER]
+        self.assertEqual(
+            kinds, ["ore"] * len(ORES) + ["smelted"] * len(SMELTED_MATERIALS)
+        )
+
+    def test_ores_run_commonest_to_rarest(self):
+        chances = [
+            RAW_MATERIALS[m]["drop_chance"] for m in TRADEABLE_ORDER if m in ORES
+        ]
+        self.assertEqual(chances, sorted(chances, reverse=True))
 
     def test_smelted_materials_run_cheapest_to_dearest(self):
         costs = [raw_input_cost(m) for m in TRADEABLE_ORDER if m in SMELTED_MATERIALS]

@@ -17,7 +17,9 @@ from discord.ext import commands
 
 import config
 from database.db import Database
+from data.notifications import GLOBAL_NOTICES
 from utils.channel_guard import DragonhoardTree
+from utils.notifications import seed_global_notices
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("dragonhoard")
@@ -49,6 +51,7 @@ INITIAL_EXTENSIONS = [
     "cogs.press",
     "cogs.scrapper",
     "cogs.jobboard",
+    "cogs.donate",
     "cogs.recipe",
     "cogs.manual",
     "cogs.changelog",
@@ -64,6 +67,12 @@ async def setup_hook():
     even if the bot's connection drops and reconnects later."""
     await bot.db.init_schema()
     log.info("Database schema ready.")
+
+    # Idempotent on each notice's key, so this runs on every boot and inserts
+    # only what's new - a release's announcements go out once, not every time
+    # the service restarts. See data/notifications.py.
+    seeded = await seed_global_notices(bot.db, GLOBAL_NOTICES)
+    log.info("Global notifications: %d new, %d defined.", seeded, len(GLOBAL_NOTICES))
 
     for ext in INITIAL_EXTENSIONS:
         await bot.load_extension(ext)

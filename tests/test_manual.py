@@ -21,6 +21,7 @@ from cogs.factory import FactoryCog
 from cogs.press import PressCog
 from cogs.scrapper import ScrapperCog
 from cogs.jobboard import JobBoardCog
+from cogs.donate import DonateCog
 from cogs.recipe import RecipeCog
 from cogs.manual import ManualCog
 from cogs.changelog import ChangelogCog
@@ -39,6 +40,7 @@ COGS = (
     PressCog,
     ScrapperCog,
     JobBoardCog,
+    DonateCog,
     RecipeCog,
     ManualCog,
     ChangelogCog,
@@ -77,6 +79,21 @@ def documented_commands() -> list[str]:
 
 
 class ManualCoverageTests(unittest.TestCase):
+    def test_every_loaded_cog_is_checked_here(self):
+        """COGS above is hand-written, so a new cog is documented only if
+        somebody remembers to add it here too - and a coverage test that
+        silently skips the thing you just added is worse than none.
+
+        Caught exactly that: /donate shipped its cog and its manual entry while
+        COGS still listed twelve, so the suite went green without ever looking
+        at it.
+        """
+        import bot
+
+        loaded = {name.removeprefix("cogs.") for name in bot.INITIAL_EXTENSIONS}
+        checked = {cog_cls.__module__.removeprefix("cogs.") for cog_cls in COGS}
+        self.assertEqual(loaded, checked)
+
     def test_every_registered_command_is_documented(self):
         missing = registered_commands() - set(documented_commands())
         self.assertEqual(

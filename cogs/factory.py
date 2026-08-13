@@ -32,6 +32,7 @@ from utils.formatting import format_currency
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
+    apply_machine_upgrades,
     ensure_server_row,
     get_user_quantity,
     adjust_user_quantity,
@@ -164,7 +165,7 @@ class FactoryCog(commands.Cog):
                         "UPDATE server_config SET factory_fees_collected = factory_fees_collected + ? WHERE guild_id = ?",
                         (fee_total, interaction.guild_id),
                     )
-                    await self._maybe_upgrade_factory(tx, interaction.guild_id)
+                    await apply_machine_upgrades(tx, interaction.guild_id, "factory")
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
 
@@ -337,7 +338,7 @@ class FactoryCog(commands.Cog):
                         "UPDATE server_config SET factory_fees_collected = factory_fees_collected + ? WHERE guild_id = ?",
                         (fee_total, interaction.guild_id),
                     )
-                    await self._maybe_upgrade_factory(tx, interaction.guild_id)
+                    await apply_machine_upgrades(tx, interaction.guild_id, "factory")
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
 
@@ -569,24 +570,6 @@ class FactoryCog(commands.Cog):
         # Job-type-agnostic, so this one call covers scrapper locks as well as
         # the factory's own upgrade locks - see utils/drills.py.
         await release_stale_drill_locks(self.db)
-
-    async def _maybe_upgrade_factory(self, db, guild_id: int):
-        """Takes an executor rather than using self.db, so it reads the fee
-        total its caller just wrote rather than the pre-transaction value."""
-        cfg = await db.fetchone(
-            "SELECT factory_level, factory_fees_collected FROM server_config WHERE guild_id = ?",
-            (guild_id,),
-        )
-        # Loops because one expensive job can cross more than one threshold,
-        # and there's no cap to stop at.
-        level, collected = cfg["factory_level"], cfg["factory_fees_collected"]
-        while collected >= upgrade_threshold(level + 1):
-            level += 1
-        if level != cfg["factory_level"]:
-            await db.execute(
-                "UPDATE server_config SET factory_level = ? WHERE guild_id = ?",
-                (level, guild_id),
-            )
 
     @process_loop.before_loop
     async def before_process_loop(self):

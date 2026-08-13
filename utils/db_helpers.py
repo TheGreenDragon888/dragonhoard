@@ -14,7 +14,7 @@ from typing import NamedTuple
 
 import config
 from database.db import Database, InsufficientQuantity, _Executor
-from data.materials import get_material_info, effective_max_queue
+from data.materials import get_material_info, effective_max_queue, upgrade_threshold
 
 # Every machine whose per-server settings live in <machine>_level, _fee,
 # _fees_collected and _max_queue columns on server_config, and whose queued
@@ -224,6 +224,45 @@ async def record_minted(db: _Executor, guild_id: int, amount: float):
         "UPDATE server_config SET currency_minted_total = currency_minted_total + ? WHERE guild_id = ?",
         (amount, guild_id),
     )
+
+
+async def apply_machine_upgrades(db: _Executor, guild_id: int, machine: str) -> int:
+    """Raises a machine's level as far as its collected fees now reach, and
+    returns the level it ended on.
+
+    Loops rather than incrementing once because a single expensive job - or a
+    donation - can cross more than one threshold at a time, and there is no cap
+    to stop at.
+
+    Takes an executor rather than a Database so it reads the fee total its
+    caller just wrote, inside the same transaction, rather than the value from
+    before it. Passing the bare Database here would let a machine miss an
+    upgrade the fee it just banked had paid for.
+
+    One implementation for all four machines, which their uniform column naming
+    is what allows (see MACHINES). It was four identical private methods until
+    /donate needed a fifth, and a rule about levelling that is written down five
+    times is a rule that eventually differs in one of them.
+    """
+    if machine not in MACHINES:
+        raise ValueError(f"unknown machine {machine!r}")
+    cfg = await db.fetchone(
+        f"SELECT {machine}_level AS level, {machine}_fees_collected AS collected "
+        f"FROM server_config WHERE guild_id = ?",
+        (guild_id,),
+    )
+    if cfg is None:
+        return 1
+
+    level = cfg["level"]
+    while cfg["collected"] >= upgrade_threshold(level + 1):
+        level += 1
+    if level != cfg["level"]:
+        await db.execute(
+            f"UPDATE server_config SET {machine}_level = ? WHERE guild_id = ?",
+            (level, guild_id),
+        )
+    return level
 
 
 async def record_burned(db: _Executor, guild_id: int, amount: float):

@@ -131,9 +131,14 @@ _add(ManualSection(
     body=(
         "Mining is the source of every raw material in the game, and it runs without you. "
         "Place a drill and it digs on its own from that moment on.\n\n"
-        "The whole server shares one pool of raw material, which tops up every day and can "
-        "bank a few days' worth if nobody is drawing on it. There's no dedicated mining "
-        "channel - drills belong to the server, not to a room in it.\n\n"
+        "The whole server shares one pool of raw material - a batch of a million items that "
+        "refills the moment it runs out. There's no daily limit and nothing to wait for: how "
+        "much your server produces is decided by how many drills are running, how good they "
+        "are, and how often somebody empties them.\n\n"
+        "**Every batch contains exactly 90 Rubies, 9 Obsidian and 1 Diamond.** Drills pull from "
+        "what's genuinely in it, so a gemstone isn't a long shot re-rolled forever - it's a "
+        "real thing sitting in the batch that somebody will dig up before it runs out. Mine "
+        "through a batch, find a Diamond. `/mine status` shows exactly which gems are left.\n\n"
         f"You can have up to **{MAX_DRILLS_PER_USER_PER_SERVER} drills** placed in any one "
         f"server. Every drill holds **{BASE_STORAGE_CAPACITY}** items by itself, and once it "
         "fills up it stops and waits for you - so a bigger container, or simply collecting "
@@ -157,7 +162,8 @@ _add(ManualSection(
         ManualCommand(
             "/mine status", "/mine status",
             "Shows every drill you have here - its level, how full it is, what it's fitted "
-            "with - plus how much raw material the server pool has left.",
+            "with - plus what's left in the server's batch, including which gemstones are still "
+            "in it.",
         ),
         ManualCommand(
             "/collect", "/collect [here]",
@@ -181,13 +187,26 @@ _add(ManualSection(
             "Takes the container back off a drill. The container returns to your inventory "
             "undamaged - fitting and removing them costs nothing.",
         ),
+        ManualCommand(
+            "/focus", "/focus [focus]",
+            "Commits your mining to one ore: everything else you dig up arrives as that "
+            "instead. Costs one Ruby to unlock, then changing is free once a day. Run it "
+            "with no option to see what each one does before you spend anything.",
+        ),
     ),
     notes=(
+        (
+            "Mining Focus",
+            "A copper ore is worth two iron ore because iron drops twice as often, so a "
+            "focus trades evenly for the digging you did - you just get more of what you "
+            "actually want. Gemstone odds never change, whatever you choose.",
+        ),
         (
             "Gemstones",
             "Rubies, obsidian and diamonds come out of the ground on their own, but rarely "
             "enough that you shouldn't count on them. If you want a gem on a schedule rather "
-            "than by luck, that's what the Hydraulic Press is for.",
+            "than by luck, that's what the Hydraulic Press is for. They can't be sold to the "
+            "server - a gem is worth what you build with it, not what it fetches.",
         ),
     ),
 ))
@@ -348,13 +367,17 @@ _add(ManualSection(
         "you buy materials back off the server.\n\n"
         "Prices move with what the server is holding. The less of something it has, the more "
         "it will pay you for it; as its shelves fill up, the price it offers drops. So a "
-        "material nobody has bothered mining is usually the one worth mining."
+        "material nobody has bothered mining is usually the one worth mining.\n\n"
+        "**Gemstones can't be traded.** Rubies, obsidian and diamonds are worth so much more "
+        "than anything else that a single sale used to be worth more than a whole server "
+        "could earn playing the game. They're crafting materials now, and only that - what a "
+        "gem is worth is what you build with it."
     ),
     commands=(
         ManualCommand(
             "/market sell", "/market sell <material> <quantity>",
-            "Sells raw or smelted materials from your inventory to the server. This is how "
-            "you earn.",
+            "Sells ores and smelted materials from your inventory to the server. This is how "
+            "you earn. Gemstones aren't accepted.",
         ),
         ManualCommand(
             "/market buy", "/market buy <material> <quantity>",
@@ -365,6 +388,27 @@ _add(ManualSection(
             "/market status", "/market status",
             "Shows what the server will pay, what it charges, and how much of each material "
             "it's holding. Check it before a big sale.",
+        ),
+        ManualCommand(
+            "/donate infrastructure", "/donate infrastructure <machine> <amount>",
+            "Pays your own currency into one of the server's machines. It counts exactly "
+            "like a fee, so it levels the machine up for everyone - the only way to push a "
+            "machine along deliberately instead of waiting for use to do it.",
+        ),
+        ManualCommand(
+            "/donate player", "/donate player <member> <amount>",
+            "Hands some of your currency to another member of this server. No fee is taken "
+            "and nothing is lost on the way.",
+        ),
+    ),
+    notes=(
+        (
+            "Where money goes",
+            "Currency is created when the server buys materials from you, and destroyed when "
+            "you pay a machine's fee, donate to one, or buy something back. A donation to "
+            "another player is the one exception - that money just changes hands. A server "
+            "that mints far more than it burns ends up with money that doesn't buy much, "
+            "which is what the fees are quietly there to prevent.",
         ),
     ),
 ))
@@ -380,9 +424,13 @@ _add(ManualSection(
         "Every day, your server posts one job: sell it a certain amount of a material it's "
         "running short of. Finish it and you're paid a bonus on top of what the sale itself "
         "earned you.\n\n"
-        "The bonus is the material's full base price for every unit the job asked for, which is "
-        "roughly what the sale paid all over again - so a job you were going to do anyway is "
-        "worth doing today instead.\n\n"
+        "Every job is worth about the same: the amount asked for is whatever it takes to pay a "
+        "little over **1** of your server's currency. A job on something the server already has "
+        "plenty of asks for more of it, because each one is worth less to them - but it pays "
+        "the same at the end.\n\n"
+        "The bonus is what the server would pay for those goods, so finishing a job is worth "
+        "roughly the sale all over again - a job you were going to do anyway is worth doing "
+        "today instead.\n\n"
         "You complete it through `/market sell` like any other sale; there's no separate "
         "hand-in. Progress adds up across as many sales as you like, so ten now and forty "
         "later counts the same as fifty at once.\n\n"

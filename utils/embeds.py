@@ -21,6 +21,12 @@ RECIPE_COLOR = discord.Color(0x00FFEA)     # cyan
 PRESS_COLOR = discord.Color(0x0066FF)       # blue
 SCRAPPER_COLOR = discord.Color(0x9EFF00)   # chartreuse
 JOBBOARD_COLOR = discord.Color(0xFF00AA)   # magenta
+# The two notification feeds (utils/notifications.py). They get separate colors
+# because they carry different authority - red is the bot announcing something
+# about itself to everybody, spring green is one server's own business - and a
+# player should be able to tell which without reading a word.
+GLOBAL_NOTICE_COLOR = discord.Color(0x00FF00)  # yellow
+SERVER_NOTICE_COLOR = discord.Color(0xFFFF00)  # green 
 
 FOOTER_TEXT = f"Dragonhoard by Isaac Day · Version {config.VERSION}"
 
@@ -59,8 +65,9 @@ def make_infrastructure_embed(
     """
     embed = discord.Embed(title=speed_text, color=color)
     embed.set_author(name=f"{emoji} {name} • Level {level}")
-    # Levels are unbounded - each threshold is ten times the last, which is what
-    # keeps them in check - so there is always a next one to show. The collected
+    # Levels are unbounded - each threshold is UPGRADE_THRESHOLD_STEP times the
+    # last, which is what keeps them in check - so there is always a next one to
+    # show. The collected
     # total is clamped so a machine that has banked far past the threshold reads
     # as "5.00 / 5.00" rather than overshooting its own progress bar.
     embed.description = (
