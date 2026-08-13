@@ -162,7 +162,7 @@ def pool_display_lines(remaining: int, contents: dict[str, int]) -> list[str]:
         f"{_emoji(gem)} **{contents[gem]}**" for gem in GEMSTONES if contents.get(gem)
     ]
     lines.append(
-        "Gemstones still in the batch: **(** " + " ".join(gem_cells) + " **)**" if gem_cells
+        "Gemstones remaining:\n**(** " + " ".join(gem_cells) + " **)**" if gem_cells
         else "No gemstones left in this batch - a fresh one starts when it runs out."
     )
     return lines
