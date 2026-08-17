@@ -58,9 +58,9 @@ once each, on top of what the sale already paid.
 
 The day rolls over at **midnight Arizona time** (`JOB_BOARD_TIMEZONE` in
 `utils/job_board.py`), chosen so the reset lands at a time that means
-something to the people playing. Note this is deliberately *not* the mining
-pool's schedule, which still tops up on UTC midnight — the two used to share
-one definition of "today" and no longer do.
+something to the people playing. As of 1.2 this is the only date the game
+keeps — the mining pool used to run its own on UTC midnight, and the bag
+replaced it.
 
 #### How the task is sized (1.2)
 
@@ -92,9 +92,10 @@ change for free, because `1/ceiling` tracks how common a material is.
 
 `JOB_BOARD_MAX_QUANTITY` (600) caps it. Quantity has no natural bound as
 stock climbs — the price decays toward zero, so the units needed to clear a
-fixed payout grow without one. It binds past roughly five times target stock,
-and once it does the payout falls below target, which is the intended trade:
-a task nobody can finish pays nothing at all.
+fixed payout grow without one. How far past target stock it starts binding
+depends on the material (the cheaper per unit, the sooner), and once it does
+the payout falls below target, which is the intended trade: a task nobody can
+finish pays nothing at all.
 
 #### Why it is bounded
 
@@ -108,9 +109,9 @@ a task nobody can finish pays nothing at all.
   created, and the round trip came out ahead. Paying the server's own rate
   closes that once a server holds a real amount of the material. It does not
   close on a thinly stocked one — the leak scales with `N / target_stock`, so
-  it is worst on the smallest servers (about +0.02 at a hundred members,
-  +0.67 for a lone player). See `job_reward` in `data/materials.py` for the
-  measured thresholds and what closing it outright would cost.
+  it is worst on the smallest servers and shrinks toward nothing as a server
+  grows. See `job_reward` in `data/materials.py` for why closing it outright
+  was not worth what it would cost.
 - **It requires real production.** The only way to claim it is to put
   materials into the market, which raises the server's stock and lowers the
   price it will pay next time — so the faucet partly closes its own tap.
@@ -225,11 +226,11 @@ enable.
 
 **Gemstones are excluded too, as of 1.2.** This one was learned the hard way
 rather than designed in. A ruby's ceiling price is 5,500 against iron ore at
-0.01, and target stock for a gemstone is 1 on any server under about 33
-members — so the price curve barely damps successive sales, and the first four
+0.01, and target stock for a gemstone stays at 1 on any server of realistic
+size — so the price curve barely damps successive sales, and the first four
 rubies sold into a server paid 5,500 + 2,750 + 1,833 + 1,375 = **11,458**. For
-scale, a whole day's job board pays a little over 1.00 and the beta server has
-minted 7.92 in its lifetime. One player selling one gem did not distort a
+scale, a whole day's job board pays a little over 1.00. One player selling one
+gem did not distort a
 server's economy so much as end it: every price, every fee and every
 infrastructure threshold in that server became meaningless in a single command.
 

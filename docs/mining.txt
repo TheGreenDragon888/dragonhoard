@@ -32,7 +32,7 @@ If a player places a drill without having one (nothing in inventory, nothing alr
 Every drill is tracked individually rather than as a stack, and keeps its level and its attached container for its whole life - including while it sits unplaced in your inventory. Commands that act on a drill (/mine place, /mine remove, /mine attach, /mine detach, /factory upgrade) take a specific drill picked from a list rather than a drill type.
 
 Drill Levels
-Every drill starts at level 1 mining at its type's base rate, and each level above that adds 1 raw material / hour. There is no maximum level; the cost is the only limit.
+Every drill starts at level 1 mining at its type's base rate, and each level above that adds a fifth of that drill's own base rate - so a level is worth the same proportion whichever drill you spend it on, and the upgrade path doesn't get worse the better your drill is. There is no maximum level; the cost is the only limit.
 
 Upgrading is a factory job, queued with /factory upgrade <drill>, and the drill has to be in your inventory rather than placed. One level at a time. The drill is locked while the upgrade is queued - it can't be placed, removed, or have its container changed until the factory finishes it. The cost is one Drill Upgrade Pack plus the drill's tier material, and every part of it doubles with each level (x 2 ^ (current level - 1)):
 
@@ -89,7 +89,7 @@ The following are the currently planned materials:
 <:ObsidianDrillBit:1523433758139748372> Obsidian Drill Bit (10 Steel, 3 Obsidian)
 <:DiamondDrillBit:1523433768076050551> Diamond Drill Bit (10 Steel, 3 Diamond)
 (Drills, also produced in a factory)
-Rates below are at level 1; every level adds 1 raw material / hour. Every drill stores 100 raw materials on its own, whatever its type - more storage comes from containers, not from the drill.
+Rates below are at level 1; every level adds a fifth of that drill's own level 1 rate. Every drill stores 100 raw materials on its own, whatever its type - more storage comes from containers, not from the drill.
 <:IronMiningDrill:1523433637398450347> Iron Drill (Wiring, Drill Chassis, and Iron Drill Bit) [Mines 5 raw materials / hour]
 <:SteelMiningDrill:1523433646613069824> Steel Drill (Wiring, Drill Chassis, and Steel Drill Bit) [Mines 7.5 raw materials / hour]
 <:RubyMiningDrill:1523433666800517262> Ruby Drill (Wiring, Drill Chassis, and Ruby Drill Bit) [Mines 10 raw materials / hour]
@@ -109,7 +109,7 @@ Each tier holds twice what the one below it does. A drill holding 1000 is a day'
 🧰 Drill Upgrade Pack (5 Copper) [consumed by /factory upgrade]
 
 Server Infrastructure
-Each server comes with a level 1 furnace, factory and hydraulic press. Infrastructure is installed onto servers, and can be accessed anywhere within that server.
+Each server comes with a level 1 furnace, factory, hydraulic press and scrapper. Infrastructure is installed onto servers, and can be accessed anywhere within that server.
 
 Furnace menu embeds are purple-red, #FF0059; factory menu embeds are red-orange, #FF4000; press menu embeds are blue, #0066FF (see docs/stylization.md).
 
@@ -140,7 +140,7 @@ A recipe's cost in press time is measured in press-days, against a ruby. A press
 
 Ultra dense matter is priced in diamonds rather than ore: at 27x a ruby's press time it sits a full tier beyond diamond, and costing it in ore would put it out of reach of any server that will ever exist. Nothing consumes it yet - it's reserved for a later feature, and like drills and components it can never be sold on the market (docs/market.md section 3).
 
-Players can queue jobs up for their server's furnace, factory & press. If there's any jobs ahead of them they must wait until those complete before the server can process their items and send the result back to their inventory. Each player can have at most a set number of items queued at once per infrastructure type (default: 25 for the furnace, 5 for the factory, 1 for the press), configurable per server via /setup max_queue <furnace / factory / press> <amount>.
+Players can queue jobs up for their server's furnace, factory & press. If there's any jobs ahead of them they must wait until those complete before the server can process their items and send the result back to their inventory. Each player can have at most a set number of items queued at once per infrastructure type (default: 25 for the furnace, 5 for the factory, 1 for the press, 5 for the scrapper), configurable per server via /setup max_queue <furnace / factory / press / scrapper> <amount>. That number is per machine LEVEL - what is actually enforced is the setting multiplied by the machine's level.
 
 The press fee is charged per press-day rather than per item, so a diamond costs nine times what a ruby does to run (default: 5.00 per press-day, meaning 5.00 for a ruby, 15.00 for an obsidian, 45.00 for a diamond and 135.00 for ultra dense matter).
 
@@ -156,9 +156,9 @@ Server currencies are earned by selling ores and smelted materials to the server
 
 Each server's currency is currently the only spendable currency in the game - a previously-planned universal "DragonCoin" currency remains a non-spendable, non-earnable unit reserved for a future cross-server exchange rate (docs/market.md).
 
-Server managers can set up a fee to use their server's infrastructure using their server's own currency. The default fee is 0.01 for the furnace and 0.25 for the factory. The fee is charged up front when a job is queued, not when it completes.
+Server managers can set up a fee to use their server's infrastructure using their server's own currency. The default fee is 0.01 for the furnace, 0.25 for the factory, 5.00 per press-day for the press and 0.10 for the scrapper. The fee is charged up front when a job is queued, not when it completes.
 
-/setup fee <furnace / factory> <amount per item>
+/setup fee <furnace / factory / press / scrapper> <amount per item>
 
 If a server collects 5.00 of the server's currency in fees, then the respective furnace / factory will upgrade from level 1 to level 2. The same thing will happen upon reaching 25.00 in fees, but instead from level 2 to level 3.
 

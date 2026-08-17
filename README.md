@@ -99,7 +99,7 @@ cp .env.example .env   # then fill in your bot token
 python bot.py
 ```
 
-You'll need a bot application from the [Discord Developer Portal](https://discord.com/developers/applications) with the **Server Members Intent** enabled (the bot uses member counts for mining-pool top-ups and market pricing).
+You'll need a bot application from the [Discord Developer Portal](https://discord.com/developers/applications) with the **Server Members Intent** enabled (the bot uses member counts for market pricing).
 
 The long version — a start-to-finish beginner walkthrough covering Proxmox LXC setup, a dedicated service user, and running permanently under systemd — lives in [docs/deployment.md](docs/deployment.md).
 

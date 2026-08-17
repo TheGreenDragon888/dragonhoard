@@ -70,11 +70,12 @@ PRESS_TICK_MINUTES = 30
 # rest into an "and N more" line.
 JOB_DISPLAY_LIMIT = 10
 
-# Progress is accumulated a tick at a time, and a day's worth of those
-# fractions sums to a hair under 1.0 rather than exactly 1.0 (48 additions of
-# 1/48 lands on 0.99999999999999989). Without this tolerance every job would
-# finish one tick late, and a level 27 press would never finish anything in a
-# day at all. Same reasoning as the nudge in data.materials.advance_harvest.
+# Progress is accumulated a tick at a time, and press_rate_per_day(level)
+# divided by the tick count is not generally representable in binary - so at
+# many levels a day's worth of those fractions sums to a hair under a whole
+# press-day rather than to exactly one. Without this tolerance those levels
+# would finish every job a tick late, indefinitely. Same reasoning as the nudge
+# in data.materials.advance_harvest.
 PROGRESS_EPSILON = 1e-9
 
 

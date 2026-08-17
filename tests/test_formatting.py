@@ -9,9 +9,46 @@ import re
 import unittest
 from datetime import datetime, timezone
 
-from utils.formatting import format_duration, format_relative_timestamp
+from utils.formatting import format_duration, format_price, format_relative_timestamp
 
 TIMESTAMP = re.compile(r"^<t:(?P<epoch>\d+):R>$")
+
+
+class FormatPriceTests(unittest.TestCase):
+    """The 1e-9 nudge in format_price had no test, and the worked example in
+    its docstring turned out not to reproduce. These pin the behaviour the
+    nudge exists for so the next reader can check the reasoning against
+    something real."""
+
+    def test_a_value_whose_cents_land_low_still_shows_its_full_cent(self):
+        # Each of these multiplies to just under its exact cent in binary, so a
+        # bare floor drops a whole cent. 0.29 is the one the docstring cites.
+        for amount, expected in ((0.29, "0.29"), (1.15, "1.15"), (4.35, "4.35")):
+            with self.subTest(amount=amount):
+                self.assertLess(amount * 100, round(amount * 100))
+                self.assertEqual(format_price(amount), expected)
+
+    def test_rounding_up_never_understates_a_charge(self):
+        self.assertEqual(format_price(1.234, round_up=True), "1.24")
+        self.assertEqual(format_price(0.001, round_up=True), "0.01")
+
+    def test_an_exact_value_is_not_pushed_a_cent_either_way(self):
+        for amount in (1.10, 2.50, 0.05, 10.00):
+            with self.subTest(amount=amount):
+                self.assertEqual(format_price(amount), format_price(amount, round_up=True))
+
+    def test_sub_cent_prices_extend_rather_than_reading_as_zero(self):
+        # A market price well past target stock really is worth less than a
+        # cent, and "0.00" would be a lie about a price a player is paid. The
+        # extension only kicks in once two decimals would show nothing at all -
+        # 0.0106 still reads as "0.01", because that is a cent.
+        self.assertEqual(format_price(0.005), "0.0050")
+        self.assertEqual(format_price(0.0001), "0.0001")
+        self.assertEqual(format_price(0.010588), "0.01")
+        self.assertEqual(format_price(0.0), "0.00")
+
+    def test_thousands_are_separated(self):
+        self.assertEqual(format_price(11458.0), "11,458.00")
 
 
 class FormatDurationTests(unittest.TestCase):

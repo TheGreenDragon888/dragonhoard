@@ -5,8 +5,9 @@ Implements /furnace smelt <material> <quantity>, which:
   1. Checks the user has enough raw materials and can afford the fee
   2. Charges the fee and deducts the raw materials immediately, then queues
      a production job
-  3. A background loop processes queued jobs at the server's furnace_level
-     rate (5/10/15 per hour), crediting completed items to the user.
+  3. A background loop processes queued jobs at the rate the server's
+     furnace_level buys (data/materials.py: furnace_rate, linear in the level
+     and uncapped), crediting completed items to the user.
 """
 import discord
 from discord import app_commands

@@ -59,9 +59,9 @@ from data.materials import (
 # ever changes, and it says WHICH -07:00 this is - Phoenix and, say, Denver in
 # winter are the same offset and different calendars.
 #
-# Deliberately NOT shared with the mining pool top-up, which still rolls over
-# at UTC midnight (utils/formatting.py: utc_today). The two were one function
-# until the board moved; they are separate schedules now.
+# This is now the only date in the game. The mining pool used to keep its own
+# on UTC midnight; the bag replaced it and there is nothing left to keep in
+# step with (utils/mining_pool.py).
 JOB_BOARD_TIMEZONE = ZoneInfo("America/Phoenix")
 
 # Finished job rows are kept for a while so a player can see they completed

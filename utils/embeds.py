@@ -22,11 +22,11 @@ PRESS_COLOR = discord.Color(0x0066FF)       # blue
 SCRAPPER_COLOR = discord.Color(0x9EFF00)   # chartreuse
 JOBBOARD_COLOR = discord.Color(0xFF00AA)   # magenta
 # The two notification feeds (utils/notifications.py). They get separate colors
-# because they carry different authority - red is the bot announcing something
-# about itself to everybody, spring green is one server's own business - and a
+# because they carry different authority - one is the bot announcing something
+# about itself to everybody, the other is one server's own business - and a
 # player should be able to tell which without reading a word.
-GLOBAL_NOTICE_COLOR = discord.Color(0x00FF00)  # yellow
-SERVER_NOTICE_COLOR = discord.Color(0xFFFF00)  # green 
+GLOBAL_NOTICE_COLOR = discord.Color(0x00FF00)  # green
+SERVER_NOTICE_COLOR = discord.Color(0xFFFF00)  # yellow
 
 FOOTER_TEXT = f"Dragonhoard by Isaac Day · Version {config.VERSION}"
 

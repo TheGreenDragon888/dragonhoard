@@ -294,7 +294,7 @@ class PoolDisplayTests(MiningDatabaseTestCase):
         await self.refill()
         contents = await pool_contents(self.db, GUILD)
         rendered = " ".join(pool_display_lines(await self.pool_total(), contents))
-        self.assertIn("Gemstones still in the batch", rendered)
+        self.assertIn("Gemstones remaining", rendered)
 
     async def test_it_says_so_plainly_when_the_gems_are_gone(self):
         await self.refill()

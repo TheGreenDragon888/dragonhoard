@@ -43,11 +43,6 @@ log = logging.getLogger("dragonhoard")
 # table's comment in schema.sql for why this is a sentinel and not NULL.
 GLOBAL_FEED_ID = 0
 
-# Discord allows at most 10 embeds on one message and every notice adds one to
-# whatever the command was already sending. Two feeds means at most two, so this
-# is a long way from the limit - stated so a third feed has to think about it.
-MAX_NOTICES_PER_RESPONSE = 2
-
 # Only the newest of each scope, and only if this user hasn't already seen it.
 # The MAX() subqueries return NULL for an empty feed, which is harmless here:
 # `id IN (NULL, 7)` is true for 7 and merely unknown (never true) for anything

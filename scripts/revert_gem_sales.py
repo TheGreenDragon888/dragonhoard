@@ -9,16 +9,15 @@ WHAT WENT WRONG
 
 A ruby's market_ceiling_price is 5,500 and a diamond's is 500,000, against iron
 ore at 0.0106. The server's buy price halves at that material's target stock,
-but target stock for a gemstone is max(1, round(members * 0.015)) - which is
-literally 1 ruby on any server under about 33 members. So the curve that is
-meant to damp repeated sales barely engaged: the first four rubies sold into a
-small server paid 5,500 + 2,750 + 1,833 + 1,375 = 11,458.
+but target stock for a gemstone is max(1, round(members * 0.015)) - which stays
+at 1 ruby on any server of realistic size. So the curve that is meant to damp
+repeated sales barely engaged: the first four rubies sold into a small server
+paid 5,500 + 2,750 + 1,833 + 1,375 = 11,458.
 
-For scale, a full day's job board task pays a little over 1.00, the whole
-infrastructure ladder tops out at 5 -> 25 -> 125, and the beta server has minted
-7.92 of its own currency in its entire lifetime. A single gem sale did not skew
-a server's economy, it ended it: every price, fee and threshold in that server
-became meaningless in one command.
+For scale, a full day's job board task pays a little over 1.00, and the first
+three rungs of the infrastructure ladder are 5, 25 and 125. A single gem sale
+did not skew a server's economy, it ended it: every price, fee and threshold in
+that server became meaningless in one command.
 
 WHAT THIS DOES
 
@@ -119,9 +118,8 @@ from data.materials import GEMSTONES, RAW_MATERIALS  # noqa: E402
 # server still pays 1,375), but confirmed sellers who spent proceeds back down
 # to 2,300 slipped under that line and would have kept both the ruby and the
 # spend. Dropped to 500: still an order of magnitude above anything the
-# legitimate economy can produce here (job board pays ~1.00/day, the whole
-# infrastructure ladder tops out at 5 -> 25 -> 125), with margin below every
-# known case for anyone who spent even further down.
+# legitimate economy produced at the time (the job board pays ~1.00/day), with
+# margin below every known case for anyone who spent even further down.
 BALANCE_THRESHOLD = 500.0
 
 # What each caught user gets back. One ruby, matching the sale being undone:

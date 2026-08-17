@@ -19,19 +19,6 @@ _COMPACT_TIERS = [
 ]
 
 
-def utc_today() -> str:
-    """Today's date in UTC, ISO formatted.
-
-    Used by the mining pool top-up, which rolls over at UTC midnight. The job
-    board runs on a different clock (utils/job_board.py: JOB_BOARD_TIMEZONE) -
-    the two shared this function until the board moved to Arizona time, so
-    don't assume a change here reaches both.
-
-    Stored as text and compared as text, which is why the ISO format matters:
-    it sorts and compares chronologically as a plain string."""
-    return datetime.now(timezone.utc).date().isoformat()
-
-
 def format_price(amount: float, round_up: bool = False) -> str:
     """The bare numeric text (no currency emoji) for a price, rounded to the
     nearest cent (2 decimals) for display - DOWN by default, or UP if
@@ -42,9 +29,9 @@ def format_price(amount: float, round_up: bool = False) -> str:
     display as 0.00 (market prices are often worth fractions of a cent)
     extend to 4 decimals instead. The 1e-9 nudge guards against float
     imprecision landing an exact cent just on the wrong side of the
-    floor/ceiling (e.g. 1.10 * 100 == 109.99999999999999), and flips sign
-    with the rounding direction so it never over-corrects a value that's
-    already exact."""
+    floor/ceiling (0.29 * 100 == 28.999999999999996, which would otherwise
+    floor to 0.28), and flips sign with the rounding direction so it never
+    over-corrects a value that's already exact."""
     if round_up:
         rounded_cents = math.ceil(amount * 100 - 1e-9) / 100
     else:

@@ -74,15 +74,20 @@ feature's own design doc where one exists.
 | Hydraulic press menus (`/press`)    | blue        | `#0066FF` | `PRESS_COLOR`    |
 | Scrapper menus (`/scrapper`)        | chartreuse  | `#9EFF00` | `SCRAPPER_COLOR` |
 | Job board (`/jobboard`)             | magenta     | `#FF00AA` | `JOBBOARD_COLOR` |
-| Global notifications                | red         | `#FF0000` | `GLOBAL_NOTICE_COLOR` |
-| Server notifications                | spring green | `#00FF9E` | `SERVER_NOTICE_COLOR` |
+| Global notifications                | pure green  | `#00FF00` | `GLOBAL_NOTICE_COLOR` |
+| Server notifications                | pure yellow | `#FFFF00` | `SERVER_NOTICE_COLOR` |
 | Extras manual page (`/help extras`) | green (default) | `#00FF3C` | `DEFAULT_COLOR` |
 
 The two notification colors are the one pair that has to be told apart at a
 glance rather than merely recognised, because the embeds are otherwise
 identical in shape and arrive unbidden alongside whatever command the player
-actually ran (`utils/notifications.py`). Red is the bot announcing something
-about itself to everyone; spring green is one server's own business.
+actually ran (`utils/notifications.py`). Pure green is the bot announcing
+something about itself to everyone; pure yellow is one server's own business.
+
+Note both sit close to a color already in the table — `#00FF00` beside the
+default green `#00FF3C`, `#FFFF00` beside the market's `#FFE600`. That is
+tolerable because neither pair ever appears in the same embed, but it is the
+constraint to check first if a future feature claims a color near either.
 
 Future games/features should claim their own fully saturated color here (and
 in their design doc) before implementation.

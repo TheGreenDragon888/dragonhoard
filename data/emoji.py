@@ -17,11 +17,10 @@ the material dict exactly as before; nothing else needs to change.
 
 An icon that hasn't been uploaded to Dragonhoard Beta yet passes
 beta_id=None and resolves to MISSING_EMOJI there, so a missing beta upload
-is obvious while visually testing instead of looking like a real bug. This
-is the same spirit as the "not designed yet" unicode placeholders in
-data/materials.py, one level down: those are for icons that don't exist on
-EITHER application yet, this is for icons that exist on live but haven't
-been uploaded to beta yet too.
+is obvious while visually testing instead of looking like a real bug. Every
+icon in data/materials.py currently has both ids, so nothing takes that path
+today - it exists for the gap between designing an icon and uploading it to
+the second application.
 """
 import config
 

@@ -28,7 +28,7 @@ log = logging.getLogger("dragonhoard")
 # to receive. members is privileged - it must ALSO be enabled in the Discord
 # Developer Portal under your bot's "Privileged Gateway Intents".
 intents = discord.Intents.default()
-intents.members = True  # needed for guild.member_count (mining pool, market target stock)
+intents.members = True  # needed for guild.members (utils/guild_helpers.py: human_member_count)
 
 # tree_cls is what installs the designated-bot-channel check. It has to be
 # passed here rather than set later: Bot builds its CommandTree in __init__,

@@ -20,11 +20,11 @@ table in schema.sql), not a fungible stack, because its level and attached
 container have to survive being unplaced. Commands therefore take a drill_id
 picked from an autocomplete list rather than a drill type.
 
-HARVEST_TICK_MINUTES is 24, giving 2.5 ticks/hour. Every drill's base
-mines_per_hour is a multiple of 2.5, but a level adds a fifth of that base
-(see LEVEL_RATE_ANCHOR) and those fifths are not, so per-tick amounts don't
-come out whole - drills carry the remainder in harvest_progress rather than
-rounding it away (see advance_harvest).
+HARVEST_TICK_MINUTES is 24, giving 2.5 ticks/hour. A drill's rate comes from
+its type and is scaled by its level (see LEVEL_RATE_ANCHOR), so a tick's share
+of it is generally a fraction of an item rather than a whole number - drills
+carry the remainder in harvest_progress rather than rounding it away (see
+advance_harvest).
 """
 import logging
 

@@ -83,9 +83,10 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- and no cap - the bag refills when it empties (utils/mining_pool.py).
     mining_pool_remaining    INTEGER NOT NULL DEFAULT 0,
     -- Lifetime faucet/sink running totals for this server's currency, per
-    -- docs/market.md section 4. Minted only by the market buying materials
-    -- from users; burned by furnace/factory fees and the market selling
-    -- materials back to users.
+    -- docs/market.md section 4. Minted by the market buying materials from
+    -- users and by the daily job board's bonus; burned by every machine's
+    -- fees, by /donate infrastructure, and by the market selling materials
+    -- back to users.
     currency_minted_total    REAL NOT NULL DEFAULT 0.0,
     currency_burned_total    REAL NOT NULL DEFAULT 0.0
 );
@@ -109,11 +110,12 @@ CREATE TABLE IF NOT EXISTS server_material_storage (
     PRIMARY KEY (guild_id, material_id)
 );
 
--- The daily job board: one task per server per UTC day, asking players to sell
--- the market a material it's short of. Posted lazily the first time anyone
--- looks at the board or sells into it (see utils/job_board.py) rather than by a
--- background loop - unlike the mining pool, a task that nobody has looked at
--- doesn't need to have accrued anything.
+-- The daily job board: one task per server per day on the board's own Arizona
+-- clock (see job_date below), asking players to sell the market a material it's
+-- short of. Posted lazily the first time anyone looks at the board or sells
+-- into it (see utils/job_board.py) rather than by a background loop - a task
+-- nobody has looked at has nothing to accrue, so a loop would only be one more
+-- thing to keep running.
 --
 -- quantity and reward are frozen at posting time rather than recomputed on
 -- read, because both derive from member count: without that, someone joining
@@ -121,9 +123,9 @@ CREATE TABLE IF NOT EXISTS server_material_storage (
 -- through the task.
 CREATE TABLE IF NOT EXISTS daily_jobs (
     guild_id        INTEGER NOT NULL,
-    -- ISO date on the board's OWN clock (midnight America/Phoenix), which is
-    -- deliberately not the mining pool's UTC schedule - see JOB_BOARD_TIMEZONE
-    -- in utils/job_board.py. Compared as text, so ISO is load-bearing.
+    -- ISO date on the board's OWN clock (midnight America/Phoenix) - see
+    -- JOB_BOARD_TIMEZONE in utils/job_board.py. Compared as text, so ISO is
+    -- load-bearing.
     job_date        TEXT NOT NULL,
     material_id     TEXT NOT NULL,
     -- Both frozen at posting time. They derive from the server's stock of the
@@ -212,12 +214,14 @@ CREATE TABLE IF NOT EXISTS drills (
     container_type   TEXT,                          -- NULL = no container attached
     stored_amount    INTEGER NOT NULL DEFAULT 0,    -- raw materials waiting for /collect
     -- Fractional carry between harvest ticks. A tick is 24 minutes (2.5
-    -- ticks/hour), so a level's +1 item/hour is +0.4 items/tick - banking the
-    -- remainder here is what stops that bonus being rounded away.
+    -- ticks/hour), so a tick's share of a drill's hourly rate is generally a
+    -- fraction of an item - banking the remainder here is what stops a level's
+    -- bonus being rounded away.
     harvest_progress REAL NOT NULL DEFAULT 0.0,
     is_full          INTEGER NOT NULL DEFAULT 0,    -- 0/1 boolean: stopped until /collect
-    -- production_jobs.job_id of a queued /factory upgrade, else NULL. A locked
-    -- drill can't be placed, removed, attached to, or queued a second time.
+    -- production_jobs.job_id of the queued job acting on this drill - a
+    -- /factory upgrade or a /scrapper drill - else NULL. A locked drill can't
+    -- be placed, removed, attached to, or queued a second time.
     locked_job_id    INTEGER,
     CHECK (level >= 1),
     -- Buys back what dropping "guild_id NOT NULL" gave up: an unplaced drill
@@ -250,23 +254,21 @@ CREATE TABLE IF NOT EXISTS drill_contents (
     FOREIGN KEY (drill_id) REFERENCES drills(drill_id)
 );
 
--- The composition of a server's mining pool: how many of each raw material are
--- actually sitting in it, and the fraction of one still accruing from daily
--- top-ups. Added in 1.2 alongside drill_contents.
+-- The composition of a server's mining bag: how many of each raw material are
+-- actually sitting in it. Added in 1.2 alongside drill_contents.
 --
--- `carry` is what delivers the gemstone guarantee. A five-member server's pool
--- gains 0.00274 diamonds a day; banking that here until it reaches a whole one
--- is what turns "one in a million, forever" into "one a year at worst" (see
--- GEM_GUARANTEE_DAYS and pool_daily_shares in data/materials.py).
+-- This table is what makes the gemstone guarantee a guarantee. A drill draws
+-- from these real counts without replacement (data/materials.py:
+-- draw_from_pool), so a diamond is a single object somebody will dig up before
+-- the bag empties rather than a chance re-rolled forever. There is no accrual
+-- and no clock: utils/mining_pool.py refills the bag the moment it runs out.
 --
 -- As with drill_contents, server_config.mining_pool_remaining stays as the
--- authoritative TOTAL and must equal SUM(quantity) here for that guild. The
--- cap, the top-up and the /mine status line all work in items.
+-- authoritative TOTAL and must equal SUM(quantity) here for that guild.
 CREATE TABLE IF NOT EXISTS server_mining_pool (
     guild_id        INTEGER NOT NULL,
     material_id     TEXT NOT NULL,
     quantity        INTEGER NOT NULL DEFAULT 0,
-    carry           REAL NOT NULL DEFAULT 0.0,
     PRIMARY KEY (guild_id, material_id)
 );
 
@@ -293,9 +295,9 @@ CREATE TABLE IF NOT EXISTS user_mining_focus (
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
--- A queued furnace (smelting), factory (crafting) or press job for a user in a
--- guild. target_id is the material_id being produced (e.g. "iron", "wiring",
--- "ruby").
+-- A queued furnace (smelting), factory (crafting), press or scrapper job for a
+-- user in a guild. target_id is the material_id being produced or broken down
+-- (e.g. "iron", "wiring", "ruby"), or one of the two drill sentinels below.
 CREATE TABLE IF NOT EXISTS production_jobs (
     job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id        INTEGER NOT NULL,

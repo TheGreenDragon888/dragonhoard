@@ -19,10 +19,12 @@ from data.emoji import custom_emoji
 # iron_ore/copper_ore/coal were rebalanced together: coal's drop_chance is
 # +50% over its original 0.0999, with iron_ore and copper_ore absorbing that
 # increase proportionally (their original 2:1 ratio is preserved). Each of
-# the three's market_ceiling_price was then rescaled so ceiling_price *
-# drop_chance stays exactly what it was before the rebalance - the expected
-# currency value of mining one item of that material is unchanged, only its
-# frequency and per-unit price shifted. Gemstone rates/prices are untouched.
+# the three's market_ceiling_price was then rescaled to hold ceiling_price *
+# drop_chance at what it was before the rebalance - the expected currency value
+# of mining one item of that material is unchanged, only its frequency and
+# per-unit price shifted. (The rescaled prices are rounded to six places, so
+# the products match to about five significant figures rather than exactly.)
+# Gemstone rates/prices are untouched.
 RAW_MATERIALS = {
     "iron_ore":    {"name": "Iron Ore",    "emoji": custom_emoji("IronOre", 1523432328028885034, 1533714268560691281),    "drop_chance": 0.5667,   "market_ceiling_price": 0.010588},
     "copper_ore":  {"name": "Copper Ore",  "emoji": custom_emoji("CopperOre", 1523432342813933699, 1533714267478560818),  "drop_chance": 0.28335,  "market_ceiling_price": 0.017681},
@@ -113,19 +115,20 @@ UPGRADE_MATERIALS = {
 #
 # The previous ladder was 150/200/300/400/500, and its problem was not that the
 # gem tiers were low but that they were exactly cancelled out: totals of
-# 300/400/500/600 sit in the same 3:4:5:6 ratio as the matched drills' rates of
-# 7.5/10/12.5/15, so every container from steel up bought precisely 40 hours of
-# runtime and the iron one bought 50. A ruby costs a thousand times a steel
-# container and bought strictly less autonomy than it. Any future retune should
-# check the totals against effective_rate the same way, because a bonus ladder
-# that merely rises can still be flat in the only unit that matters.
+# 300/400/500/600 sat in the same 3:4:5:6 ratio as the matched drills' rates at
+# the time, so every container from steel up bought precisely 40 hours of
+# runtime and the iron one bought 50. A ruby container cost a thousand times a
+# steel one and bought no more autonomy than it - and less than the iron one.
+# Any future retune should check the totals against effective_rate the same
+# way, because a bonus ladder that merely rises can still be flat in the only
+# unit that matters.
 #
-# No attempt is made to price these against what the gems cost - a diamond is
-# 500,000 currency and the usefulness of storage saturates within about a week
-# of autonomy, so proportionality is not reachable and chasing it would put
-# absurd numbers here. Note also that the gem is not really spent: scrap_yield's
-# keystone guarantee returns it, so a gem container costs its copper, the
-# factory time, and having the gem parked.
+# No attempt is made to price these against what the gems cost - the usefulness
+# of storage saturates within about a week of autonomy, so proportionality to a
+# gemstone's value is not reachable and chasing it would put absurd numbers
+# here. Note also that the gem is not really spent: scrap_yield's keystone
+# guarantee returns it (along with half the copper), so a gem container costs
+# half its copper, the factory time, and having the gem parked.
 STORAGE_CONTAINERS = {
     "iron_container":     {"name": "Iron Container",     "emoji": custom_emoji("IronContainer", 1533713574977994793, 1533714646551363684), "inputs": {"iron": 10, "copper": 5},      "storage_bonus": 150},   # holds 250
     "steel_container":    {"name": "Steel Container",    "emoji": custom_emoji("SteelContainer", 1533713578811461642, 1533714649990824036), "inputs": {"steel": 10, "copper": 10},    "storage_bonus": 400},   # holds 500
@@ -138,14 +141,6 @@ STORAGE_CONTAINERS = {
 # like drills and components it's a finished good, and docs/market.md section 3
 # keeps those out of the market entirely. Nothing consumes it yet - it's
 # reserved for a later feature, so it accumulates rather than being spent.
-#
-# TODO(emoji): the only item left with no icon designed at all yet, on
-# either Discord application - hence the plain unicode placeholder. Once
-# one's designed, replace it with custom_emoji("Name", live_id, beta_id)
-# (see data/emoji.py); it'll need uploading to BOTH the live and beta
-# Dragonhoard applications, since they don't share emoji, so get both ids
-# before filling this in. Nothing else needs to change, since every display
-# path reads the emoji through get_material_info().
 PRESS_MATERIALS = {
     "ultra_dense_matter": {"name": "Ultra Dense Matter", "emoji": custom_emoji("UltraDenseMatter", 1533722773418016868, 1533722431024529408)},
 }
@@ -159,9 +154,9 @@ def _mining_equivalent(gem_id: str, material_id: str) -> float:
     recipe needs is what limits how much can actually be smelted - for steel
     that's iron ore, not coal.
 
-    Exact, and verified by simulation: the expected number of units of a
-    material mined before the first gem works out to simply its drop chance
-    divided by the gem's."""
+    Exact rather than approximate: the expected number of units of a material
+    mined before the first gem works out to simply its drop chance divided by
+    the gem's."""
     items_per_gem = 1.0 / RAW_MATERIALS[gem_id]["drop_chance"]
     return min(
         items_per_gem * RAW_MATERIALS[raw_id]["drop_chance"] / per_unit
@@ -245,8 +240,7 @@ SCRAPPER_RATE_PER_LEVEL = 2
 # much as a wall two rungs up. Fees are tiny by design - the furnace's default
 # is 0.01 an item - and the market pays roughly one currency unit for a hundred
 # iron ore, so 500 for a level 4 furnace is on the order of fifty thousand items
-# smelted. No server has ever reached it: the beta server has minted 7.92 of its
-# own currency in its entire lifetime.
+# smelted, which no server had come close to.
 #
 # Halving the step does far more than halve the cost, because the cost compounds
 # - what changes is the exponent, not a coefficient. Cumulative fees to reach a
@@ -391,8 +385,10 @@ DRILL_SCRAP_JOB_TARGET = "drill_scrap"
 # mining limited by what a player builds rather than by the clock.
 #
 # One million is chosen so the per-item gemstone density is identical to the
-# published drop rates - this changes the VARIANCE of gem finding to zero, not
-# the average. It is deliberately NOT scaled to server size: a smaller bag would
+# published drop rates - what changes is that a bag holds exactly its stated
+# gems rather than a random draw of them, not what it holds on average. Where
+# within a bag a gem turns up is still chance; how many are in there is not.
+# It is deliberately NOT scaled to server size: a smaller bag would
 # make a small server's diamonds commoner per item mined, which is a different
 # game rather than the same one at a different pace.
 #
@@ -550,18 +546,19 @@ def effective_rate(drill_type: str, level: int) -> float:
     proportion per level that the Iron Drill always has.
 
     Written as one rational expression rather than `base * (1 + 0.2 * (level -
-    1))` because 0.2 has no exact binary representation: the multiply-then-add
-    form makes a level 2 Steel Drill 9.000000000000002, and that figure ends up
-    in an embed and in harvest arithmetic. Dividing by the anchor last keeps
-    every rate here exact."""
+    1))` because 0.2 has no exact binary representation: on many type/level
+    pairs the multiply-then-add form lands a fraction off, and that figure
+    reaches an embed verbatim and feeds harvest arithmetic. Multiplying first
+    and dividing by the anchor last keeps every rate here exact -
+    tests/test_drills.py: test_rates_stay_exact is what pins that."""
     base = DRILLS[drill_type]["mines_per_hour"]
     return base * (LEVEL_RATE_ANCHOR + level - 1) / LEVEL_RATE_ANCHOR
 
 
 def upgrade_cost(drill_type: str, level: int) -> dict[str, int]:
     """What it costs to take a drill from `level` to the next one. Every part
-    of the recipe doubles per level, so each upgrade costs as much as all the
-    previous ones put together."""
+    of the recipe doubles per level, so the cost of a ladder is dominated by
+    its last rung."""
     multiplier = 2 ** (level - 1)
     cost = {"drill_upgrade_pack": multiplier}
     for material_id, quantity in _UPGRADE_TIER_MATERIAL[drill_type].items():
@@ -574,12 +571,12 @@ def accrue(carry: float, amount: float) -> tuple[int, float]:
     whole units to hand over now and a remainder to carry forward.
 
     The one primitive behind every place the game accumulates fractions of an
-    item: a drill's per-tick mining rate, the mining pool's daily gemstone
-    allocation, and a mining focus converting one ore into another. All three
-    have the same failure mode without it - rounding each step in isolation
-    either destroys the fraction (a level 2 iron drill mines exactly what a
-    level 1 does) or, if rounded up instead, mints material from nothing by
-    repeating the step in small pieces.
+    item: a drill's per-tick mining rate (advance_harvest) and a mining focus
+    converting one ore into another (apply_mining_focus). Both have the same
+    failure mode without it - rounding each step in isolation either destroys
+    the fraction (a level 2 iron drill mines exactly what a level 1 does) or,
+    if rounded up instead, mints material from nothing by repeating the step in
+    small pieces.
 
     The tiny nudge stops accumulated float error from turning a total that
     should be exactly 1.0 into 0.999... and losing a unit to truncation; the
@@ -598,9 +595,10 @@ def advance_harvest(progress: float, rate_per_hour: float, ticks_per_hour: float
     The carry is what makes a level worth exactly its stated rate. At 2.5
     ticks/hour an iron drill's level is +0.4 items/tick, so rounding each tick
     in isolation would throw the bonus away entirely - a level 2 iron drill
-    mines 2.4/tick, which rounds to the same 2 as level 1. Since a level is now
-    a fraction of the drill's own base rate, hardly any drill lands on a whole
-    number of items per tick and the carry matters at every tier."""
+    mines 2.4/tick, which rounds to the same 2 as level 1. A type whose rate
+    happens to divide evenly into ticks would survive without this; most don't,
+    and which ones do changes with any retune, so the carry is unconditional
+    rather than something to reason about per tier."""
     return accrue(progress, rate_per_hour / ticks_per_hour)
 
 
@@ -647,9 +645,9 @@ def draw_from_pool(available: dict[str, int], count: int, rng=random) -> dict[st
     pool's real contents means that once one is in there, somebody gets it.
 
     Sequential rather than a closed-form multivariate hypergeometric because
-    `count` is a single drill's share of one 24-minute tick - two items for a
-    level 1 iron drill, ten for a heavily upgraded diamond one - over six
-    materials. The loop is cheaper than the arithmetic that would replace it.
+    `count` is a single drill's share of one 24-minute tick - a handful of
+    items - over six materials. The loop is cheaper than the arithmetic that
+    would replace it.
     """
     remaining = {m: q for m, q in available.items() if q > 0}
     drawn: dict[str, int] = {}
@@ -878,11 +876,10 @@ INVENTORY_CATEGORIES = (
 # GEMSTONES ARE DELIBERATELY ABSENT, as of 1.2, and this is a balance decision
 # rather than a display one. A ruby's ceiling price is 5,500 against iron ore at
 # 0.01, so one gem sale minted more currency than a server's entire population
-# could earn by playing the game - and because the price curve halves at target
-# stock (which is 1 ruby on any server under ~33 members), the first four ruby
-# sales alone paid 5,500 + 2,750 + 1,833 + 1,375. Several servers' economies
-# were flattened by exactly this before it was caught; scripts/revert_gem_sales.py
-# is the one-time repair.
+# could earn by playing the game - and because a gemstone's target stock stays
+# at 1 on any server of realistic size, the curve that is meant to damp repeated
+# sales barely engaged: the first four ruby sales alone paid 5,500 + 2,750 +
+# 1,833 + 1,375. scripts/revert_gem_sales.py is the one-time repair.
 #
 # Gemstones now sit alongside components and drills in docs/market.md section 3's
 # non-tradeable category. They are removed from BUYING too, not just selling:
@@ -958,10 +955,11 @@ JOB_BOARD_TARGET_PAYOUT = 1.00
 #
 # It exists because quantity has no natural bound as stock climbs: the price
 # a server pays decays toward zero past target stock, so the units needed to
-# clear a fixed payout grow without limit. It binds past roughly five times
-# target stock and does nothing below that. Once it does bind the payout
-# falls under JOB_BOARD_TARGET_PAYOUT, which is the intended trade - a task
-# nobody can finish pays nothing at all.
+# clear a fixed payout grow without limit. How far past target stock it starts
+# binding depends on the material - the cheaper one is per unit, the sooner -
+# so it reaches the common ores long before the smelted ones. Once it does
+# bind the payout falls under JOB_BOARD_TARGET_PAYOUT, which is the intended
+# trade: a task nobody can finish pays nothing at all.
 JOB_BOARD_MAX_QUANTITY = 600
 
 # Every eligible material carries at least this much selection weight, on top
@@ -1003,22 +1001,19 @@ def job_reward(material_id: str, quantity: int, current_stock: int, target: int)
     at target stock the round trip costs about a currency unit more than the
     job paid, whatever the server's size.
 
-    It does NOT close below that. The leak is driven by quantity/target_stock -
-    how far your own sale moves the price you then buy back at - and quantity
-    is member-independent by design while target stock is not, so it is worst
-    on the smallest servers. Where it stops paying, and the worst it pays at
-    zero stock:
+    It does NOT close below that, and that is the part to know before touching
+    anything here. The leak is driven by quantity/target_stock - how far your
+    own sale moves the price you then buy back at - and quantity is
+    member-independent by design while target stock is not, so it is worst on
+    the smallest servers and shrinks toward nothing as one grows. Any retune of
+    JOB_BOARD_TARGET_PAYOUT or the target-stock constants should re-measure it
+    rather than assume it stayed small.
 
-        100 members    1% of target      +0.02
-         20 members   10% of target      +0.09
-          5 members   30% of target      +0.28
-          1 member    65% of target      +0.67
-
-    The one-member row is the extreme of the same effect: target stock for a
-    lone player is 17 coal against a task of 31, so the task is nearly twice
-    the entire equilibrium and one sale swings the price hard. It is also the
-    case worth caring least about - every server's economy is its own, so a
-    solo player printing currency is only doing it to themselves.
+    The extreme is a lone player: target stock for one member is 17 coal
+    against a task of 31, so the task is nearly twice the entire equilibrium
+    and a single sale swings the price hard. It is also the case worth caring
+    least about - every server's economy is its own, so a solo player printing
+    currency is only doing it to themselves.
 
     Closing it outright means pricing the bonus at the stock level the task
     itself creates (current_stock + quantity) rather than at posting stock,

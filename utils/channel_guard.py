@@ -9,8 +9,9 @@ discord.py calls before dispatching any interaction - rather than as a
 decorator on each command or an interaction_check on each cog. The alternatives
 both have the same disqualifying flaw: a command or a cog added later opts out
 of the restriction by simply not having had the check pasted onto it, and a
-rule that quietly stops applying to new features is worse than no rule. There
-are around thirty commands across nine cogs today.
+rule that quietly stops applying to new features is worse than no rule. The
+command list has only ever grown, which is what makes that the deciding
+argument rather than a hypothetical one.
 
 Three things about discord.py's CommandTree.interaction_check drive the shape
 of the code below, all of them verified against the installed version rather

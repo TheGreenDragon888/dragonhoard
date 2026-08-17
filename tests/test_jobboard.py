@@ -11,7 +11,6 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from utils.formatting import utc_today
 from utils.job_board import JOB_BOARD_TIMEZONE, hours_until_reset, job_board_today
 from data.materials import (
     ALL_MATERIALS,
@@ -101,13 +100,6 @@ class ResetClockTests(unittest.TestCase):
                 left = hours_until_reset(datetime(2026, 8, 3, hour, tzinfo=arizona))
                 self.assertGreater(left, 0)
                 self.assertLessEqual(left, 24)
-
-    def test_the_mining_pool_still_rolls_over_on_utc(self):
-        """Deliberately a different schedule. These shared one function until
-        the board moved, so this is here to make a future "tidy-up" that
-        re-merges them fail loudly rather than silently shifting the pool."""
-        self.assertNotEqual(utc_today.__module__, job_board_today.__module__)
-        self.assertEqual(utc_today(), datetime.now(timezone.utc).date().isoformat())
 
 
 class EligibleMaterialTests(unittest.TestCase):

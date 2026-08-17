@@ -8,9 +8,12 @@ import discord
 
 async def human_member_count(guild: discord.Guild) -> int:
     """Member count used for server-size-scaled formulas (market target
-    stock, mining pool top-ups, furnace auto-smelt thresholds) - excludes
+    stock and the furnace auto-smelt thresholds built on it) - excludes
     bots so a server stuffed with other bots doesn't inflate its own
-    economy's targets. Requires the members intent (enabled in bot.py) so
+    economy's targets. The mining bag is deliberately NOT one of these; it
+    is the same size on every server, whatever its membership.
+
+    Requires the members intent (enabled in bot.py) so
     guild.members can actually be populated. Explicitly chunks the guild if
     it hasn't finished caching members yet, rather than trusting on_ready to
     have already done it - discord.py dispatches interactions as soon as

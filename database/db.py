@@ -403,6 +403,16 @@ class Database(_Executor):
             if version < 5:
                 self._migrate_pool_to_bag(conn)
 
+            # server_mining_pool.carry banked the fraction of a gemstone a pool
+            # had accrued from the daily top-up. The bag replaced that outright
+            # - the gems are simply in it - so nothing has read or written this
+            # since 1.2, and a column no code touches is one somebody later has
+            # to work out the meaning of. Gated on introspection rather than
+            # user_version because dropping a column IS visible in the schema.
+            pool_columns = {row[1] for row in conn.execute("PRAGMA table_info(server_mining_pool)")}
+            if "carry" in pool_columns:
+                conn.execute("ALTER TABLE server_mining_pool DROP COLUMN carry")
+
             # user_version deliberately stays at 3 through 1.1. Everything that
             # release added is structural and gated on introspection above: the
             # scrapper's columns, bot_channel_id, the widened job_type CHECK,
@@ -495,8 +505,8 @@ class Database(_Executor):
         conn.execute("BEGIN")
         try:
             # Pools first: a server's remaining count becomes a bag of that many
-            # rolled items. carry stays 0 - the guarantee starts accruing from
-            # the next top-up, not backdated.
+            # rolled items. Nothing is created or destroyed - the same total
+            # comes out the far side, itemised.
             pools = conn.execute(
                 "SELECT guild_id, mining_pool_remaining FROM server_config "
                 "WHERE mining_pool_remaining > 0"

@@ -225,6 +225,21 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertNotIn("mining_pool_last_topup", columns)
 
+    async def test_the_pools_gemstone_accrual_carry_is_gone(self):
+        """The other half of the same removal, missed at the time. carry banked
+        the fraction of a gemstone a pool had accrued from the daily top-up;
+        the bag made it meaningless - the gems are simply in it - and nothing
+        has read or written it since. Dropped structurally rather than on
+        user_version, because a missing column IS visible in the schema."""
+        columns = {
+            row[1]
+            for row in await self.db.fetchall("PRAGMA table_info(server_mining_pool)")
+        }
+        self.assertNotIn("carry", columns)
+        # The counts the column sat beside are what the bag is made of, so the
+        # drop must not have taken them with it.
+        self.assertEqual(columns, {"guild_id", "material_id", "quantity"})
+
     async def test_every_server_ends_up_with_a_full_bag(self):
         # The migration adds a bag rather than replacing what was there, so a
         # server keeps whatever its old allowance had accrued on top.

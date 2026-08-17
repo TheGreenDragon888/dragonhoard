@@ -8,7 +8,7 @@ option. And the server's currency stops being listed without being deleted, so
 a re-invite restores every balance untouched.
 
 Runs against a throwaway database. The cog is built with __new__ rather than
-its constructor, which would start the harvest and pool-top-up loops.
+its constructor, which would start the harvest loop.
 """
 import tempfile
 import unittest

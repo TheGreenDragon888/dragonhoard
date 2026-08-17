@@ -31,12 +31,11 @@ DEFAULT_FACTORY_FEE = 0.25
 # by its press_days - a diamond costs nine times a ruby. Far above the other
 # two because a single pressed gem is worth thousands on the market.
 DEFAULT_PRESS_FEE = 5.00
-# The scrapper. Charged per item recycled. The existing three fees run at
-# roughly 2-8% of the value of what comes out of the machine; a scrap returns
-# half of one factory item's inputs, so 0.10 - 40% of the factory's fee - lands
-# in the same band. Kept well under the factory's because a steep fee on top of
-# the 50% material loss scrapping already costs would make the machine feel
-# punitive rather than useful.
+# The scrapper. Charged per item recycled. A scrap returns half of one factory
+# item's inputs, so it is priced against the factory rather than independently:
+# 0.10 is 40% of the factory's fee. Kept well under it because a steep fee on
+# top of the 50% material loss scrapping already costs would make the machine
+# feel punitive rather than useful.
 DEFAULT_SCRAPPER_FEE = 0.10
 
 # getenv returns a string or None. We convert to int only if present, since

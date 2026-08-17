@@ -83,7 +83,7 @@ nano .env
 ```
 Copies the template, then opens it in `nano` (a simple terminal text editor). Fill in your real bot token from the [Discord Developer Portal](https://discord.com/developers/applications) → your application → **Bot** → **Reset Token**. Save with `Ctrl+O`, `Enter`, then exit with `Ctrl+X`.
 
-**Important**: in the Developer Portal, under **Bot**, also enable the **Server Members Intent** toggle - the bot uses member counts for mining pool top-ups and market pricing, and Discord will refuse the connection without it.
+**Important**: in the Developer Portal, under **Bot**, also enable the **Server Members Intent** toggle - the bot uses member counts for market pricing, and Discord will refuse the connection without it.
 
 ### Quick test run
 
