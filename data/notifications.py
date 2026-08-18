@@ -46,6 +46,19 @@ class GlobalNotice:
 
 GLOBAL_NOTICES: tuple[GlobalNotice, ...] = (
     GlobalNotice(
+        key="1.2.1-update",
+        title="Dragonhoard 1.2.1 Update",
+        body=(
+            "I'm now back from Washington, so...\n\n"
+            "**Gem drills are now much faster!** Ruby, Obsidian and Diamond Drills all mine "
+            "much more per hour now, and their respective containers grew to match so filling "
+            "one still takes around the same amount of time.\n\n"
+            "`/recipe factory` shows the new values.\n\n"
+            "Thanks y'all for continuin' playin'.\n\n"
+            "— Isaac"
+        ),
+    ),
+    GlobalNotice(
         key="1.2-update",
         title="Dragonhoard 1.2 Update",
         body=(

@@ -99,11 +99,12 @@ class FactoryCog(commands.Cog):
     factory_group = app_commands.Group(name="factory", description="Craft components and drills")
 
     @factory_group.command(name="craft", description="Queue a component or drill to be crafted")
-    @app_commands.describe(item="What to craft", quantity="How many to produce")
+    @app_commands.describe(item="What to craft", quantity="How many to produce — leave blank for 1")
     @app_commands.choices(item=[
         app_commands.Choice(name=info["name"], value=key) for key, info in CRAFTABLE.items()
     ])
-    async def factory_craft(self, interaction: discord.Interaction, item: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000]):
+    async def factory_craft(self, interaction: discord.Interaction, item: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000] | None = None):
+        quantity = quantity or 1
         recipe = CRAFTABLE[item.value]
 
         needs = {input_id: per_unit * quantity for input_id, per_unit in recipe["inputs"].items()}

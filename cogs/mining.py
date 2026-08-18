@@ -20,11 +20,21 @@ table in schema.sql), not a fungible stack, because its level and attached
 container have to survive being unplaced. Commands therefore take a drill_id
 picked from an autocomplete list rather than a drill type.
 
-HARVEST_TICK_MINUTES is 24, giving 2.5 ticks/hour. A drill's rate comes from
-its type and is scaled by its level (see LEVEL_RATE_ANCHOR), so a tick's share
-of it is generally a fraction of an item rather than a whole number - drills
-carry the remainder in harvest_progress rather than rounding it away (see
+HARVEST_TICK_MINUTES is 5, giving 12 ticks/hour - matching the other three
+machines' PROCESS_TICK_MINUTES. A drill's rate comes from its type and is
+scaled by its level (see LEVEL_RATE_ANCHOR), so a tick's share of it is
+generally a fraction of an item rather than a whole number - drills carry the
+remainder in harvest_progress rather than rounding it away (see
 advance_harvest).
+
+Bumped from 24 (2.5 ticks/hour) as of the 1.2.1 drill speed buff: at 24
+minutes, a drill's own base 100-item capacity fills inside a single tick once
+its effective rate passes 250/hour, which the buffed Diamond Drill (120/hour
+at level 1) now reaches at level 7 - a level worth evaluating progression at,
+where before the buff (15/hour) the same threshold sat at level 80. Filling
+inside one tick isn't incorrect (space_left still clamps the take), it just
+means the drill jumps straight to FULL with no visible progress in between.
+At 5 minutes that threshold moves back out to level 46 for Diamond.
 """
 import logging
 
@@ -82,7 +92,7 @@ from data.emoji import MINING_POOL_EMOJI
 
 log = logging.getLogger("dragonhoard")
 
-HARVEST_TICK_MINUTES = 24
+HARVEST_TICK_MINUTES = 5
 
 # The two drill sets /collect can empty, kept at module level so tests can run
 # them against a real database rather than restating them. The default reaches

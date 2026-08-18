@@ -90,7 +90,10 @@ class ManualCoverageTests(unittest.TestCase):
         """
         import bot
 
-        loaded = {name.removeprefix("cogs.") for name in bot.INITIAL_EXTENSIONS}
+        # devtools is beta-only internal tooling (cogs/devtools.py), not part
+        # of the player-facing command surface this coverage system polices -
+        # deliberately excluded rather than documented.
+        loaded = {name.removeprefix("cogs.") for name in bot.INITIAL_EXTENSIONS} - {"devtools"}
         checked = {cog_cls.__module__.removeprefix("cogs.") for cog_cls in COGS}
         self.assertEqual(loaded, checked)
 

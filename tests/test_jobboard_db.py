@@ -14,7 +14,15 @@ import unittest
 from pathlib import Path
 
 from database.db import Database
-from utils.db_helpers import ensure_server_row, ensure_user_row, get_currency_balance
+from utils.db_helpers import (
+    adjust_currency_balance,
+    adjust_user_quantity,
+    deduct_user_quantity,
+    ensure_server_row,
+    ensure_user_row,
+    get_currency_balance,
+    get_user_quantity,
+)
 from utils.job_board import (
     credit_job_progress,
     ensure_todays_job,
@@ -267,6 +275,47 @@ class RolloverTests(JobBoardTestCase):
                     f"SELECT COUNT(*) AS n FROM {table} WHERE job_date = '2000-01-01'"
                 )
                 self.assertEqual(row["n"], 0)
+
+
+class SaleReceiptTotalsTests(JobBoardTestCase):
+    """The /market sell receipt's post-transaction reads (cogs/economy.py:
+    market_sell), mirroring market_sell's real write order - deduct the sold
+    material, pay for it, then credit the job board - so the totals the
+    receipt shows can never be stale relative to those writes. Direct analogue
+    of tests/test_collect.py::CollectQueryTests::
+    test_the_totals_lookup_reports_the_post_credit_amounts."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.job = await self.post()
+        self.material = self.job["material_id"]
+        self.needed = self.job["quantity"]
+        async with self.db.transaction() as tx:
+            await adjust_user_quantity(tx, USER, self.material, self.needed + 100)
+
+    async def sell_and_read_totals(self, quantity, unit_price=1.0):
+        async with self.db.transaction() as tx:
+            await deduct_user_quantity(tx, USER, self.material, quantity)
+            await adjust_currency_balance(tx, GUILD, USER, quantity * unit_price)
+            bonus = await credit_job_progress(tx, GUILD, USER, self.material, quantity, MEMBERS)
+            remaining = await get_user_quantity(tx, USER, self.material)
+            new_balance = await get_currency_balance(tx, GUILD, USER)
+        return bonus, remaining, new_balance
+
+    async def test_the_totals_lookup_reports_the_post_write_amounts(self):
+        if self.needed < 2:
+            self.skipTest("task is a single unit, so any sale completes it")
+        quantity = 1
+        bonus, remaining, new_balance = await self.sell_and_read_totals(quantity, unit_price=2.0)
+        self.assertEqual(bonus, 0.0)
+        self.assertEqual(remaining, self.needed + 100 - quantity)
+        self.assertAlmostEqual(new_balance, quantity * 2.0)
+
+    async def test_a_sale_that_completes_the_task_shows_the_bonus_already_folded_in(self):
+        bonus, remaining, new_balance = await self.sell_and_read_totals(self.needed, unit_price=1.0)
+        self.assertGreater(bonus, 0.0)
+        self.assertEqual(remaining, 100)
+        self.assertAlmostEqual(new_balance, self.needed * 1.0 + bonus)
 
 
 if __name__ == "__main__":

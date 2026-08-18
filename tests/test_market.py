@@ -18,6 +18,7 @@ from data.materials import (
     TRADEABLE_ORDER,
     raw_input_cost,
 )
+from utils.formatting import DEFAULT_CURRENCY_EMOJI
 
 
 class TradeableOrderTests(unittest.TestCase):
@@ -131,6 +132,26 @@ class CannotAffordMessageTests(unittest.TestCase):
             unit = self.cog._sell_price(1.0, 1000, 1, 1000)
             message = self.message(quantity, unit * quantity - 1e-12)
             self.assertNotIn(f"**{quantity}**", message)
+
+
+class SaleReceiptLineTests(unittest.TestCase):
+    """The /market sell receipt's "New Totals" field."""
+
+    def setUp(self):
+        self.cog = EconomyCog.__new__(EconomyCog)
+        self.info = TRADEABLE_MATERIALS["iron_ore"]
+
+    def test_it_names_the_material_and_remaining_amount(self):
+        lines = self.cog._sale_receipt_lines(self.info, 42, 10.0, "💰")
+        self.assertIn(f"{self.info['emoji']} **{self.info['name']}**: 42 remaining", lines)
+
+    def test_it_names_the_new_balance(self):
+        lines = self.cog._sale_receipt_lines(self.info, 42, 10.0, "💰")
+        self.assertIn("Balance: 💰 10.00", lines)
+
+    def test_a_missing_currency_emoji_falls_back_to_the_default(self):
+        lines = self.cog._sale_receipt_lines(self.info, 42, 10.0, None)
+        self.assertIn(f"Balance: {DEFAULT_CURRENCY_EMOJI} 10.00", lines)
 
 
 if __name__ == "__main__":

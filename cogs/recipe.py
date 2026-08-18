@@ -53,8 +53,20 @@ def _container_lines() -> list[str]:
     """Container recipes with the number that actually matters attached - a
     container is bought for its capacity, which the bare recipe doesn't show."""
     return [
-        f"{line} [holds {effective_capacity(container_id)}]"
+        f"{line} — [holds {effective_capacity(container_id)}]"
         for container_id, line in zip(STORAGE_CONTAINERS, build_recipe_lines(STORAGE_CONTAINERS))
+    ]
+
+
+def _drill_lines() -> list[str]:
+    """Drill recipes with the number that actually matters attached - a
+    drill is bought for its mining speed, which the bare recipe doesn't show.
+    :g drops the trailing zero on whole-number rates (Ruby's 30) while still
+    showing Steel's fractional 7.5, matching /factory upgrade's own receipt
+    (cogs/factory.py)."""
+    return [
+        f"{line} — [mines {DRILLS[drill_id]['mines_per_hour']:g}/hour]"
+        for drill_id, line in zip(DRILLS, build_recipe_lines(DRILLS))
     ]
 
 
@@ -83,7 +95,7 @@ class RecipeCog(commands.Cog):
             add_multi_field(embed, "Components", build_recipe_lines(COMPONENT_RECIPES))
             add_multi_field(embed, "Drill Bits", build_recipe_lines(DRILL_BIT_RECIPES))
         elif section.value == "drills":
-            add_multi_field(embed, "Drills", build_recipe_lines(DRILLS))
+            add_multi_field(embed, "Drills", _drill_lines())
             add_multi_field(embed, "Upgrades", build_recipe_lines(UPGRADE_MATERIALS))
             embed.add_field(
                 name="Drill Upgrades",

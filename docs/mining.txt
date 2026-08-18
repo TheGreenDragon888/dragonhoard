@@ -17,7 +17,7 @@ Those gemstone counts are the point. A drill draws from what is genuinely in the
 
 The bag is deliberately NOT scaled to server size. A smaller bag for a smaller server would make its diamonds commoner per item mined, which is a different game rather than the same one at a different pace.
 
-How long a bag lasts is now entirely a matter of investment. At 3 drills per player: 5 members on level 1 Iron Drills mine 1,800/day and take 556 days; the same 5 on level 10 Diamond Drills mine 15,120/day and take 66; 200 members on level 1 Iron Drills take 14. A lone player on starter drills waits years. That is the accepted trade for removing the ceiling - gem timing is now the player's own choice, where before it was their member count's. An earlier design floored it at one diamond a year by injecting gems on a timer; that was dropped along with the daily top-up it hung off.
+How long a bag lasts is now entirely a matter of investment. At 3 drills per player: 5 members on level 1 Iron Drills mine 1,800/day and take 556 days; the same 5 on level 10 Diamond Drills mine 120,960/day and take 8; 200 members on level 1 Iron Drills take 14. A lone player on starter drills waits years. That is the accepted trade for removing the ceiling - gem timing is now the player's own choice, where before it was their member count's. An earlier design floored it at one diamond a year by injecting gems on a timer; that was dropped along with the daily top-up it hung off.
 
 /mine status shows what is actually in the bag, including exactly which gemstones are still in it. Every number it prints is a fact read from the database; there are no estimates anywhere in that embed.
 
@@ -92,18 +92,18 @@ The following are the currently planned materials:
 Rates below are at level 1; every level adds a fifth of that drill's own level 1 rate. Every drill stores 100 raw materials on its own, whatever its type - more storage comes from containers, not from the drill.
 <:IronMiningDrill:1523433637398450347> Iron Drill (Wiring, Drill Chassis, and Iron Drill Bit) [Mines 5 raw materials / hour]
 <:SteelMiningDrill:1523433646613069824> Steel Drill (Wiring, Drill Chassis, and Steel Drill Bit) [Mines 7.5 raw materials / hour]
-<:RubyMiningDrill:1523433666800517262> Ruby Drill (Wiring, Drill Chassis, and Ruby Drill Bit) [Mines 10 raw materials / hour]
-<:ObsidianMiningDrill:1523433678825459893> Obsidian Drill (Wiring, Drill Chassis, and Obsidian Drill Bit) [Mines 12.5 raw materials / hour]
-<:DiamondMiningDrill:1523433688656908408> Diamond Drill (Wiring, Drill Chassis, and Diamond Drill Bit) [Mines 15 raw materials / hour]
+<:RubyMiningDrill:1523433666800517262> Ruby Drill (Wiring, Drill Chassis, and Ruby Drill Bit) [Mines 30 raw materials / hour]
+<:ObsidianMiningDrill:1523433678825459893> Obsidian Drill (Wiring, Drill Chassis, and Obsidian Drill Bit) [Mines 60 raw materials / hour]
+<:DiamondMiningDrill:1523433688656908408> Diamond Drill (Wiring, Drill Chassis, and Diamond Drill Bit) [Mines 120 raw materials / hour]
 
 (Storage containers, produced in a factory - attach with /mine attach)
 📦 Iron Container (10 Iron, 5 Copper) [+150 storage, so 250 on a drill]
 🗃️ Steel Container (10 Steel, 10 Copper) [+400 storage, so 500 on a drill]
-💼 Ruby Container (1 Ruby, 20 Copper) [+900 storage, so 1000 on a drill]
-🧳 Obsidian Container (1 Obsidian, 40 Copper) [+1900 storage, so 2000 on a drill]
-🎁 Diamond Container (1 Diamond, 80 Copper) [+3900 storage, so 4000 on a drill]
+💼 Ruby Container (1 Ruby, 20 Copper) [+1900 storage, so 2000 on a drill]
+🧳 Obsidian Container (1 Obsidian, 40 Copper) [+3900 storage, so 4000 on a drill]
+🎁 Diamond Container (1 Diamond, 80 Copper) [+7900 storage, so 8000 on a drill]
 
-Each tier holds twice what the one below it does. A drill holding 1000 is a day's mining from a level 10 Diamond Drill, the fastest rig you're likely to field, so the gemstone containers are worth roughly one, two and four days of it.
+As of 1.2.1, Ruby/Obsidian/Diamond container capacity scales by the same factor the matched drill's speed was buffed by that release (Steel->Ruby is a x4 jump on both; Ruby->Obsidian and Obsidian->Diamond are both x2). That keeps a container proportionally as useful relative to its own tier's drill as it always was, but because capacity and rate now scale by the same factor at each of those steps, a container buys an identical 66.67 hours of runtime from Steel through Diamond - Iron is the only tier that still buys strictly less (50 hours). See the STORAGE_CONTAINERS comment in data/materials.py for the full reasoning.
 
 (Upgrade materials, produced in a factory)
 🧰 Drill Upgrade Pack (5 Copper) [consumed by /factory upgrade]

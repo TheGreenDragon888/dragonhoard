@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 import discord
 
-from utils.embeds import make_embed, add_multi_field, JOBBOARD_COLOR, SCRAPPER_COLOR
+from utils.embeds import make_embed, add_multi_field, MINING_COLOR, JOBBOARD_COLOR, SCRAPPER_COLOR
 
 
 @dataclass(frozen=True)
@@ -46,6 +46,58 @@ VERSIONS: dict[str, ChangelogVersion] = {}
 def _add(version: ChangelogVersion):
     VERSIONS[version.version] = version
 
+
+_add(ChangelogVersion(
+    version="1.2.1",
+    released="2026-08-17",
+    emoji="⛏️",
+    color=MINING_COLOR,
+    summary="Faster gem drills, bigger gem containers, and optional quantities",
+    headline=(
+        "A focused follow-up to 1.2. The three gemstone drills mine a lot faster, their "
+        "containers grew to match, mining progress updates in smaller steps, and every "
+        "quantity field you fill in by hand is now optional."
+    ),
+    entries=(
+        ChangelogEntry(
+            "⛏️ Gem Drills Mine Faster",
+            "Ruby, Obsidian and Diamond Drills all mine much faster at level 1 — Ruby **10 → "
+            "30**, Obsidian **12.5 → 60**, Diamond **15 → 120** raw materials an hour. Their "
+            "matching containers grew by the same factor so a full one still buys about as "
+            "much running time as before: Ruby now holds **2,000** (was 1,000), Obsidian "
+            "**4,000** (was 2,000), Diamond **8,000** (was 4,000). Iron and Steel drills and "
+            "containers are unchanged. `/recipe factory` shows the new rates and capacities.",
+        ),
+        ChangelogEntry(
+            "⏱️ Smoother Mining Progress",
+            "Drills now check in every **5 minutes** instead of every 24, matching how often "
+            "the other three machines already did. With gem drills running so much faster, "
+            "the old 24-minute tick would fill a drill's own 100-item bay in one jump far "
+            "sooner than it used to; the shorter tick keeps `/mine status` showing real "
+            "progress in between instead of an occasional leap straight to full.",
+        ),
+        ChangelogEntry(
+            "🧾 Sale Receipts",
+            "`/market sell` now hands back a proper receipt: what you sold, what it sold for, "
+            "how much of that material you have left, and your new balance — all in one "
+            "embed, the same way `/collect` already shows post-haul totals. If the sale "
+            "finished today's job board task, the bonus shows up right alongside it.",
+        ),
+        ChangelogEntry(
+            "🔢 Optional Quantities",
+            "Every command that asks how many of an item — `/market buy`, `/market sell`, "
+            "`/factory craft`, `/furnace smelt`, `/press craft`, `/scrapper scrap` — now lets "
+            "you leave the quantity blank and defaults to **1**. Currency amounts still have "
+            "to be typed out.",
+        ),
+        ChangelogEntry(
+            "📖 Recipe Book Shows Drill Speed",
+            "`/recipe factory` → Drills now lists each drill's mining speed right next to its "
+            "crafting recipe, so you don't have to leave the recipe book to check what a drill "
+            "you're about to build actually does.",
+        ),
+    ),
+))
 
 _add(ChangelogVersion(
     version="1.2",

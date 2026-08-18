@@ -23,8 +23,8 @@ from data.materials import (
 )
 from utils.drills import drill_cell, drill_label
 
-# Matches HARVEST_TICK_MINUTES = 24 in cogs/mining.py.
-TICKS_PER_HOUR = 2.5
+# Matches HARVEST_TICK_MINUTES = 5 in cogs/mining.py.
+TICKS_PER_HOUR = 12
 
 
 class EffectiveRateTests(unittest.TestCase):
@@ -65,8 +65,8 @@ class EffectiveRateTests(unittest.TestCase):
         # - a 9.000000000000002 items/hour reaches an embed as "9.000000000000002".
         self.assertEqual(effective_rate("steel_drill", 2), 9)
         self.assertEqual(effective_rate("steel_drill", 3), 10.5)
-        self.assertEqual(effective_rate("obsidian_drill", 2), 15)
-        self.assertEqual(effective_rate("diamond_drill", 4), 24)
+        self.assertEqual(effective_rate("obsidian_drill", 2), 72)
+        self.assertEqual(effective_rate("diamond_drill", 4), 192)
 
 
 class EffectiveCapacityTests(unittest.TestCase):
@@ -77,28 +77,34 @@ class EffectiveCapacityTests(unittest.TestCase):
         expected = {
             "iron_container": 250,
             "steel_container": 500,
-            "ruby_container": 1000,
-            "obsidian_container": 2000,
-            "diamond_container": 4000,
+            "ruby_container": 2000,
+            "obsidian_container": 4000,
+            "diamond_container": 8000,
         }
         self.assertEqual(
             {c: effective_capacity(c) for c in STORAGE_CONTAINERS}, expected
         )
 
-    def test_each_tier_holds_twice_the_one_below(self):
-        # The ladder is defined on the totals rather than on storage_bonus, which
-        # is why the bonuses are the unround half of the pair. Pinning it here so
-        # a future retune that edits the bonuses directly has to say so.
+    def test_each_step_scales_by_the_matched_drills_speed_factor(self):
+        # As of 1.2.1 the ladder is no longer a uniform doubling: Iron->Steel
+        # is still x2, but Steel->Ruby is x4 (matching the drill speed jump at
+        # that step, 7.5->30) and Ruby->Obsidian / Obsidian->Diamond are x2
+        # (matching 30->60->120). See the rationale comment above
+        # STORAGE_CONTAINERS in data/materials.py for why.
         totals = [effective_capacity(c) for c in STORAGE_CONTAINERS]
-        for lower, higher in zip(totals, totals[1:]):
-            self.assertEqual(higher, lower * 2)
+        ratios = [higher / lower for lower, higher in zip(totals, totals[1:])]
+        self.assertEqual(ratios, [2, 4, 2, 2])
 
-    def test_a_dearer_container_buys_more_runtime_than_a_cheaper_one(self):
+    def test_a_dearer_container_buys_at_least_as_much_runtime_as_a_cheaper_one(self):
         # The failure this guards is subtle and shipped once: the old ladder's
         # totals were in the same ratio as the matched drills' rates, so steel
         # through diamond all held exactly 40 hours and a ruby bought less
-        # autonomy than iron did. Rising bonuses alone don't prove anything -
-        # runtime is the unit that matters.
+        # autonomy than iron did. As of 1.2.1, container capacity is
+        # deliberately scaled by the same factor as the matched drill's speed
+        # (see data/materials.py's STORAGE_CONTAINERS comment), which
+        # reintroduces a flat tie from Steel through Diamond - accepted this
+        # time as the cost of that design, not a bug. Iron is the one tier
+        # that still buys strictly less.
         matched = (
             ("iron_container", "iron_drill"),
             ("steel_container", "steel_drill"),
@@ -110,8 +116,8 @@ class EffectiveCapacityTests(unittest.TestCase):
             effective_capacity(container) / effective_rate(drill, 1)
             for container, drill in matched
         ]
-        for lower, higher in zip(hours, hours[1:]):
-            self.assertGreater(higher, lower)
+        self.assertLess(hours[0], hours[1])
+        self.assertTrue(all(h == hours[1] for h in hours[1:]))
 
 
 class UpgradeCostTests(unittest.TestCase):
@@ -143,6 +149,50 @@ class UpgradeCostTests(unittest.TestCase):
                 self.assertIsNotNone(get_material_info(material_id))
 
 
+class BuyingTheNewTierIsCheaperThanUpgradingTests(unittest.TestCase):
+    """The 1.2.1 drill speed buff was chosen so that buying a fresh drill of
+    the new tier is cheaper than levelling the previous tier's drill up to
+    match its speed - otherwise the buff would make the new tier a worse deal
+    than just grinding the old one. "Cheaper" is measured with raw_input_cost,
+    the codebase's existing "how hard to obtain" metric (also used by
+    /inventory's ordering and scrap_yield's keystone selection), not an
+    invented one.
+
+    This was a close call for Ruby specifically: at the originally proposed
+    15/30/60, buying a new Ruby Drill cost about 123x MORE than levelling a
+    Steel Drill to match, because raw_input_cost prices a ruby at 5,500 and a
+    Ruby Drill bit alone needs three. 30/60/120 was chosen so this reverses."""
+
+    def _upgrade_path_value(self, drill_type: str, target_rate: float) -> float:
+        level = 1
+        while effective_rate(drill_type, level) < target_rate:
+            level += 1
+        total: dict[str, int] = {}
+        for lvl in range(1, level):
+            for material_id, qty in upgrade_cost(drill_type, lvl).items():
+                total[material_id] = total.get(material_id, 0) + qty
+        return sum(qty * raw_input_cost(material_id) for material_id, qty in total.items())
+
+    def _new_drill_value(self, drill_type: str) -> float:
+        return sum(
+            qty * raw_input_cost(material_id)
+            for material_id, qty in DRILLS[drill_type]["inputs"].items()
+        )
+
+    def test_each_gem_tier_drill_is_cheaper_than_levelling_the_previous_tier_to_match(self):
+        precedents = {
+            "ruby_drill": "steel_drill",
+            "obsidian_drill": "ruby_drill",
+            "diamond_drill": "obsidian_drill",
+        }
+        for new_tier, precedent in precedents.items():
+            with self.subTest(new_tier=new_tier):
+                target_rate = effective_rate(new_tier, 1)
+                upgrade_value = self._upgrade_path_value(precedent, target_rate)
+                new_drill_value = self._new_drill_value(new_tier)
+                self.assertLess(new_drill_value, upgrade_value)
+
+
 class AdvanceHarvestTests(unittest.TestCase):
     def _mine(self, rate_per_hour, ticks):
         total, carry = 0, 0.0
@@ -153,25 +203,28 @@ class AdvanceHarvestTests(unittest.TestCase):
 
     def test_level_two_iron_drill_earns_its_full_bonus(self):
         # The regression this whole mechanism exists for. A level 2 iron drill
-        # mines 6/hour = 2.4 items/tick; rounding each tick in isolation gives
-        # 2/tick, i.e. 20 items over 4 hours - exactly what level 1 produces,
-        # making the upgrade worthless.
-        self.assertEqual(self._mine(6, 10), 24)
+        # mines 6/hour = 0.5 items/tick; rounding each tick in isolation gives
+        # 0/tick forever, i.e. nothing over 4 hours (48 ticks) - not even what
+        # level 1 produces, making the upgrade worthless.
+        self.assertEqual(self._mine(6, 48), 24)
 
     def test_base_rates_are_unchanged(self):
-        self.assertEqual(self._mine(5, 10), 20)     # iron, level 1
-        self.assertEqual(self._mine(7.5, 10), 30)   # steel, level 1
-        self.assertEqual(self._mine(15, 10), 60)    # diamond, level 1
+        self.assertEqual(self._mine(5, 48), 20)     # iron, level 1
+        self.assertEqual(self._mine(7.5, 48), 30)   # steel, level 1
+        self.assertEqual(self._mine(120, 48), 480)  # diamond, level 1
 
     def test_odd_levels_land_exactly_too(self):
-        self.assertEqual(self._mine(7, 10), 28)     # iron level 3
-        self.assertEqual(self._mine(9, 10), 36)     # iron level 5
+        self.assertEqual(self._mine(7, 48), 28)     # iron level 3
+        self.assertEqual(self._mine(9, 48), 36)     # iron level 5
 
     def test_half_item_rates_land_exactly(self):
-        # Percentage levelling puts far more drills on fractional rates than
-        # the old flat +1 did - a steel drill is on a half at every odd level.
-        self.assertEqual(self._mine(10.5, 10), 42)   # steel level 3
-        self.assertEqual(self._mine(17.5, 10), 70)   # obsidian level 3
+        # Percentage levelling puts drills on fractional rates whenever a
+        # type's base isn't a multiple of LEVEL_RATE_ANCHOR (5) - steel (7.5)
+        # is on a half at every odd level. As of 1.2.1 every gem-tier base
+        # (30/60/120) is a multiple of 5, so steel is now the only drill type
+        # this can happen to; see test_every_drill_and_level_averages_to_its_stated_rate
+        # below for the generic (fractional-or-not) correctness check.
+        self.assertEqual(self._mine(10.5, 48), 42)   # steel level 3
 
     def test_every_drill_and_level_averages_to_its_stated_rate(self):
         for drill_type in DRILLS:
@@ -190,8 +243,9 @@ class AdvanceHarvestTests(unittest.TestCase):
             self.assertLess(carry, 1.0)
 
     def test_a_rate_below_one_item_per_tick_still_accumulates(self):
-        # 2/hour is 0.8 items/tick - it must never floor to zero forever.
-        self.assertEqual(self._mine(2, 10), 8)
+        # 2/hour is 0.167 items/tick at 12 ticks/hour - it must never floor to
+        # zero forever.
+        self.assertEqual(self._mine(2, 48), 8)
 
 
 class DrillDisplayTests(unittest.TestCase):

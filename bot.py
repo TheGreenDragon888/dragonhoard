@@ -40,23 +40,37 @@ bot = commands.Bot(command_prefix="!", intents=intents, tree_cls=DragonhoardTree
 # rather than each cog opening its own separate connection pool.
 bot.db = Database(config.DATABASE_PATH)
 
-# Every file in cogs/ that should be loaded as an extension. Add new cogs
-# here as you build more features.
-INITIAL_EXTENSIONS = [
-    "cogs.setup",
-    "cogs.economy",
-    "cogs.mining",
-    "cogs.furnace",
-    "cogs.factory",
-    "cogs.press",
-    "cogs.scrapper",
-    "cogs.jobboard",
-    "cogs.donate",
-    "cogs.recipe",
-    "cogs.manual",
-    "cogs.changelog",
-    "cogs.fun",
-]
+def build_initial_extensions(is_beta: bool) -> list[str]:
+    """Every file in cogs/ that should be loaded as an extension. Add new
+    cogs here as you build more features.
+
+    Pulled out as a pure function (rather than a bare module-level list) so
+    the beta-only conditional below is unit-testable without importing bot.py
+    itself - see tests/test_bot.py."""
+    extensions = [
+        "cogs.setup",
+        "cogs.economy",
+        "cogs.mining",
+        "cogs.furnace",
+        "cogs.factory",
+        "cogs.press",
+        "cogs.scrapper",
+        "cogs.jobboard",
+        "cogs.donate",
+        "cogs.recipe",
+        "cogs.manual",
+        "cogs.changelog",
+        "cogs.fun",
+    ]
+    if is_beta:
+        # cogs/devtools.py - never registered as a slash command on the live
+        # bot, so a global sync can never expose it there. See that module's
+        # docstring for the rest of this feature's defense-in-depth layers.
+        extensions.append("cogs.devtools")
+    return extensions
+
+
+INITIAL_EXTENSIONS = build_initial_extensions(config.IS_BETA)
 
 
 @bot.event

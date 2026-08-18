@@ -177,6 +177,16 @@ class EconomyCog(commands.Cog):
             f"for {format_currency(unit_cost * affordable, currency_emoji, True)}."
         )
 
+    def _sale_receipt_lines(
+        self, info: dict, remaining: int, new_balance: float, currency_emoji: str | None,
+    ) -> list[str]:
+        """The /market sell receipt's "New Totals" field: what's left of the
+        material just sold, and the balance it sold for."""
+        return [
+            f"{info['emoji']} **{info['name']}**: {remaining:,} remaining",
+            f"Balance: {format_currency(new_balance, currency_emoji)}",
+        ]
+
     async def _currency_lines(self, interaction: discord.Interaction) -> list[str]:
         """Every server currency balance this user holds, formatted for
         display and labelled with the currency's own name. The current
@@ -301,11 +311,12 @@ class EconomyCog(commands.Cog):
     market_group = app_commands.Group(name="market", description="Trade raw and smelted materials with the server")
 
     @market_group.command(name="sell", description="Sell materials from your inventory to the server")
-    @app_commands.describe(material="What to sell", quantity="How many to sell")
+    @app_commands.describe(material="What to sell", quantity="How many to sell — leave blank for 1")
     @app_commands.choices(material=[
         app_commands.Choice(name=info["name"], value=key) for key, info in TRADEABLE_MATERIALS.items()
     ])
-    async def market_sell(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000]):
+    async def market_sell(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000] | None = None):
+        quantity = quantity or 1
         info = TRADEABLE_MATERIALS[material.value]
         ceiling_price = info["market_ceiling_price"]
 
@@ -357,6 +368,11 @@ class EconomyCog(commands.Cog):
                     tx, interaction.guild_id, interaction.user.id,
                     material.value, quantity, member_count,
                 )
+
+                # Read inside the same transaction so the receipt's totals
+                # can never be stale relative to the writes above.
+                remaining = await get_user_quantity(tx, interaction.user.id, material.value)
+                new_balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your inventory changed while that was going through - nothing was sold. Try again.",
@@ -365,23 +381,33 @@ class EconomyCog(commands.Cog):
             return
 
         currency_emoji = await self._get_currency_emoji(interaction.guild_id)
-        message = (
-            f"Sold {quantity}x **{info['name']}** to the server for "
-            f"{format_currency(total_value, currency_emoji)}."
+        embed = make_embed("Sale Complete", MARKET_COLOR)
+        embed.description = (
+            f"{info['emoji']} Sold **{quantity:,}x {info['name']}** to the server for "
+            f"**{format_currency(total_value, currency_emoji)}**."
+        )
+        add_multi_field(
+            embed, "New Totals",
+            self._sale_receipt_lines(info, remaining, new_balance, currency_emoji),
         )
         if bonus > 0:
-            message += (
-                f"\n📋 That finished today's job board task - "
-                f"**{format_currency(bonus, currency_emoji)}** bonus."
+            embed.add_field(
+                name="📋 Job Board",
+                value=(
+                    f"That finished today's job board task — "
+                    f"**{format_currency(bonus, currency_emoji)}** bonus (already reflected in the balance above)."
+                ),
+                inline=False,
             )
-        await respond(interaction, self.db, content=message)
+        await respond(interaction, self.db, embed=embed)
 
     @market_group.command(name="buy", description="Buy materials from the server's stock")
-    @app_commands.describe(material="What to buy", quantity="How many to buy")
+    @app_commands.describe(material="What to buy", quantity="How many to buy — leave blank for 1")
     @app_commands.choices(material=[
         app_commands.Choice(name=info["name"], value=key) for key, info in TRADEABLE_MATERIALS.items()
     ])
-    async def market_buy(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000]):
+    async def market_buy(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000] | None = None):
+        quantity = quantity or 1
         info = TRADEABLE_MATERIALS[material.value]
         ceiling_price = info["market_ceiling_price"]
 

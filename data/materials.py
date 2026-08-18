@@ -76,17 +76,17 @@ DRILLS = {
     "ruby_drill": {
         "name": "Ruby Drill", "emoji": custom_emoji("RubyMiningDrill", 1523433666800517262, 1533714430704222288),
         "inputs": {"wiring": 1, "drill_chassis": 1, "ruby_drill_bit": 1},
-        "mines_per_hour": 10,
+        "mines_per_hour": 30,
     },
     "obsidian_drill": {
         "name": "Obsidian Drill", "emoji": custom_emoji("ObsidianMiningDrill", 1523433678825459893, 1533714429655646358),
         "inputs": {"wiring": 1, "drill_chassis": 1, "obsidian_drill_bit": 1},
-        "mines_per_hour": 12.5,
+        "mines_per_hour": 60,
     },
     "diamond_drill": {
         "name": "Diamond Drill", "emoji": custom_emoji("DiamondMiningDrill", 1523433688656908408, 1533714427679997952),
         "inputs": {"wiring": 1, "drill_chassis": 1, "diamond_drill_bit": 1},
-        "mines_per_hour": 15,
+        "mines_per_hour": 120,
     },
 }
 
@@ -101,17 +101,24 @@ UPGRADE_MATERIALS = {
 # swappable, and any container fits any drill - the tier names describe the
 # container's own cost and bonus, not which drill it fits.
 #
-# The ladder is set by TOTAL capacity, not by the bonus: each tier holds twice
-# what the one below it does, so the totals run 250 -> 500 -> 1,000 -> 2,000 ->
-# 4,000 and the bonuses are simply those minus BASE_STORAGE_CAPACITY. That is
-# why they read as 900/1,900/3,900 rather than round numbers - the round number
-# is the total, which is also the only one a player ever sees (/recipe factory
+# The ladder is set by TOTAL capacity, not by the bonus, and the bonuses are
+# simply those totals minus BASE_STORAGE_CAPACITY - that's why they read as
+# 150/400/1,900/3,900/7,900 rather than round numbers; the round number is the
+# total, which is also the only one a player ever sees (/recipe factory
 # renders effective_capacity, not the bonus).
 #
-# What the doubling is anchored to: 1,000 is one day's output from the fastest
-# drill in the game at a realistic level (a level 10 Diamond Drill mines 1,008
-# a day), so the gem tier reads as one, two and four days of the best rig you
-# are likely to field. The tiers below it are the same ladder run backwards.
+# As of 1.2.1, Ruby/Obsidian/Diamond's totals are set by scaling each one by
+# the exact same factor that tier's drill speed was scaled by that release
+# (Steel->Ruby is a 4x jump on both the drill, 7.5->30, and the container,
+# 500->2,000; Ruby->Obsidian and Obsidian->Diamond are both 2x jumps on drill
+# and container alike). That keeps a container proportionally as useful
+# relative to its own tier's drill as it always was - but because capacity and
+# rate now scale by an identical factor at each of those three steps, runtime
+# (capacity / effective_rate) is flat at 66.67 hours from Steel through
+# Diamond (500/7.5 = 2,000/30 = 4,000/60 = 8,000/120). Iron is the only tier
+# that still buys strictly less runtime (250/5 = 50 hours). See
+# EffectiveCapacityTests.test_a_dearer_container_buys_more_runtime_than_a_cheaper_one
+# in tests/test_drills.py, where this is pinned.
 #
 # The previous ladder was 150/200/300/400/500, and its problem was not that the
 # gem tiers were low but that they were exactly cancelled out: totals of
@@ -119,9 +126,12 @@ UPGRADE_MATERIALS = {
 # the time, so every container from steel up bought precisely 40 hours of
 # runtime and the iron one bought 50. A ruby container cost a thousand times a
 # steel one and bought no more autonomy than it - and less than the iron one.
-# Any future retune should check the totals against effective_rate the same
-# way, because a bonus ladder that merely rises can still be flat in the only
-# unit that matters.
+# That check was run again for 1.2.1's drill speed buff, and this time the
+# result was accepted rather than redesigned around: Steel through Diamond
+# tying at 66.67 hours (see above) is the same flat-runtime shape this
+# paragraph describes fixing once already, reintroduced here deliberately as
+# the accepted cost of scaling containers proportionally to drill speed - not
+# the same bug recurring by accident.
 #
 # No attempt is made to price these against what the gems cost - the usefulness
 # of storage saturates within about a week of autonomy, so proportionality to a
@@ -132,9 +142,9 @@ UPGRADE_MATERIALS = {
 STORAGE_CONTAINERS = {
     "iron_container":     {"name": "Iron Container",     "emoji": custom_emoji("IronContainer", 1533713574977994793, 1533714646551363684), "inputs": {"iron": 10, "copper": 5},      "storage_bonus": 150},   # holds 250
     "steel_container":    {"name": "Steel Container",    "emoji": custom_emoji("SteelContainer", 1533713578811461642, 1533714649990824036), "inputs": {"steel": 10, "copper": 10},    "storage_bonus": 400},   # holds 500
-    "ruby_container":     {"name": "Ruby Container",     "emoji": custom_emoji("RubyContainer", 1533713577607954542, 1533714648736469033), "inputs": {"ruby": 1, "copper": 20},      "storage_bonus": 900},   # holds 1,000
-    "obsidian_container": {"name": "Obsidian Container", "emoji": custom_emoji("ObsidianContainer", 1533713576261587107, 1533714647687893093), "inputs": {"obsidian": 1, "copper": 40},  "storage_bonus": 1900},  # holds 2,000
-    "diamond_container":  {"name": "Diamond Container",  "emoji": custom_emoji("DiamondContainer", 1533713574076219502, 1533714644965916805), "inputs": {"diamond": 1, "copper": 80},   "storage_bonus": 3900},  # holds 4,000
+    "ruby_container":     {"name": "Ruby Container",     "emoji": custom_emoji("RubyContainer", 1533713577607954542, 1533714648736469033), "inputs": {"ruby": 1, "copper": 20},      "storage_bonus": 1900},  # holds 2,000
+    "obsidian_container": {"name": "Obsidian Container", "emoji": custom_emoji("ObsidianContainer", 1533713576261587107, 1533714647687893093), "inputs": {"obsidian": 1, "copper": 40},  "storage_bonus": 3900},  # holds 4,000
+    "diamond_container":  {"name": "Diamond Container",  "emoji": custom_emoji("DiamondContainer", 1533713574076219502, 1533714644965916805), "inputs": {"diamond": 1, "copper": 80},   "storage_bonus": 7900},  # holds 8,000
 }
 
 # Made only by the hydraulic press. Deliberately has no market_ceiling_price:
@@ -396,7 +406,7 @@ DRILL_SCRAP_JOB_TARGET = "drill_scrap"
 # a function of investment, with no floor under it. Days to drain a bag:
 #
 #     5 members, 3x Iron Drill Lv.1          1,800/day     556 days
-#     5 members, 3x Diamond Drill Lv.10     15,120/day      66 days
+#     5 members, 3x Diamond Drill Lv.10    120,960/day       8 days
 #     200 members, 3x Iron Drill Lv.1       72,000/day      14 days
 #     1 member, 3x Iron Drill Lv.1             360/day   2,778 days
 #
@@ -592,13 +602,14 @@ def advance_harvest(progress: float, rate_per_hour: float, ticks_per_hour: float
     """Splits a tick's worth of mining into whole items now and a fraction to
     carry into the next tick.
 
-    The carry is what makes a level worth exactly its stated rate. At 2.5
-    ticks/hour an iron drill's level is +0.4 items/tick, so rounding each tick
-    in isolation would throw the bonus away entirely - a level 2 iron drill
-    mines 2.4/tick, which rounds to the same 2 as level 1. A type whose rate
-    happens to divide evenly into ticks would survive without this; most don't,
-    and which ones do changes with any retune, so the carry is unconditional
-    rather than something to reason about per tier."""
+    The carry is what makes a level worth exactly its stated rate. At 12
+    ticks/hour an iron drill's level is +0.083 items/tick, so rounding each
+    tick in isolation would throw the bonus away entirely - levels 1 through 7
+    (0.417 to 0.917 items/tick) would all floor to 0/tick and mine nothing at
+    all, indistinguishable from one another. A type whose rate happens to
+    divide evenly into ticks would survive without this; most don't, and which
+    ones do changes with any retune, so the carry is unconditional rather than
+    something to reason about per tier."""
     return accrue(progress, rate_per_hour / ticks_per_hour)
 
 
@@ -645,7 +656,7 @@ def draw_from_pool(available: dict[str, int], count: int, rng=random) -> dict[st
     pool's real contents means that once one is in there, somebody gets it.
 
     Sequential rather than a closed-form multivariate hypergeometric because
-    `count` is a single drill's share of one 24-minute tick - a handful of
+    `count` is a single drill's share of one 5-minute tick - a handful of
     items - over six materials. The loop is cheaper than the arithmetic that
     would replace it.
     """

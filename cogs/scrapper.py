@@ -134,11 +134,12 @@ class ScrapperCog(commands.Cog):
         return row["scrapper_level"]
 
     @scrapper_group.command(name="scrap", description="Recycle items back into half of what they were made from")
-    @app_commands.describe(item="What to break down", quantity="How many to break down")
+    @app_commands.describe(item="What to break down", quantity="How many to break down — leave blank for 1")
     @app_commands.choices(item=[
         app_commands.Choice(name=info["name"], value=key) for key, info in SCRAPPABLE.items()
     ])
-    async def scrapper_scrap(self, interaction: discord.Interaction, item: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000]):
+    async def scrapper_scrap(self, interaction: discord.Interaction, item: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000] | None = None):
+        quantity = quantity or 1
         yields = scrap_yield(item.value)
 
         have = 0

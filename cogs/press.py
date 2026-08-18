@@ -91,7 +91,7 @@ class PressCog(commands.Cog):
     press_group = app_commands.Group(name="press", description="Press bulk materials into gemstones")
 
     @press_group.command(name="craft", description="Queue a gemstone to be pressed")
-    @app_commands.describe(product="What to press", quantity="How many to produce")
+    @app_commands.describe(product="What to press", quantity="How many to produce — leave blank for 1")
     @app_commands.choices(product=[
         app_commands.Choice(name=get_material_info(key)["name"], value=key)
         for key in PRESS_RECIPES
@@ -100,8 +100,9 @@ class PressCog(commands.Cog):
         self,
         interaction: discord.Interaction,
         product: app_commands.Choice[str],
-        quantity: app_commands.Range[int, 1, 50],
+        quantity: app_commands.Range[int, 1, 50] | None = None,
     ):
+        quantity = quantity or 1
         recipe = PRESS_RECIPES[product.value]
         press_days = recipe["press_days"]
         needs = {input_id: per_unit * quantity for input_id, per_unit in recipe["inputs"].items()}
