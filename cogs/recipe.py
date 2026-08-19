@@ -23,10 +23,10 @@ from data.materials import (
     STORAGE_CONTAINERS,
     UPGRADE_MATERIALS,
     PRESS_RECIPES,
-    BASE_STORAGE_CAPACITY,
     effective_capacity,
     get_material_info,
     scrap_yield,
+    upgrade_cost,
 )
 
 # DRILL_BITS/DRILL_COMPONENTS are id tuples; the book needs the recipe dicts.
@@ -70,6 +70,14 @@ def _drill_lines() -> list[str]:
     ]
 
 
+def _drill_upgrade_lines() -> list[str]:
+    """Each drill's level-1 upgrade cost - what /factory upgrade takes to
+    raise it from level 1 to 2. Every part of the cost doubles per level
+    from there (see upgrade_cost)."""
+    upgrade_recipes = {drill_id: {"inputs": upgrade_cost(drill_id, 1)} for drill_id in DRILLS}
+    return build_recipe_lines(upgrade_recipes)
+
+
 class RecipeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -96,17 +104,10 @@ class RecipeCog(commands.Cog):
             add_multi_field(embed, "Drill Bits", build_recipe_lines(DRILL_BIT_RECIPES))
         elif section.value == "drills":
             add_multi_field(embed, "Drills", _drill_lines())
-            add_multi_field(embed, "Upgrades", build_recipe_lines(UPGRADE_MATERIALS))
-            embed.add_field(
-                name="Drill Upgrades",
-                value=(
-                    f"Every drill holds {BASE_STORAGE_CAPACITY} on its own. `/factory upgrade` "
-                    f"raises a drill one level for an Upgrade Pack plus its tier material, and "
-                    f"each level adds a fifth of that drill's own base speed - so an upgrade is "
-                    f"worth the same proportion whichever drill you spend it on. The cost doubles "
-                    f"every level; run the command to see what your drill needs next."
-                ),
-                inline=False,
+            add_multi_field(embed, "Upgrade Pack", build_recipe_lines(UPGRADE_MATERIALS))
+            add_multi_field(
+                embed, "Drill Upgrades",
+                _drill_upgrade_lines() + ["Cost doubles every level."],
             )
         else:
             add_multi_field(embed, "Storage Containers", _container_lines())

@@ -20,7 +20,6 @@ from data.materials import (
     SMELTED_MATERIALS,
     JOB_BOARD_MATERIALS,
     JOB_BOARD_MAX_QUANTITY,
-    JOB_BOARD_SELECTION_FLOOR,
     JOB_BOARD_TARGET_PAYOUT,
     job_quantity,
     job_reward,
@@ -271,38 +270,31 @@ class JobRewardTests(unittest.TestCase):
 
 
 class MaterialSelectionTests(unittest.TestCase):
-    def test_the_material_the_server_needs_most_dominates(self):
-        deficits = {material_id: 0.0 for material_id in JOB_BOARD_MATERIALS}
-        deficits["steel"] = 1.0
-        rng = random.Random(20260803)
-        picks = [pick_job_material(deficits, rng) for _ in range(2000)]
-        self.assertGreater(picks.count("steel"), 1500)
+    # target / (stock + target): stock=0 -> 1.0 (max); stock=target -> 0.5;
+    # stock=20x target -> 1/21 (heavily overstocked, still > 0).
+    EMPTY = 1.0
+    AT_TARGET = 0.5
+    HEAVILY_OVERSTOCKED = 1 / 21
 
-    def test_a_fully_stocked_material_is_still_reachable(self):
-        """Why the floor exists. A deterministic "biggest deficit wins" rule
-        parks the board on one material until the server catches up, and a
-        server that can't produce that material yet gets the same impossible
-        task every single day."""
-        deficits = {material_id: 0.0 for material_id in JOB_BOARD_MATERIALS}
-        deficits["iron_ore"] = 1.0
+    def test_an_empty_material_dominates_over_one_merely_at_target(self):
+        deficits = {m: self.AT_TARGET for m in JOB_BOARD_MATERIALS}
+        deficits["steel"] = self.EMPTY
+        rng = random.Random(20260803)
+        picks = [pick_job_material(deficits, rng) for _ in range(4000)]
+        # True share: 1.0 / (1.0 + 5*0.5) = 2/7 ~= 28.6%.
+        self.assertGreater(picks.count("steel") / 4000, 0.22)
+        self.assertLess(picks.count("steel") / 4000, 0.36)
+
+    def test_a_heavily_overstocked_material_is_still_reachable(self):
+        """target / (stock + target) is never exactly zero for finite stock,
+        unlike the old max(0, target - stock) / target, which clamped to
+        exactly 0.0 for any stock at or above target. This guarantee is now a
+        property of the formula itself and needs nothing added on top."""
+        deficits = {m: self.HEAVILY_OVERSTOCKED for m in JOB_BOARD_MATERIALS}
+        deficits["iron_ore"] = self.EMPTY
         rng = random.Random(1)
         picks = {pick_job_material(deficits, rng) for _ in range(4000)}
         self.assertEqual(picks, set(JOB_BOARD_MATERIALS))
-
-    def test_a_server_that_needs_nothing_still_gets_a_task(self):
-        # Without the floor every weight would be zero and random.choices
-        # raises on a total weight of zero.
-        deficits = {material_id: 0.0 for material_id in JOB_BOARD_MATERIALS}
-        self.assertIn(pick_job_material(deficits, random.Random(7)), JOB_BOARD_MATERIALS)
-
-    def test_missing_deficits_are_treated_as_zero(self):
-        self.assertIn(pick_job_material({}, random.Random(7)), JOB_BOARD_MATERIALS)
-
-    def test_the_floor_is_small_enough_to_be_a_floor(self):
-        # It has to keep every material reachable without drowning out the
-        # deficit that's supposed to be steering the choice.
-        self.assertLess(JOB_BOARD_SELECTION_FLOOR, 0.25)
-        self.assertGreater(JOB_BOARD_SELECTION_FLOOR, 0.0)
 
 
 if __name__ == "__main__":

@@ -79,12 +79,11 @@ class FurnaceCog(commands.Cog):
     furnace_group = app_commands.Group(name="furnace", description="Smelt raw materials")
 
     @furnace_group.command(name="smelt", description="Queue raw materials to be smelted")
-    @app_commands.describe(material="What to smelt", quantity="How many to produce — leave blank for 1")
+    @app_commands.describe(material="What to smelt", quantity="How many to produce")
     @app_commands.choices(material=[
         app_commands.Choice(name=info["name"], value=key) for key, info in SMELTED_MATERIALS.items()
     ])
-    async def furnace_smelt(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000] | None = None):
-        quantity = quantity or 1
+    async def furnace_smelt(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000]):
         recipe = SMELTED_MATERIALS[material.value]
 
         # The recipe's own inputs and the flat per-item coal cost of running

@@ -311,12 +311,11 @@ class EconomyCog(commands.Cog):
     market_group = app_commands.Group(name="market", description="Trade raw and smelted materials with the server")
 
     @market_group.command(name="sell", description="Sell materials from your inventory to the server")
-    @app_commands.describe(material="What to sell", quantity="How many to sell — leave blank for 1")
+    @app_commands.describe(material="What to sell", quantity="How many to sell")
     @app_commands.choices(material=[
         app_commands.Choice(name=info["name"], value=key) for key, info in TRADEABLE_MATERIALS.items()
     ])
-    async def market_sell(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000] | None = None):
-        quantity = quantity or 1
+    async def market_sell(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000]):
         info = TRADEABLE_MATERIALS[material.value]
         ceiling_price = info["market_ceiling_price"]
 
@@ -386,28 +385,27 @@ class EconomyCog(commands.Cog):
             f"{info['emoji']} Sold **{quantity:,}x {info['name']}** to the server for "
             f"**{format_currency(total_value, currency_emoji)}**."
         )
-        add_multi_field(
-            embed, "New Totals",
-            self._sale_receipt_lines(info, remaining, new_balance, currency_emoji),
-        )
         if bonus > 0:
             embed.add_field(
                 name="📋 Job Board",
                 value=(
                     f"That finished today's job board task — "
-                    f"**{format_currency(bonus, currency_emoji)}** bonus (already reflected in the balance above)."
+                    f"**{format_currency(bonus, currency_emoji)}** bonus."
                 ),
                 inline=False,
             )
+        add_multi_field(
+            embed, "New Totals",
+            self._sale_receipt_lines(info, remaining, new_balance, currency_emoji),
+        )
         await respond(interaction, self.db, embed=embed)
 
     @market_group.command(name="buy", description="Buy materials from the server's stock")
-    @app_commands.describe(material="What to buy", quantity="How many to buy — leave blank for 1")
+    @app_commands.describe(material="What to buy", quantity="How many to buy")
     @app_commands.choices(material=[
         app_commands.Choice(name=info["name"], value=key) for key, info in TRADEABLE_MATERIALS.items()
     ])
-    async def market_buy(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000] | None = None):
-        quantity = quantity or 1
+    async def market_buy(self, interaction: discord.Interaction, material: app_commands.Choice[str], quantity: app_commands.Range[int, 1, 1000]):
         info = TRADEABLE_MATERIALS[material.value]
         ceiling_price = info["market_ceiling_price"]
 

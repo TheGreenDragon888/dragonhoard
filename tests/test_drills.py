@@ -125,13 +125,13 @@ class UpgradeCostTests(unittest.TestCase):
         self.assertEqual(upgrade_cost("iron_drill", 1), {"drill_upgrade_pack": 1, "iron": 10})
         self.assertEqual(upgrade_cost("steel_drill", 1), {"drill_upgrade_pack": 1, "steel": 10})
 
-    def test_gem_drills_cost_three_of_their_gem(self):
+    def test_gem_drills_cost_one_of_their_gem(self):
         for drill_type, gem in (
             ("ruby_drill", "ruby"),
             ("obsidian_drill", "obsidian"),
             ("diamond_drill", "diamond"),
         ):
-            self.assertEqual(upgrade_cost(drill_type, 1), {"drill_upgrade_pack": 1, gem: 3})
+            self.assertEqual(upgrade_cost(drill_type, 1), {"drill_upgrade_pack": 1, gem: 1})
 
     def test_every_part_of_the_cost_doubles_per_level(self):
         for level in range(1, 8):

@@ -48,6 +48,45 @@ def _add(version: ChangelogVersion):
 
 
 _add(ChangelogVersion(
+    version="1.2.2",
+    released="2026-08-18",
+    emoji="💎",
+    color=MINING_COLOR,
+    summary="Cheaper gem drill upgrades, a smoother job board, and required quantities",
+    headline=(
+        "A small hotfix on top of 1.2.1: gem-tier drill upgrades cost a lot less, the job "
+        "board's material selection is smoother, and a few commands that used to default "
+        "their quantity now ask for it explicitly."
+    ),
+    entries=(
+        ChangelogEntry(
+            "💎 Cheaper Gem Drill Upgrades",
+            "Levelling up a Ruby, Obsidian or Diamond Drill now costs **1** of its gem per "
+            "level instead of 3. The drill bits themselves are unchanged - still 3 gems to "
+            "craft.",
+        ),
+        ChangelogEntry(
+            "📋 Job Board Selection Smoothed Out",
+            "The daily job board's odds of landing on a particular material now taper off "
+            "gradually as that material gets more overstocked, instead of levelling off at a "
+            "fixed floor the moment it hit target stock. A material sitting right at target "
+            "stock now has a real shot at coming up; one well past it barely does.",
+        ),
+        ChangelogEntry(
+            "🔢 Quantities Required Again",
+            "`/market buy`, `/market sell` and `/furnace smelt` now require a quantity - it's "
+            "no longer optional for these three. `/factory craft`, `/press craft` and "
+            "`/scrapper scrap` are unchanged and still default to 1 if left blank.",
+        ),
+        ChangelogEntry(
+            "🧾 Job Board Bonus Shown First",
+            "`/market sell`'s receipt now shows the job board bonus (if the sale finished "
+            "today's task) above the new totals instead of below them.",
+        ),
+    ),
+))
+
+_add(ChangelogVersion(
     version="1.2.1",
     released="2026-08-17",
     emoji="⛏️",

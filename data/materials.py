@@ -344,15 +344,16 @@ BASE_STORAGE_CAPACITY = 100
 LEVEL_RATE_ANCHOR = 5
 
 # What one level-up consumes, on top of the upgrade packs. Ore-tier drills pay
-# in their smelted material; gem-tier drills pay in 3 of their gem, matching
-# the 3 gems their drill bit already costs - 10 of a gem whose drop chance is
-# one in a million would put those drills permanently out of reach.
+# in their smelted material; gem-tier drills pay in their gem - 1 as of
+# 1.2.2, down from 3. This is the upgrade cost only: the drill bit's own
+# crafting recipe (COMPONENT_MATERIALS's *_drill_bit entries) is unchanged,
+# still 3 gems.
 _UPGRADE_TIER_MATERIAL = {
     "iron_drill":     {"iron": 10},
     "steel_drill":    {"steel": 10},
-    "ruby_drill":     {"ruby": 3},
-    "obsidian_drill": {"obsidian": 3},
-    "diamond_drill":  {"diamond": 3},
+    "ruby_drill":     {"ruby": 1},
+    "obsidian_drill": {"obsidian": 1},
+    "diamond_drill":  {"diamond": 1},
 }
 
 # Not a material - the production_jobs.target_id sentinel marking a factory job
@@ -973,10 +974,6 @@ JOB_BOARD_TARGET_PAYOUT = 1.00
 # trade: a task nobody can finish pays nothing at all.
 JOB_BOARD_MAX_QUANTITY = 600
 
-# Every eligible material carries at least this much selection weight, on top
-# of however far below target stock the server is (see pick_job_material).
-JOB_BOARD_SELECTION_FLOOR = 0.05
-
 
 def job_quantity(material_id: str, current_stock: int, target: int) -> int:
     """How many units the day's task asks for: the fewest that pay
@@ -1042,20 +1039,18 @@ def job_reward(material_id: str, quantity: int, current_stock: int, target: int)
 
 
 def pick_job_material(deficits: dict[str, float], rng=random) -> str:
-    """Chooses the day's task from how far below target stock the server is on
-    each eligible material, as a fraction of that target (so a hundred-member
-    server's shortfall is comparable to a five-member one's).
+    """Chooses the day's task from each eligible material's weight - target /
+    (stock + target), so a hundred-member server's numbers are on the same
+    scale as a five-member one's. Emptied out (stock=0) is the maximum weight
+    of 1.0; sitting exactly at target is 0.5, not a hard 0.0; weight keeps
+    falling toward (but mathematically never reaches) 0 as stock climbs past
+    target, so nothing is ever fully out of the running.
 
-    Weighted rather than simply picking the largest deficit, because a
+    Weighted rather than simply picking the largest weight, because a
     deterministic maximum parks the board on one material until the server
     catches up - and a server that cannot produce that material at all yet (a
     brand new one and steel, say) would get the same impossible task every day
     forever, which is the one failure mode a DAILY task must not have.
-
-    JOB_BOARD_SELECTION_FLOOR keeps a fully-stocked material in the running, so
-    there is always somewhere for the weight to go even when the server needs
-    nothing - without it a server at or above target on everything would have
-    zero total weight and no task to post.
     """
-    weights = [JOB_BOARD_SELECTION_FLOOR + max(0.0, deficits.get(m, 0.0)) for m in JOB_BOARD_MATERIALS]
+    weights = [deficits.get(m, 0.0) for m in JOB_BOARD_MATERIALS]
     return rng.choices(JOB_BOARD_MATERIALS, weights=weights, k=1)[0]

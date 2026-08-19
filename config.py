@@ -19,7 +19,7 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/dragonhoard.db")
 
 # Shown in every embed's footer (see utils/embeds.py and docs/stylization.md).
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 
 # Per-item infrastructure fees a server starts with (docs/mining.txt).
 # Server managers can change them with /setup fee. Also mirrored in the

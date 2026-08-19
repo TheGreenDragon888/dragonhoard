@@ -116,11 +116,17 @@ async def ensure_todays_job(tx, guild_id: int, member_count: int):
     if existing is not None:
         return existing
 
-    # How far below target stock the server is on each eligible material, as a
-    # fraction of that target - so the shortfalls of a hundred-member server
-    # and a five-member one are on the same scale.
+    # Each eligible material's selection weight: target / (stock + target).
+    # Emptied out (stock=0) gives the maximum weight of 1.0 - the same
+    # maximum the old formula's clamped deficit gave a fully-drained
+    # material. Sitting exactly at target stock gives 0.5, not the 0.0 a
+    # hard floor at target used to; the weight keeps falling continuously
+    # toward (but never reaching) 0 as stock climbs past target, so nothing
+    # is ever fully out of the running. Dividing by target is what puts a
+    # hundred-member server's numbers on the same scale as a five-member
+    # one's - the role target played in the formula this replaced.
     #
-    # The stock and target themselves are kept, not just the deficit they
+    # The stock and target themselves are kept, not just the weight they
     # produce: the task's size and its bonus are both priced off the chosen
     # material's stock level, and re-reading it after the pick would be a
     # second look at a number that can have moved in between.
@@ -134,7 +140,7 @@ async def ensure_todays_job(tx, guild_id: int, member_count: int):
             (guild_id, material_id),
         )
         stock = row["quantity"] if row else 0
-        deficits[material_id] = max(0.0, target - stock) / target
+        deficits[material_id] = target / (stock + target)
         stocks[material_id] = stock
         targets[material_id] = target
 
