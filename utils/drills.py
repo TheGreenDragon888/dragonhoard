@@ -24,6 +24,7 @@ from discord import app_commands
 from database.db import Database
 from data.materials import (
     DRILLS,
+    RAW_MATERIAL_ORDER,
     STORAGE_CONTAINERS,
     effective_capacity,
     effective_rate,
@@ -41,9 +42,6 @@ _MAX_CHOICE_NAME = 100
 # Autocomplete accepts at most 25 results, so a player with more drills than
 # this sees the most valuable ones and narrows down by typing.
 MAX_AUTOCOMPLETE_RESULTS = 25
-# How many servers /collect names individually before collapsing the rest into
-# an "and N more" line - the haul itself is credited in full either way.
-COLLECT_SERVER_DISPLAY_LIMIT = 10
 
 
 def capacity_of(drill_row) -> int:
@@ -83,7 +81,7 @@ def drill_cell(drill_row) -> str:
 
 
 def drill_short_label(drill_row) -> str:
-    """Just which drill it is and how far it's levelled - no container, no
+    """Just which drill it is and how far it's leveled - no container, no
     location, no fill.
 
     For sentences that are ABOUT one of those things, or that describe a change
@@ -228,45 +226,6 @@ def guild_name_map(bot, drill_rows) -> dict[int, str]:
     return names
 
 
-def collection_summary_lines(
-    hauls: list[tuple[int, int]],
-    guild_names: dict[int, str],
-    *,
-    current_guild_id: int | None = None,
-    limit: int = COLLECT_SERVER_DISPLAY_LIMIT,
-) -> list[str]:
-    """Summarises a cross-server haul, one line per server: how many of that
-    server's drills were emptied and how much came out of them.
-
-    `hauls` is one (guild_id, items) pair per emptied drill, so a server with
-    three drills appears three times and is tallied here. The server the
-    command was run in comes first even if it wasn't the biggest haul - it's
-    the one the player is looking at - and the rest follow by total descending,
-    the same ordering /balance uses for currencies.
-    """
-    tallies: dict[int, list[int]] = {}
-    for guild_id, items in hauls:
-        entry = tallies.setdefault(guild_id, [0, 0])
-        entry[0] += 1
-        entry[1] += items
-
-    ordered = []
-    current = tallies.pop(current_guild_id, None) if current_guild_id is not None else None
-    if current is not None:
-        ordered.append((current_guild_id, current))
-    ordered.extend(sorted(tallies.items(), key=lambda item: item[1][1], reverse=True))
-
-    lines = []
-    for guild_id, (drill_count, items) in ordered[:limit]:
-        # Same fallback as guild_name_map: a server the bot can no longer see
-        # still gets named, because its drills kept mining regardless.
-        name = guild_names.get(guild_id, f"server {guild_id}")
-        plural = "s" if drill_count != 1 else ""
-        lines.append(f"**{name}** - {drill_count} drill{plural} · {items:,}")
-
-    if len(ordered) > limit:
-        lines.append(f"... and {len(ordered) - limit} more")
-    return lines
 
 
 def build_material_breakdown(total_items: int, roll_material=roll_raw_material) -> dict[str, int]:
@@ -340,9 +299,11 @@ async def take_drill_contents(tx, drill_row) -> dict[str, int]:
 
 
 def material_breakdown_lines(breakdown: dict[str, int], totals: dict[str, int] | None = None) -> list[str]:
-    """One line per material in a haul, sorted by id so the same haul always
-    renders in the same order. Shared by /mine remove, /collect and the
-    /factory upgrade receipt.
+    """One line per material in a haul, commonest first (data/materials.py:
+    RAW_MATERIAL_ORDER), so the same haul always renders in the same order.
+    Shared by /mine remove, /collect and the /factory upgrade receipt - all
+    three only ever show what a drill produces, which is exactly what that
+    order covers.
 
     Pass `totals` to append what the player now holds of each, in the same
     "(N total)" shape the queue receipts use for what's left after a deduction
@@ -353,8 +314,9 @@ def material_breakdown_lines(breakdown: dict[str, int], totals: dict[str, int] |
     A material missing from `totals` falls back to the plain form rather than
     claiming a total of zero - the player just received some of it, so zero is
     the one answer that can't be true."""
+    order = {material_id: rank for rank, material_id in enumerate(RAW_MATERIAL_ORDER)}
     lines = []
-    for material_id, quantity in sorted(breakdown.items()):
+    for material_id, quantity in sorted(breakdown.items(), key=lambda item: order.get(item[0], len(order))):
         info = get_material_info(material_id)
         if not info:
             continue

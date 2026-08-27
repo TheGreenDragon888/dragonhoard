@@ -65,8 +65,8 @@ class EffectiveRateTests(unittest.TestCase):
         # - a 9.000000000000002 items/hour reaches an embed as "9.000000000000002".
         self.assertEqual(effective_rate("steel_drill", 2), 9)
         self.assertEqual(effective_rate("steel_drill", 3), 10.5)
-        self.assertEqual(effective_rate("obsidian_drill", 2), 72)
-        self.assertEqual(effective_rate("diamond_drill", 4), 192)
+        self.assertEqual(effective_rate("obsidian_drill", 2), 144)
+        self.assertEqual(effective_rate("diamond_drill", 4), 768)
 
 
 class EffectiveCapacityTests(unittest.TestCase):
@@ -78,33 +78,34 @@ class EffectiveCapacityTests(unittest.TestCase):
             "iron_container": 250,
             "steel_container": 500,
             "ruby_container": 2000,
-            "obsidian_container": 4000,
-            "diamond_container": 8000,
+            "obsidian_container": 8000,
+            "diamond_container": 32000,
         }
         self.assertEqual(
             {c: effective_capacity(c) for c in STORAGE_CONTAINERS}, expected
         )
 
     def test_each_step_scales_by_the_matched_drills_speed_factor(self):
-        # As of 1.2.1 the ladder is no longer a uniform doubling: Iron->Steel
-        # is still x2, but Steel->Ruby is x4 (matching the drill speed jump at
-        # that step, 7.5->30) and Ruby->Obsidian / Obsidian->Diamond are x2
-        # (matching 30->60->120). See the rationale comment above
-        # STORAGE_CONTAINERS in data/materials.py for why.
+        # As of 1.3 every step from Steel up is a uniform x4 (matching each
+        # step's drill speed jump: 7.5->30->120->480) - only Iron->Steel is
+        # still x2. See the rationale comment above STORAGE_CONTAINERS in
+        # data/materials.py for why, and for the 1.2.1 history where
+        # Ruby->Obsidian and Obsidian->Diamond were only x2.
         totals = [effective_capacity(c) for c in STORAGE_CONTAINERS]
         ratios = [higher / lower for lower, higher in zip(totals, totals[1:])]
-        self.assertEqual(ratios, [2, 4, 2, 2])
+        self.assertEqual(ratios, [2, 4, 4, 4])
 
     def test_a_dearer_container_buys_at_least_as_much_runtime_as_a_cheaper_one(self):
         # The failure this guards is subtle and shipped once: the old ladder's
         # totals were in the same ratio as the matched drills' rates, so steel
         # through diamond all held exactly 40 hours and a ruby bought less
-        # autonomy than iron did. As of 1.2.1, container capacity is
+        # autonomy than iron did. Since 1.2.1, container capacity is
         # deliberately scaled by the same factor as the matched drill's speed
         # (see data/materials.py's STORAGE_CONTAINERS comment), which
-        # reintroduces a flat tie from Steel through Diamond - accepted this
-        # time as the cost of that design, not a bug. Iron is the one tier
-        # that still buys strictly less.
+        # reintroduces a flat tie from Steel through Diamond - accepted as the
+        # cost of that design, not a bug. 1.3 changed which factors produce
+        # that tie (Ruby->Obsidian->Diamond moved from x2/x2 to x4/x4) but not
+        # the tie itself. Iron is the one tier that still buys strictly less.
         matched = (
             ("iron_container", "iron_drill"),
             ("steel_container", "steel_drill"),

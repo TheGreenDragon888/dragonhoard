@@ -17,6 +17,7 @@ from cogs.setup import SetupCog
 from cogs.economy import EconomyCog
 from cogs.mining import MiningCog
 from cogs.furnace import FurnaceCog
+from cogs.blastfurnace import BlastFurnaceCog
 from cogs.factory import FactoryCog
 from cogs.press import PressCog
 from cogs.scrapper import ScrapperCog
@@ -36,6 +37,7 @@ COGS = (
     EconomyCog,
     MiningCog,
     FurnaceCog,
+    BlastFurnaceCog,
     FactoryCog,
     PressCog,
     ScrapperCog,

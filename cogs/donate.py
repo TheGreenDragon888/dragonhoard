@@ -30,12 +30,14 @@ from utils.formatting import format_currency
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
     MACHINES,
-    apply_machine_upgrades,
+    machine_label,
+    bank_infrastructure_fee,
     adjust_currency_balance,
     deduct_currency_balance,
     ensure_server_row,
     ensure_user_row,
     get_currency_balance,
+    mining_slot_status,
     record_burned,
 )
 from data.materials import upgrade_threshold
@@ -68,8 +70,10 @@ class DonateCog(commands.Cog):
         infrastructure="Which machine to pay into",
         amount="How much of this server's currency to give",
     )
+    # The choice a player picks reads as prose ("blast furnace"); the value
+    # behind it stays the column prefix the queries interpolate.
     @app_commands.choices(infrastructure=[
-        app_commands.Choice(name=machine, value=machine) for machine in MACHINES
+        app_commands.Choice(name=machine_label(machine), value=machine) for machine in MACHINES
     ])
     async def donate_infrastructure(
         self,
@@ -116,24 +120,30 @@ class DonateCog(commands.Cog):
                     f"SELECT {machine}_level AS level FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
+                # Read before the donation lands, so the embed below can tell
+                # a slot this donation just bought from one the server already
+                # had - the same reason `before` is read for the machine level.
+                slots_before = await mining_slot_status(tx, interaction.guild_id)
+
                 await deduct_currency_balance(
                     tx, interaction.guild_id, interaction.user.id, amount
-                )
-                await tx.execute(
-                    f"UPDATE server_config SET {machine}_fees_collected = "
-                    f"{machine}_fees_collected + ? WHERE guild_id = ?",
-                    (amount, interaction.guild_id),
                 )
                 # A donation is a sink in exactly the way a fee is - the money
                 # is gone, not moved - so it goes through the same ledger.
                 await record_burned(tx, interaction.guild_id, amount)
-                level = await apply_machine_upgrades(tx, interaction.guild_id, machine)
+                # Banked through the same helper a machine's own fees use, which
+                # is why a donation counts toward mining slots without this
+                # command knowing they exist.
+                level = await bank_infrastructure_fee(
+                    tx, interaction.guild_id, machine, amount
+                )
 
                 collected = await tx.fetchone(
                     f"SELECT {machine}_fees_collected AS collected FROM server_config "
                     f"WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
+                slots = await mining_slot_status(tx, interaction.guild_id)
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your balance changed while that was going through - nothing was donated. "
@@ -142,15 +152,16 @@ class DonateCog(commands.Cog):
             )
             return
 
-        embed = make_embed(f"Donated to the {machine.title()}", DEFAULT_COLOR)
+        label = machine_label(machine)
+        embed = make_embed(f"Donated to the {label.title()}", DEFAULT_COLOR)
         embed.description = (
             f"{interaction.user.mention} gave "
-            f"**{format_currency(amount, currency_emoji)}** to this server's {machine}."
+            f"**{format_currency(amount, currency_emoji)}** to this server's {label}."
         )
         if level > before["level"]:
             embed.add_field(
-                name="⬆️ Levelled Up",
-                value=f"The {machine} is now **level {level:,}** (was {before['level']:,}).",
+                name="⬆️ Leveled Up",
+                value=f"The {label} is now **level {level:,}** (was {before['level']:,}).",
                 inline=False,
             )
         next_cost = upgrade_threshold(level + 1)
@@ -162,6 +173,31 @@ class DonateCog(commands.Cog):
             ),
             inline=False,
         )
+        # Mining slots ride on the sum of EVERY machine's fees, so a donation to
+        # any one of them moves this - which is worth showing here, where a
+        # player is choosing how much to give and to what. Shown as one field
+        # rather than the machine's two, because the unlock and the progress
+        # toward the next one are the same sentence for slots.
+        slot_progress = (
+            f"{format_currency(min(slots.invested, slots.next_threshold), currency_emoji)} / "
+            f"{format_currency(slots.next_threshold, currency_emoji)} "
+            f"towards {slots.slots + 1:,} per player"
+        )
+        if slots.level > slots_before.level:
+            embed.add_field(
+                name="⛏️ New Mining Slot",
+                value=(
+                    f"Every player here can now keep **{slots.slots:,} drills** in the "
+                    f"ground, up from {slots_before.slots:,}.\n{slot_progress}"
+                ),
+                inline=False,
+            )
+        else:
+            embed.add_field(
+                name="⛏️ Mining Slots",
+                value=f"**{slots.slots:,}** drills per player.\n{slot_progress}",
+                inline=False,
+            )
         await respond(interaction, self.db, embed=embed)
 
     @donate_group.command(

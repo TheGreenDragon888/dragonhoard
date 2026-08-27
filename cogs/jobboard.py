@@ -45,7 +45,11 @@ class JobBoardCog(commands.Cog):
 
         progress = await get_progress(self.db, interaction.guild_id, interaction.user.id, job["job_date"])
         sold = progress["sold"] if progress else 0
-        claimed = progress is not None and progress["claimed_at"] is not None
+        completions = progress["claims_paid"] if progress else 0
+        # Progress toward the NEXT completion, not toward the day's only one:
+        # the task repeats, so what is left of the current lap is the number a
+        # player is actually working against.
+        toward_next = sold - completions * job["quantity"]
 
         info = get_material_info(job["material_id"])
         embed = make_embed("📋 Job Board", JOBBOARD_COLOR)
@@ -61,18 +65,17 @@ class JobBoardCog(commands.Cog):
         )
         embed.add_field(
             name="Bonus",
-            value=f"{format_currency(job['reward'], currency_emoji)}, once per player.",
+            value=f"{format_currency(job['reward'], currency_emoji)}, every time you finish it.",
             inline=True,
         )
-        if claimed:
-            status = "✅ Claimed - well done."
-        elif sold >= job["quantity"]:
-            # Only reachable if the sale that finished the task predates the
-            # job row somehow; the claim is otherwise paid in the same
-            # transaction as the sale that completes it.
-            status = f"**{sold:,}/{job['quantity']:,}** - sell one more to claim it."
-        else:
-            status = f"**{sold:,}/{job['quantity']:,}** sold."
+        # Two numbers rather than one, because the task no longer has a done
+        # state: how many times it has been finished, and how far into the next
+        # one this player is.
+        status = f"**{toward_next:,}/{job['quantity']:,}** sold."
+        if completions:
+            paid = format_currency(job["reward"] * completions, currency_emoji)
+            times = "once" if completions == 1 else f"**{completions:,}** times"
+            status = f"✅ Finished {times} for {paid}.\n{status}"
         embed.add_field(name="Your Progress", value=status, inline=True)
 
         await respond(interaction, self.db, embed=embed)

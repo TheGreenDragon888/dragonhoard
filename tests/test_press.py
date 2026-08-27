@@ -86,7 +86,7 @@ class PressRecipeTests(unittest.TestCase):
                 cost * per_unit / RAW_MATERIALS[raw]["drop_chance"]
                 for raw, per_unit in SMELTED_MATERIALS[material]["inputs"].items()
             )
-            values.append(RAW_MATERIALS[gem]["market_ceiling_price"] / items)
+            values.append(RAW_MATERIALS[gem]["market_price"] / items)
         self.assertLess(max(values) / min(values), 1.10)
 
     def test_steel_is_limited_by_iron_ore_not_coal(self):
@@ -122,7 +122,7 @@ class PressRecipeTests(unittest.TestCase):
 
         for material_id in PRESS_MATERIALS:
             self.assertNotIn(material_id, TRADEABLE_MATERIALS)
-            self.assertNotIn("market_ceiling_price", ALL_MATERIALS[material_id])
+            self.assertNotIn("market_price", ALL_MATERIALS[material_id])
 
     def test_pressed_gems_are_ordinary_raw_materials(self):
         # The press outputs the same rubies mining does - no synthetic twin.

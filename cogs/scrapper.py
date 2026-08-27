@@ -16,9 +16,13 @@ Why it exists: components, containers and drills are the one class of goods
 with no exit. docs/market.md section 3 keeps finished goods off the market, so
 before this a mis-planned batch of drill bits or an out-grown iron drill sat in
 an inventory forever. The scrapper is their way out, at half the recipe (see
-scrap_yield in data/materials.py) and one tier at a time - scrapping a drill
-gives components, and those components have to be scrapped again to get back to
-metal.
+scrap_yield in data/materials.py) and one tier at a time - scrapping a
+component or container gives back materials, and scrapping those gives back
+materials again.
+
+Drills are the one exception to "one tier at a time": scrapping a drill skips
+the component tier entirely, via drill_scrap_yield rather than scrap_yield -
+see that function for why a whole wiring or chassis is never handed back.
 
 Two subcommands rather than one, because Discord will not accept a single
 parameter that is both a material chosen from a list and a drill chosen from an
@@ -49,7 +53,7 @@ from utils.formatting import (
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
-    apply_machine_upgrades,
+    bank_infrastructure_fee,
     ensure_server_row,
     get_user_quantity,
     adjust_user_quantity,
@@ -75,6 +79,7 @@ from data.materials import (
     STORAGE_CONTAINERS,
     UPGRADE_MATERIALS,
     DRILL_SCRAP_JOB_TARGET,
+    drill_scrap_yield,
     scrap_yield,
     scrapper_rate,
     upgrade_threshold,
@@ -187,11 +192,9 @@ class ScrapperCog(commands.Cog):
 
                 if fee_total > 0:
                     await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await tx.execute(
-                        "UPDATE server_config SET scrapper_fees_collected = scrapper_fees_collected + ? WHERE guild_id = ?",
-                        (fee_total, interaction.guild_id),
+                    await bank_infrastructure_fee(
+                        tx, interaction.guild_id, "scrapper", fee_total
                     )
-                    await apply_machine_upgrades(tx, interaction.guild_id, "scrapper")
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
                 await tx.execute(
@@ -307,11 +310,9 @@ class ScrapperCog(commands.Cog):
 
                 if fee_total > 0:
                     await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await tx.execute(
-                        "UPDATE server_config SET scrapper_fees_collected = scrapper_fees_collected + ? WHERE guild_id = ?",
-                        (fee_total, interaction.guild_id),
+                    await bank_infrastructure_fee(
+                        tx, interaction.guild_id, "scrapper", fee_total
                     )
-                    await apply_machine_upgrades(tx, interaction.guild_id, "scrapper")
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
 
@@ -355,7 +356,7 @@ class ScrapperCog(commands.Cog):
             ),
         )
         embed.add_field(
-            name="You'll Get Back", value=describe_cost(scrap_yield(row["drill_type"])), inline=False
+            name="You'll Get Back", value=describe_cost(drill_scrap_yield(row["drill_type"])), inline=False
         )
         if fee_total > 0:
             embed.add_field(
@@ -521,7 +522,7 @@ class ScrapperCog(commands.Cog):
                                 (job["target_drill_id"], job["job_id"]),
                             )
                             if deleted and job["drill_type"] is not None:
-                                for material_id, quantity in scrap_yield(job["drill_type"]).items():
+                                for material_id, quantity in drill_scrap_yield(job["drill_type"]).items():
                                     await adjust_user_quantity(
                                         tx, job["user_id"], material_id, quantity
                                     )

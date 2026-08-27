@@ -6,42 +6,133 @@ is plain Python data (dicts), not database rows, because it never changes
 at runtime - it's balance data you'll tune by editing this file and
 restarting the bot, not something users modify.
 """
-import math
 import random
 
 from data.emoji import custom_emoji
 
 # Raw materials and their drop chance when a drill pulls one item from its
 # server's mining pool. Chances are expressed as fractions of 1.0 and
-# should sum to 1.0. market_ceiling_price is the most the server market will
-# ever pay to acquire one unit (see cogs/economy.py and docs/market.md) -
-# denominated in the buying server's own currency, not DragonCoin.
-# iron_ore/copper_ore/coal were rebalanced together: coal's drop_chance is
-# +50% over its original 0.0999, with iron_ore and copper_ore absorbing that
-# increase proportionally (their original 2:1 ratio is preserved). Each of
-# the three's market_ceiling_price was then rescaled to hold ceiling_price *
-# drop_chance at what it was before the rebalance - the expected currency value
-# of mining one item of that material is unchanged, only its frequency and
-# per-unit price shifted. (The rescaled prices are rounded to six places, so
-# the products match to about five significant figures rather than exactly.)
-# Gemstone rates/prices are untouched.
+# should sum to 1.0. market_price is what the server market pays to acquire
+# one unit (see cogs/economy.py and docs/market.md) - denominated in the
+# buying server's own currency, not DragonCoin.
+#
+# EVERY PRICE IN THIS FILE IS A WHOLE NUMBER OF CENTS, and that is a hard
+# rule rather than a coincidence (1.3). The market's prices no longer move
+# with the server's stock, so a price is now a figure a player reads off
+# /market status and multiplies in their head - and a price of 0.010588 that
+# displays as "0.01" and charges something else is exactly the kind of
+# arithmetic a static price is supposed to make possible. Anything added here
+# rounds to a cent; MARKET_PRICE_CENTS below is the assertion that keeps it
+# that way.
+#
+# The three common ores are the rounded form of the values the 1.2 coal
+# rebalance left behind (0.010588 / 0.017681 / 0.033333). Rounding to the cent
+# cannot preserve their ratios at this magnitude, because the grid is as coarse
+# as the prices are: one cent was 94.4% of iron ore's whole price, so copper
+# ore's 0.0177 had to become either 0.01 or 0.02 with nothing in between. It
+# went to 0.02 (+13.1%), iron ore to 0.01 (-5.6%) and coal to 0.03 (-10.0%),
+# taking their ratios to iron ore from 1.67 and 3.15 to a flat 2 and 3.
+#
+# The one balance figure that shifted with it is stated where it is read, in
+# the mining focus block below: drop_chance * market_price, which was 0.0060
+# for iron ore against 0.0050 for the other two, is now 0.005667 for iron ore,
+# 0.005667 for copper ore and 0.0044955 for coal.
+#
+# Gemstone prices are untouched, and were already whole currency units. They
+# are not tradeable (see TRADEABLE_ORDER) - the price is what raw_input_cost
+# values a gem at when comparing recipes.
 RAW_MATERIALS = {
-    "iron_ore":    {"name": "Iron Ore",    "emoji": custom_emoji("IronOre", 1523432328028885034, 1533714268560691281),    "drop_chance": 0.5667,   "market_ceiling_price": 0.010588},
-    "copper_ore":  {"name": "Copper Ore",  "emoji": custom_emoji("CopperOre", 1523432342813933699, 1533714267478560818),  "drop_chance": 0.28335,  "market_ceiling_price": 0.017681},
-    "coal":        {"name": "Coal",        "emoji": custom_emoji("Coal", 1523432352318099456, 1533714266551484516),       "drop_chance": 0.14985,  "market_ceiling_price": 0.033333},
-    "ruby":        {"name": "Ruby",        "emoji": custom_emoji("Ruby", 1532897325238980680, 1533714310134497404),       "drop_chance": 0.00009,  "market_ceiling_price": 5500.00},
-    "obsidian":    {"name": "Obsidian",    "emoji": custom_emoji("Obsidian", 1532899466687021268, 1533714309119737946),   "drop_chance": 0.000009, "market_ceiling_price": 52500.00},
-    "diamond":     {"name": "Diamond",     "emoji": custom_emoji("Diamond", 1523433355708858612, 1533714307911778446),    "drop_chance": 0.000001, "market_ceiling_price": 500000.00},
+    "iron_ore":    {"name": "Iron Ore",    "emoji": custom_emoji("IronOre", 1523432328028885034, 1533714268560691281),    "drop_chance": 0.5667,   "market_price": 0.01},
+    "copper_ore":  {"name": "Copper Ore",  "emoji": custom_emoji("CopperOre", 1523432342813933699, 1533714267478560818),  "drop_chance": 0.28335,  "market_price": 0.02},
+    "coal":        {"name": "Coal",        "emoji": custom_emoji("Coal", 1523432352318099456, 1533714266551484516),       "drop_chance": 0.14985,  "market_price": 0.03},
+    "ruby":        {"name": "Ruby",        "emoji": custom_emoji("Ruby", 1532897325238980680, 1533714310134497404),       "drop_chance": 0.00009,  "market_price": 5500.00},
+    "obsidian":    {"name": "Obsidian",    "emoji": custom_emoji("Obsidian", 1532899466687021268, 1533714309119737946),   "drop_chance": 0.000009, "market_price": 52500.00},
+    "diamond":     {"name": "Diamond",     "emoji": custom_emoji("Diamond", 1523433355708858612, 1533714307911778446),    "drop_chance": 0.000001, "market_price": 500000.00},
 }
 
 # Smelted materials: produced by the furnace from raw materials.
 # "inputs" maps material_id -> quantity required to produce ONE output unit.
-# Balance rule: each ceiling price is 150% of the combined ceiling price of
-# its recipe's raw inputs (that raw total is the trailing comment per line).
+#
+# Balance rule: each price is 150% of the combined price of its recipe's raw
+# inputs. That is now DERIVED rather than written out and checked by hand -
+# _smelted_market_price does the arithmetic in integer cents below - because
+# the rule and the whole-cent rule have to hold simultaneously, and a pair of
+# constraints maintained by hand across three lines is a pair of constraints
+# that drifts. Retuning an ore's price now moves the bars that smelt from it.
+SMELTED_MARKUP = 1.5
+
 SMELTED_MATERIALS = {
-    "iron":   {"name": "Iron",   "emoji": custom_emoji("Iron", 1523433412805918820, 1533714352232988722),   "inputs": {"iron_ore": 10},            "market_ceiling_price": 0.15882},   # raw: 0.10588
-    "copper": {"name": "Copper", "emoji": custom_emoji("Copper", 1523433425220927498, 1533714350416728167), "inputs": {"copper_ore": 10},          "market_ceiling_price": 0.265215},  # raw: 0.17681
-    "steel":  {"name": "Steel",  "emoji": custom_emoji("Steel", 1523433463150149692, 1533714353428107264),  "inputs": {"iron_ore": 20, "coal": 4}, "market_ceiling_price": 0.517638},  # raw: 0.345092
+    "iron":   {"name": "Iron",   "emoji": custom_emoji("Iron", 1523433412805918820, 1533714352232988722),   "inputs": {"iron_ore": 10}},
+    "copper": {"name": "Copper", "emoji": custom_emoji("Copper", 1523433425220927498, 1533714350416728167), "inputs": {"copper_ore": 10}},
+    "steel":  {"name": "Steel",  "emoji": custom_emoji("Steel", 1523433463150149692, 1533714353428107264),  "inputs": {"iron_ore": 20, "coal": 4}},
+}
+
+
+def _market_price_cents(price: float) -> int:
+    """A price as a whole number of cents, refusing anything that isn't one.
+
+    Prices are held as floats because balances are, but every arithmetic
+    decision about them (the smelting markup, the buy markup, the job board's
+    quantity) is made in cents so that "rounded to the cent" is a property of
+    the numbers rather than of how they happen to be displayed.
+    """
+    cents = round(price * 100)
+    assert abs(price * 100 - cents) < 1e-9, f"price is not a whole number of cents: {price}"
+    return cents
+
+
+def _smelted_market_price(inputs: dict[str, int]) -> float:
+    """SMELTED_MARKUP over the combined price of a recipe's raw inputs,
+    rounded to the cent. The three live recipes all land exactly on one (10,
+    20 and 32 cents of input, times 1.5), so the rounding is a guard for a
+    future retune rather than something any current material relies on."""
+    input_cents = sum(
+        _market_price_cents(RAW_MATERIALS[material_id]["market_price"]) * quantity
+        for material_id, quantity in inputs.items()
+    )
+    return round(input_cents * SMELTED_MARKUP) / 100
+
+
+for _info in SMELTED_MATERIALS.values():
+    _info["market_price"] = _smelted_market_price(_info["inputs"])
+
+# Every price the market quotes, in cents - the single place the whole-cent
+# rule is enforced rather than merely intended. Built at import so a price
+# that isn't a whole cent fails on startup, next to the table it was typed
+# into, rather than as a receipt that charges 0.0106 and says 0.01.
+MARKET_PRICE_CENTS: dict[str, int] = {
+    material_id: _market_price_cents(info["market_price"])
+    for table in (RAW_MATERIALS, SMELTED_MATERIALS)
+    for material_id, info in table.items()
+}
+
+# The blast furnace: the same three smelting recipes, in batches of 100.
+#
+# One blast furnace "item" is one batch, so its inputs and its output are every
+# furnace figure multiplied by BLAST_FURNACE_BATCH_SIZE - derived here rather
+# than written out, so retuning a furnace recipe can never leave the bulk one
+# quoting the old ratio. That identity is the whole point of the machine: it is
+# an auxiliary furnace for players moving thousands of ore at a time, not a
+# better exchange rate. Every cost it charges per item is the furnace's own
+# scaled by that same 100 (config.DEFAULT_BLAST_FURNACE_FEE,
+# BLAST_FURNACE_COAL_COST_PER_BATCH), so the price of one smelted unit is the
+# same at either machine.
+#
+# Deliberately NOT added to _MATERIAL_TABLES: these recipes produce the same
+# three material_ids the furnace does, so a lookup table holding both would
+# have to pick one, and get_material_info would start reporting a batch's
+# quantities for an ordinary Iron.
+BLAST_FURNACE_BATCH_SIZE = 100
+
+BLAST_FURNACE_RECIPES = {
+    material_id: {
+        "inputs": {
+            input_id: per_unit * BLAST_FURNACE_BATCH_SIZE
+            for input_id, per_unit in recipe["inputs"].items()
+        },
+        "output": BLAST_FURNACE_BATCH_SIZE,
+    }
+    for material_id, recipe in SMELTED_MATERIALS.items()
 }
 
 # Component materials: produced by the factory from smelted materials.
@@ -81,12 +172,12 @@ DRILLS = {
     "obsidian_drill": {
         "name": "Obsidian Drill", "emoji": custom_emoji("ObsidianMiningDrill", 1523433678825459893, 1533714429655646358),
         "inputs": {"wiring": 1, "drill_chassis": 1, "obsidian_drill_bit": 1},
-        "mines_per_hour": 60,
+        "mines_per_hour": 120,
     },
     "diamond_drill": {
         "name": "Diamond Drill", "emoji": custom_emoji("DiamondMiningDrill", 1523433688656908408, 1533714427679997952),
         "inputs": {"wiring": 1, "drill_chassis": 1, "diamond_drill_bit": 1},
-        "mines_per_hour": 120,
+        "mines_per_hour": 480,
     },
 }
 
@@ -103,20 +194,21 @@ UPGRADE_MATERIALS = {
 #
 # The ladder is set by TOTAL capacity, not by the bonus, and the bonuses are
 # simply those totals minus BASE_STORAGE_CAPACITY - that's why they read as
-# 150/400/1,900/3,900/7,900 rather than round numbers; the round number is the
-# total, which is also the only one a player ever sees (/recipe factory
+# 150/400/1,900/7,900/31,900 rather than round numbers; the round number is
+# the total, which is also the only one a player ever sees (/recipe factory
 # renders effective_capacity, not the bonus).
 #
-# As of 1.2.1, Ruby/Obsidian/Diamond's totals are set by scaling each one by
-# the exact same factor that tier's drill speed was scaled by that release
-# (Steel->Ruby is a 4x jump on both the drill, 7.5->30, and the container,
-# 500->2,000; Ruby->Obsidian and Obsidian->Diamond are both 2x jumps on drill
-# and container alike). That keeps a container proportionally as useful
-# relative to its own tier's drill as it always was - but because capacity and
-# rate now scale by an identical factor at each of those three steps, runtime
-# (capacity / effective_rate) is flat at 66.67 hours from Steel through
-# Diamond (500/7.5 = 2,000/30 = 4,000/60 = 8,000/120). Iron is the only tier
-# that still buys strictly less runtime (250/5 = 50 hours). See
+# Every container from Steel up is set by scaling that tier's ladder-mate
+# total by the exact same factor its drill's speed was scaled by (Steel->Ruby
+# is a 4x jump on both the drill, 7.5->30, and the container, 500->2,000; as
+# of 1.3, Ruby->Obsidian and Obsidian->Diamond are 4x jumps too, on both drill
+# and container alike - 30->120->480 and 2,000->8,000->32,000). That keeps a
+# container proportionally as useful relative to its own tier's drill as it
+# always was - but because capacity and rate scale by an identical factor at
+# every one of those three steps, runtime (capacity / effective_rate) is flat
+# at 66.67 hours from Steel through Diamond (500/7.5 = 2,000/30 = 8,000/120 =
+# 32,000/480). Iron is the only tier that still buys strictly less runtime
+# (250/5 = 50 hours). See
 # EffectiveCapacityTests.test_a_dearer_container_buys_more_runtime_than_a_cheaper_one
 # in tests/test_drills.py, where this is pinned.
 #
@@ -126,12 +218,14 @@ UPGRADE_MATERIALS = {
 # the time, so every container from steel up bought precisely 40 hours of
 # runtime and the iron one bought 50. A ruby container cost a thousand times a
 # steel one and bought no more autonomy than it - and less than the iron one.
-# That check was run again for 1.2.1's drill speed buff, and this time the
-# result was accepted rather than redesigned around: Steel through Diamond
-# tying at 66.67 hours (see above) is the same flat-runtime shape this
-# paragraph describes fixing once already, reintroduced here deliberately as
-# the accepted cost of scaling containers proportionally to drill speed - not
-# the same bug recurring by accident.
+# That check was run again for 1.2.1's drill speed buff (which introduced the
+# 66.67-hour tie for Steel through Ruby only, Obsidian and Diamond still
+# scaling at 2x per step) and again for 1.3's, which extended the same 4x
+# factor through Obsidian and Diamond - and each time the result was accepted
+# rather than redesigned around: the flat-runtime shape this paragraph
+# describes fixing once is reintroduced here deliberately, as the accepted
+# cost of scaling containers proportionally to drill speed, not the same bug
+# recurring by accident.
 #
 # No attempt is made to price these against what the gems cost - the usefulness
 # of storage saturates within about a week of autonomy, so proportionality to a
@@ -143,11 +237,11 @@ STORAGE_CONTAINERS = {
     "iron_container":     {"name": "Iron Container",     "emoji": custom_emoji("IronContainer", 1533713574977994793, 1533714646551363684), "inputs": {"iron": 10, "copper": 5},      "storage_bonus": 150},   # holds 250
     "steel_container":    {"name": "Steel Container",    "emoji": custom_emoji("SteelContainer", 1533713578811461642, 1533714649990824036), "inputs": {"steel": 10, "copper": 10},    "storage_bonus": 400},   # holds 500
     "ruby_container":     {"name": "Ruby Container",     "emoji": custom_emoji("RubyContainer", 1533713577607954542, 1533714648736469033), "inputs": {"ruby": 1, "copper": 20},      "storage_bonus": 1900},  # holds 2,000
-    "obsidian_container": {"name": "Obsidian Container", "emoji": custom_emoji("ObsidianContainer", 1533713576261587107, 1533714647687893093), "inputs": {"obsidian": 1, "copper": 40},  "storage_bonus": 3900},  # holds 4,000
-    "diamond_container":  {"name": "Diamond Container",  "emoji": custom_emoji("DiamondContainer", 1533713574076219502, 1533714644965916805), "inputs": {"diamond": 1, "copper": 80},   "storage_bonus": 7900},  # holds 8,000
+    "obsidian_container": {"name": "Obsidian Container", "emoji": custom_emoji("ObsidianContainer", 1533713576261587107, 1533714647687893093), "inputs": {"obsidian": 1, "copper": 40},  "storage_bonus": 7900},  # holds 8,000
+    "diamond_container":  {"name": "Diamond Container",  "emoji": custom_emoji("DiamondContainer", 1533713574076219502, 1533714644965916805), "inputs": {"diamond": 1, "copper": 80},   "storage_bonus": 31900},  # holds 32,000
 }
 
-# Made only by the hydraulic press. Deliberately has no market_ceiling_price:
+# Made only by the hydraulic press. Deliberately has no market_price:
 # like drills and components it's a finished good, and docs/market.md section 3
 # keeps those out of the market entirely. Nothing consumes it yet - it's
 # reserved for a later feature, so it accumulates rather than being spent.
@@ -228,12 +322,39 @@ PRESS_RECIPES = {
 PRESS_MATERIALS["ultra_dense_matter"]["inputs"] = PRESS_RECIPES["ultra_dense_matter"]["inputs"]
 
 # Infrastructure throughput, per level. Furnace, factory and scrapper are in
-# items per hour; the press is in ruby-equivalents per day (see PRESS_RECIPES).
-# All four scale linearly and have no maximum level - the cost of the next
-# upgrade is the only ceiling.
+# items per hour and the blast furnace in batches per hour (see
+# BLAST_FURNACE_BATCH_SIZE); the press is in ruby-equivalents per day (see
+# PRESS_RECIPES). All five scale linearly and have no maximum level - the cost
+# of the next upgrade is the only ceiling.
 FURNACE_RATE_PER_LEVEL = 5
 FACTORY_RATE_PER_LEVEL = 1
 PRESS_RATE_PER_LEVEL = 1
+# One batch an hour per level, so 100 smelted units an hour per level: twenty
+# times the furnace at the same level, and the one figure about the blast
+# furnace that is NOT simply the furnace's times a hundred.
+#
+# The furnace's problem is that mining scales with a server's player count and
+# a single shared furnace does not. Working from this file's own numbers - a
+# player may place BASE_MINING_SLOTS drills, a Diamond Drill mines
+# 120/hour, iron ore is 0.5667 of a balanced haul, and Iron takes 10 ore - one
+# player running three of them generates 20.4 Iron/hour of smelting demand,
+# against the 25/hour a level 5 furnace can actually smelt. One such player
+# saturates the machine the whole server shares.
+#
+# Nor can the furnace be leveled out of that. Levels are a high-water mark on
+# lifetime fees (utils/db_helpers.py: apply_machine_upgrades), so at the 0.01
+# default the 3,125 that level 6 costs is 13,467 hours - 561 days - of nonstop
+# smelting. Level 5 to 6 is where a real server stops.
+#
+# Twenty times is what that gap costs to close, measured against the thing the
+# machine exists for: a pressed diamond's 27,000 Steel takes a level 5 furnace
+# 45 days, and a level 1 blast furnace 11.25. Ten players running three Diamond
+# Drills each mine that much ore in about 11 days, so at 20x the ore supply is
+# the constraint again rather than the machine - which is the intended shape.
+# It is deliberately not 100x: that would take one level 1 machine past two
+# dozen such players' entire output and leave the press as the only pacing in
+# the gem loop at all. See tests/test_blast_furnace.py: BlastFurnaceRateTests.
+BLAST_FURNACE_RATE_PER_LEVEL = 1
 # Twice the factory's, because the scrapper undoes exactly what the factory
 # makes and pulling something apart is quicker than assembling it. The 50%
 # material loss (see scrap_yield) is already what the operation costs; a
@@ -281,6 +402,12 @@ def furnace_rate(level: int) -> int:
     return FURNACE_RATE_PER_LEVEL * level
 
 
+def blast_furnace_rate(level: int) -> int:
+    """Batches per hour at this blast furnace level. Multiply by
+    BLAST_FURNACE_BATCH_SIZE for the smelted items that actually lands."""
+    return BLAST_FURNACE_RATE_PER_LEVEL * level
+
+
 def factory_rate(level: int) -> int:
     """Crafted items per hour at this factory level."""
     return FACTORY_RATE_PER_LEVEL * level
@@ -321,7 +448,73 @@ def effective_max_queue(base: int, level: int) -> int:
     return base * max(1, level)
 
 FURNACE_COAL_COST_PER_UNIT = 1  # extra coal burned per item smelted, on top of the recipe's own inputs
-MAX_DRILLS_PER_USER_PER_SERVER = 3
+# The blast furnace's fuel, scaled like everything else it charges: a batch of
+# 100 burns what 100 items would at the furnace, so fuelling a smelted unit
+# costs the same at either machine.
+BLAST_FURNACE_COAL_COST_PER_BATCH = FURNACE_COAL_COST_PER_UNIT * BLAST_FURNACE_BATCH_SIZE
+
+# How many drills one player may have placed in one server before the server
+# has unlocked anything. Every server starts here; mining slot levels above 1
+# add one each (see mining_slots below).
+#
+# Renamed from MAX_DRILLS_PER_USER_PER_SERVER in 1.3, when it stopped being a
+# maximum. It is now the floor of a ladder rather than a ceiling, and a name
+# saying "MAX" would have been wrong on every server that had unlocked a slot.
+BASE_MINING_SLOTS = 3
+
+# Cumulative infrastructure fees - every machine's, added together - a server
+# must have paid to unlock its FIRST extra mining slot. Each slot after it
+# costs UPGRADE_THRESHOLD_STEP times the last, exactly as machine levels do, so
+# the ladder is 25 / 125 / 625 / 3,125 and climbs out of reach on its own
+# rather than stopping at a cap.
+#
+# The base is five times UPGRADE_THRESHOLD_BASE, which puts the first slot at
+# the same cost as taking one machine to level 3. That is deliberate: a slot is
+# a permanent multiplier on everything the server mines, so it should not be
+# cheaper than the machine levels it is bought alongside. It reads from the
+# SUM of all five machines' fees rather than any one of them, so it is the
+# whole server's investment that unlocks it and no single machine's ladder is
+# made steeper by it.
+#
+# What that costs in practice, from this file's own numbers: at the 0.01
+# default furnace fee, 25 is 2,500 items smelted; at the 5.00 press fee, which
+# a ruby pays once (press_days 1), it is five ruby-presses. Because
+# upgrade_threshold(3) is also 25, a server that has taken any single machine
+# to level 3 has necessarily paid enough for its first slot as well.
+MINING_SLOT_THRESHOLD_BASE = 25.00
+
+
+def mining_slot_threshold(level: int) -> float:
+    """Cumulative infrastructure fees a server must have paid to reach mining
+    slot `level`. Level 1 is what every server starts with and costs nothing,
+    so this is only meaningful from 2 up; like machine levels there is no
+    maximum, so it always returns a number."""
+    return MINING_SLOT_THRESHOLD_BASE * UPGRADE_THRESHOLD_STEP ** (level - 2)
+
+
+def mining_slot_level(invested: float) -> int:
+    """The highest mining slot level `invested` in lifetime infrastructure fees
+    pays for.
+
+    Loops rather than inverting the exponential, for the same reason
+    apply_machine_upgrades does: floating point at a threshold boundary is the
+    one place this must not be off by one, and a server that has paid exactly
+    625.00 has earned the level it just bought. `invested` is finite, so the
+    loop is too.
+    """
+    level = 1
+    while invested >= mining_slot_threshold(level + 1):
+        level += 1
+    return level
+
+
+def mining_slots(level: int) -> int:
+    """How many drills one player may have placed in a server at this mining
+    slot level: the base every server starts with, plus one per level above 1.
+
+    The floor is defensive, matching effective_max_queue - a zero reaching here
+    would strand every drill in the server rather than merely being stingy."""
+    return BASE_MINING_SLOTS + max(1, level) - 1
 
 # Every drill type starts here; a container adds its storage_bonus on top.
 BASE_STORAGE_CAPACITY = 100
@@ -438,14 +631,24 @@ def pool_bag_contents(bag_size: int = MINING_POOL_BAG_SIZE) -> dict[str, int]:
         counts[max(counts, key=counts.get)] += remainder
     return counts
 
-# The server market's per-material "target stock" - the equilibrium point its
-# buy-price curve is built around - scales with server size: target_stock =
-# member_count * MATERIAL_TARGET_STOCK_PER_MEMBER[material_id]. The server
-# pays a material's full market_ceiling_price at zero stock, half price at
-# target stock, and progressively less (but never nothing) beyond it - target
-# stock is not a maximum. See EconomyCog._buy_price in cogs/economy.py.
-# member_count here should already exclude bots (see utils/guild_helpers.py)
-# - the target stock is meant to reflect the server's actual player base.
+# The server market's per-material "target stock" - how much of it a server of
+# a given size is expected to hold - scales with server size: target_stock =
+# member_count * MATERIAL_TARGET_STOCK_PER_MEMBER[material_id]. member_count
+# here should already exclude bots (see utils/guild_helpers.py) - the target
+# stock is meant to reflect the server's actual player base.
+#
+# This USED to be a price parameter: the market paid full price at zero stock,
+# half at target stock and less beyond it, and target stock was the midpoint of
+# that curve. As of 1.3 prices are static (see MARKET_PRICE_CENTS above and
+# docs/market.md section 3) and target stock is purely an inventory figure. Two
+# things still read it, and they are why it survived the curve:
+#
+#   * the furnace's auto-smelt, which only smelts a server's surplus ore -
+#     the portion above that ore's target stock (cogs/furnace.py).
+#   * the job board's choice of material, which weights each candidate by
+#     target / (stock + target), so "what is this server short of" is answered
+#     on the same scale for a five-member server and a five-hundred-member one
+#     (pick_job_material below).
 
 # Each raw material's per-member target stock is anchored to iron_ore = 100
 # and scaled from there by its ORIGINAL (pre coal-rebalance) drop chance -
@@ -484,40 +687,76 @@ MATERIAL_TARGET_STOCK_PER_MEMBER["steel"] = min(
 
 
 def target_stock(member_count: int, material_id: str) -> int:
-    """The equilibrium stock level (docs/market.md section 3) a server's
-    market pricing curve is built around for `material_id` - the point
-    where the server's buy price is half that material's ceiling price.
+    """How much of `material_id` a server this size is expected to hold
+    (docs/market.md section 3) - the furnace auto-smelt's surplus threshold and
+    the job board's "short of what?" weighting, no longer a price parameter.
     `member_count` should already be bot-excluded (utils/guild_helpers.py:
     human_member_count)."""
     return max(1, round(member_count * MATERIAL_TARGET_STOCK_PER_MEMBER[material_id]))
 
 
-def sale_unit_price(ceiling_price: float, current_stock: int, target: int) -> float:
-    """What a player RECEIVES per unit for selling into a server holding
-    `current_stock` - the curve target_stock is the midpoint of. Full ceiling
-    price at zero stock, half at target stock, tapering toward (but never
-    reaching) zero beyond it.
+# What a player PAYS per unit buying out of the server's stock, as a multiple
+# of what they are paid for selling one. Two rather than any other number, and
+# it is doing more work than a markup normally would:
+#
+#   * It is the old rule's fixed point. The resale price used to be the
+#     acquisition rate plus one full ceiling price, which was double at zero
+#     stock and tapered toward the ceiling as the shelves filled. With the
+#     acquisition rate now flat AT the old ceiling, "plus one ceiling" IS
+#     doubling, at every stock level.
+#   * It is what keeps the job board honest now that its bonus is paid per
+#     completion rather than once a day (see JOB_BOARD_TARGET_PAYOUT). Sell q
+#     units and complete the task: the sale pays q*price and the bonus pays at
+#     most another q*price, while buying those same q units back costs exactly
+#     2*q*price. The round trip cannot come out ahead. At a markup of 1.5 it
+#     could, indefinitely, for as long as someone cared to repeat it.
+MARKET_BUY_MARKUP = 2
+
+
+def sale_unit_price(material_id: str) -> float:
+    """What a player RECEIVES per unit for selling `material_id` to the server.
 
     Named for what the player does rather than what the server does, because
-    the two read as opposites and the difference is worth money. This is the
-    rate EconomyCog._buy_price is built on - "buy" there is the SERVER buying,
-    so _buy_price is what a player is paid, and the method named _sell_price is
-    the one that costs them. Anything reaching for "the sell price" wants this.
+    the two read as opposites and the difference is worth money: this is the
+    SERVER buying. purchase_unit_price is the one that costs the player.
 
-    Takes a price rather than a material id so the market and the job board can
-    share one definition of the curve without the job board's arithmetic
-    reaching into a cog.
+    Flat as of 1.3 - it does not depend on the server's stock, its size, or
+    anything else. It used to decay from this figure toward zero as the
+    server's shelves filled (docs/market.md section 3), which is why so much
+    of this module used to thread a stock level and a target through to reach
+    a price.
     """
-    if target <= 0:
-        return 0.0
-    return ceiling_price * target / (target + current_stock)
+    return MARKET_PRICE_CENTS[material_id] / 100
 
 
-def _sale_unit_price_of(material_id: str, current_stock: int, target: int) -> float:
-    """sale_unit_price for a material id - what the job board works in."""
-    return sale_unit_price(
-        ALL_MATERIALS[material_id]["market_ceiling_price"], current_stock, target
-    )
+def purchase_unit_price(material_id: str) -> float:
+    """What a player PAYS per unit to buy `material_id` out of the server's
+    stock: MARKET_BUY_MARKUP times what selling one pays. Flat, like the sale
+    price, and always strictly above it - so selling something and immediately
+    buying it back is never profitable."""
+    return MARKET_PRICE_CENTS[material_id] * MARKET_BUY_MARKUP / 100
+
+
+def sale_total(material_id: str, quantity: int) -> float:
+    """What the server pays for `quantity` units.
+
+    Multiplied in cents and divided once at the end, rather than by scaling a
+    float unit price. Neither 0.15 nor 0.01 is itself in binary, so the
+    per-unit form drifts off a whole cent at ordinary quantities: 0.15 * 3 is
+    0.44999999999999996 and 0.15 * 99999 is 14999.849999999999, against 0.45
+    and 14999.85 here. Both display the same, but a balance that is a hair
+    under a cent is one that can quote "you can afford 2" for something you can
+    afford 3 of, which is the class of bug max_affordable's 1e-9 nudge exists
+    to paper over. Cent counts up to 2^53 are exact, so there is nothing to
+    paper over at this end.
+    """
+    return MARKET_PRICE_CENTS[material_id] * quantity / 100
+
+
+def purchase_total(material_id: str, quantity: int) -> float:
+    """What a player pays for `quantity` units out of the server's stock -
+    sale_total times MARKET_BUY_MARKUP, in cents for the same reason."""
+    return MARKET_PRICE_CENTS[material_id] * MARKET_BUY_MARKUP * quantity / 100
 
 
 _MATERIAL_TABLES = (
@@ -625,11 +864,11 @@ DRILL_COMPONENTS = tuple(m for m in COMPONENT_MATERIALS if m not in DRILL_BITS)
 
 def raw_input_cost(material_id: str) -> float:
     """What one unit ultimately costs in raw materials, following recipes all
-    the way down and totalling the raw inputs' ceiling prices. Crafted items
+    the way down and totalling the raw inputs' market prices. Crafted items
     have no drop chance, so this stands in as "how hard it is to obtain" when
     ordering them for display."""
     if material_id in RAW_MATERIALS:
-        return RAW_MATERIALS[material_id]["market_ceiling_price"]
+        return RAW_MATERIALS[material_id]["market_price"]
     info = get_material_info(material_id)
     if info is None:
         return 0.0
@@ -642,6 +881,14 @@ def _by_drop_chance(material_ids) -> list[str]:
 
 def _by_cost(material_ids) -> list[str]:
     return sorted(material_ids, key=raw_input_cost)
+
+
+# Everything a drill can produce, commonest first - ores, then gemstones. A
+# drill only ever mines raw materials, so this is the canonical order for any
+# breakdown of what one produced (utils/drills.py: material_breakdown_lines),
+# the same "commonest first" rule INVENTORY_CATEGORIES applies to the raw and
+# gemstone sections of /inventory.
+RAW_MATERIAL_ORDER: tuple[str, ...] = tuple(_by_drop_chance(ORES) + _by_drop_chance(GEMSTONES))
 
 
 def draw_from_pool(available: dict[str, int], count: int, rng=random) -> dict[str, int]:
@@ -714,15 +961,25 @@ def roll_raw_material(rng=random) -> str:
 # furnace burns a coal per item smelted whatever the recipe, so a focus that
 # converted coal away would stop the player smelting the very ore they chose.
 #
-# The conversion is deliberately not value-neutral, and it is worth knowing
-# which way it leans before retuning anything. The three ores' drop_chance x
-# market_ceiling_price come to 0.0060 for iron ore against 0.0050 for the other
-# two, so converting at the rarity ratio moves market value by about +6% for
-# iron, -6% for copper and -6.4% for coal. Converting at the PRICE ratio instead
-# would be exactly neutral (a copper would become 1.67 iron rather than 2.0),
-# and was not chosen: 6% is noise beside everything else a focus changes, and
-# "iron drops twice as often, so a copper is worth two of it" is a rule a player
-# can hold in their head, which 1.67 is not.
+# Whether the conversion is value-neutral depends on which focus, and 1.3's
+# static prices changed the answer. The three ores' drop_chance x market_price
+# now come to 0.005667 for iron ore, 0.005667 for copper ore and 0.0044955 for
+# coal, so:
+#
+#   - IRON and COPPER focus are now exactly value-neutral. Rounding the prices
+#     to the cent put copper ore at twice iron ore, which is also the rarity
+#     ratio the conversion uses, so the two ratios coincide and the trade is
+#     even in effort AND in money. Before 1.3 this leaned about +6% for iron
+#     and -6% for copper.
+#   - COAL focus loses 14.8% of the stream's market value. Coal's price ratio
+#     to iron ore is 3 while its rarity ratio is 3.78, so converting at rarity
+#     hands back less than it takes. This is the one focus where the two
+#     disagree, and it is a wider gap than any focus had before 1.3.
+#
+# Left as the rarity ratio rather than retuned to the price ratio: "coal drops
+# a bit under four times less often, so four iron ore become one coal" is a
+# rule a player can hold in their head, and a coal focus is chosen for fuel
+# rather than for resale value anyway.
 #
 # Three consequences that are not obvious from the table and should be stated
 # plainly wherever a player is choosing:
@@ -731,8 +988,11 @@ def roll_raw_material(rng=random) -> str:
 #     iron ore, and neither produces any. That rules out every steel component,
 #     both steel drill bits, the Steel Container, and diamonds via the press.
 #   - IRON focus is a weaker help to steel than it looks. It takes the stream to
-#     7.56 iron ore per coal, and steel wants 5:1, so COAL becomes the binding
-#     input rather than ore - steel per item mined improves by ~32%, not 100%.
+#     7.56 iron ore per coal, and steel wants 4:1 once the furnace's own fuel
+#     coal is counted (20 ore + 4 coal + FURNACE_COAL_COST_PER_UNIT), so COAL
+#     becomes the binding input rather than ore - steel per item mined improves
+#     by 5.8%, not 100%. Mining Efficiency is what unlocks the rest of that
+#     doubling; see docs/mining-efficiency.md.
 #   - It roughly halves the mining behind a pressed ruby or obsidian. The press
 #     is priced at ~95% of what a player would have mined alongside finding that
 #     gem naturally (see PRESS_COST_BASE), and doubling the relevant ore halves
@@ -821,6 +1081,192 @@ def apply_mining_focus(
     return converted, new_carry
 
 
+# ---------------------------------------------------------------------------
+# Mining efficiency
+# ---------------------------------------------------------------------------
+
+# A player who has reached the obsidian stage can commit to one SMELTED
+# material. Where a focus decides which ore arrives, an efficiency decides how
+# much of it arrives and in what proportion - see docs/mining-efficiency.md.
+#
+# It is a SEPARATE feature from the focus, not a second half of it: it does not
+# require one, is not gated behind one, and its options (three smelted
+# materials) do not correspond to the focus options (four ores). The two
+# multiply - Iron efficiency on an Iron & Coal focus is +335% over a player
+# with neither - but each works on its own.
+#
+# Two steps, in order, applied to the raw materials the chosen recipe uses:
+#
+#   BOOST every one of them by MINING_EFFICIENCY_BOOST, then CORRECT by
+#   converting up to MINING_EFFICIENCY_CORRECTION_CAP of whichever is in
+#   surplus into whichever is short, at the same rarity ratio a focus uses,
+#   stopping the moment the recipe's exact ratio is reached.
+#
+# They are deliberately two knobs rather than one multiplier. The boost sets
+# the floor on what the feature is worth and the cap decides how much of a haul
+# is left over; neither can break the other.
+
+# The floor the boost buys: the weakest live combination (Steel efficiency on a
+# Balance focus) comes out at +105.6% over the same focus without efficiency,
+# and every other combination beats it. "At least double, whatever you picked"
+# is the whole promise of the feature and this is the number that keeps it.
+MINING_EFFICIENCY_BOOST = 1.0
+
+# Why the correction is CAPPED, and why this cap is not a tuning nicety.
+#
+# Correcting all the way to the exact ratio every time would give 100% of the
+# haul consumed in every combination, which looks strictly better. It is not.
+# A rarity-ratio conversion is even in mining effort, so a full correction
+# erases the difference between focuses - Coal focus, which converts everything
+# into the densest ore, becomes a universal wildcard equal to the matched focus
+# for every recipe (Iron on Coal focus and Iron on Iron & Coal both land on
+# 2467.2 units per 10,000 mined). Mining Focus stops being a choice.
+#
+# At 20% that collapse does not happen: Iron on a Coal focus is 680.0 against
+# Iron & Coal's 2467.2. The cap is what keeps the other feature alive, so treat
+# it as load-bearing rather than as a spare dial.
+#
+# It is not an idle limit either - it binds in four of the six live
+# combinations. The two that reach the exact ratio first stop there: Iron on
+# Iron & Coal at 17.68% and Steel on Balance at 2.8%.
+MINING_EFFICIENCY_CORRECTION_CAP = 0.20
+
+# Ten times what a focus costs (a ruby is one per 11,111 items mined, an
+# obsidian one per 111,111). Deliberately a tier above rather than beside it:
+# this is a mid-to-late game feature, and doubling a player's output is worth
+# more than re-aiming it.
+MINING_EFFICIENCY_UNLOCK_COST = {"obsidian": 1}
+MINING_EFFICIENCY_SWITCH_PER_DAY = 1
+
+DEFAULT_MINING_EFFICIENCY = "none"
+
+def recipe_true_inputs(material_id: str) -> dict[str, int]:
+    """What one unit of a smelted material ACTUALLY costs at the furnace: its
+    recipe plus the flat coal the furnace burns per item smelted.
+
+    Every ratio in this feature is measured against this rather than against
+    SMELTED_MATERIALS[...]["inputs"], because that fuel coal is the only reason
+    Iron and Copper need coal at all - without it two of the three efficiencies
+    would have no second material and no ratio to correct."""
+    inputs = dict(SMELTED_MATERIALS[material_id]["inputs"])
+    inputs["coal"] = inputs.get("coal", 0) + FURNACE_COAL_COST_PER_UNIT
+    return inputs
+
+
+# `produces` is the smelted material whose recipe decides which raw materials
+# are boosted and which way the correction runs. Names and icons are taken from
+# SMELTED_MATERIALS rather than written out again, so retuning a recipe can
+# never leave this table describing the old one.
+MINING_EFFICIENCIES = {
+    "none": {
+        "name": "None", "emoji": "⚖️", "produces": None,
+        "blurb": "No boost. Everything you mine arrives exactly as your focus leaves it.",
+    },
+    **{
+        material_id: {
+            "name": SMELTED_MATERIALS[material_id]["name"],
+            "emoji": SMELTED_MATERIALS[material_id]["emoji"],
+            "produces": material_id,
+            # Derived, not written out: the ratio a player is told to expect is
+            # read from the recipe itself, so retuning one can't leave the
+            # picker quoting the old numbers.
+            "blurb": (
+                "Doubles the "
+                + " and ".join(
+                    RAW_MATERIALS[raw_id]["name"] for raw_id in recipe_true_inputs(material_id)
+                )
+                + " you collect, then converts a little of whichever you have too much of "
+                + "into the other - toward the "
+                + ":".join(str(q) for q in recipe_true_inputs(material_id).values())
+                + f" the furnace wants for {SMELTED_MATERIALS[material_id]['name']}."
+            ),
+        }
+        for material_id in ("iron", "copper", "steel")
+    },
+}
+
+
+def efficiency_correction(
+    amounts: dict[str, float], needed: dict[str, int]
+) -> tuple[str, str, float]:
+    """Which material is short, which is in surplus, and what fraction of the
+    surplus to convert: the exact ratio, or the cap, whichever is smaller.
+
+    Capping at the exact ratio rather than always converting a flat percentage
+    is what removes the cliff an earlier draft had. Converting a fixed 20%
+    overshot for Iron and put a hard ceiling at 24.36%, past which the feature
+    produced LESS Iron than not having it - it was draining the fuel coal the
+    furnace needed. Stopping on arrival means raising the cap can never reduce
+    output; it can only stop helping sooner.
+    """
+    short, surplus = sorted(needed, key=lambda k: amounts[k] / needed[k])
+    if amounts[surplus] <= 0:
+        return short, surplus, 0.0
+    # Solving amounts[short] + moved * rate == target_ratio * (amounts[surplus]
+    # - moved) for moved, as a fraction of amounts[surplus].
+    rate = focus_conversion_rate(surplus, short)
+    target_ratio = needed[short] / needed[surplus]
+    numerator = target_ratio * amounts[surplus] - amounts[short]
+    denominator = amounts[surplus] * (rate + target_ratio)
+    exact = 0.0 if denominator <= 0 else numerator / denominator
+    return short, surplus, max(0.0, min(MINING_EFFICIENCY_CORRECTION_CAP, exact))
+
+
+def apply_mining_efficiency(
+    efficiency_id: str, breakdown: dict[str, int], carries: dict[str, float] | None = None
+) -> tuple[dict[str, int], dict[str, float]]:
+    """Boosts and re-proportions a haul according to a mining efficiency.
+    Returns the new breakdown and the fraction of each material still owed.
+
+    Only the chosen recipe's own raw inputs are touched. A player on an Iron
+    efficiency still mines copper ore at exactly the normal rate, and gemstones
+    are never affected by any of this - the same promise a focus makes.
+
+    THE CARRIES ARE PER MATERIAL, unlike the single float user_mining_focus
+    keeps. A focus has exactly one primary, so every fraction it owes is a
+    fraction of the same ore; here the correction produces fractions on both
+    sides at once, and WHICH materials those are depends on the player's focus.
+    One shared carry would pay a fraction of a coal out as iron ore the next
+    time the direction flipped.
+
+    Keyed that way they are direction-agnostic - a fraction of an iron ore is
+    owed as an iron ore whichever way the correction later runs - so unlike a
+    focus's carry they would survive a change correctly and are cleared anyway,
+    as a clean slate on a paid, once-a-day action. That costs a player at most
+    a fraction of one item and cannot be gamed in either direction, since a
+    carry never holds a whole one.
+    """
+    produces = MINING_EFFICIENCIES[efficiency_id]["produces"]
+    carries = dict(carries or {})
+    if produces is None or not breakdown:
+        return dict(breakdown), carries
+
+    needed = recipe_true_inputs(produces)
+    amounts = {k: float(breakdown.get(k, 0)) for k in needed}
+    if not any(amounts.values()):
+        return dict(breakdown), carries
+
+    for material_id in amounts:
+        amounts[material_id] *= 1 + MINING_EFFICIENCY_BOOST
+
+    short, surplus, fraction = efficiency_correction(amounts, needed)
+    if fraction > 0:
+        moved = amounts[surplus] * fraction
+        amounts[surplus] -= moved
+        amounts[short] += moved * focus_conversion_rate(surplus, short)
+
+    # Each material is accrued against its own carry, so twenty single-item
+    # collections come to exactly what one twenty-item collection does.
+    converted = dict(breakdown)
+    for material_id, amount in amounts.items():
+        whole, carries[material_id] = accrue(carries.get(material_id, 0.0), amount)
+        if whole:
+            converted[material_id] = whole
+        else:
+            converted.pop(material_id, None)
+    return converted, carries
+
+
 # What fraction of a recipe the scrapper hands back (see scrap_yield).
 SCRAP_RETURN_RATE = 0.5
 
@@ -830,10 +1276,12 @@ def scrap_yield(material_id: str) -> dict[str, int]:
     recipe's DIRECT inputs, rounded down, and never less than one of the
     recipe's single most valuable input. Returns {} for anything with no recipe.
 
-    Only one tier is undone per scrap, so a drill yields components and those
-    components have to be scrapped again to reach smelted metal. That keeps
-    every step legible - a player can read the recipe book and know what they
-    will get - and it means intermediate goods stay recoverable.
+    Only one tier is undone per scrap, so a Drill Chassis yields iron and
+    copper, and those have to be scrapped again to reach ore. That keeps every
+    step legible - a player can read the recipe book and know what they will
+    get - and it means intermediate goods stay recoverable. (Drills themselves
+    are the one exception: see drill_scrap_yield, which /scrapper drill uses
+    instead of calling this directly on a drill.)
 
     The guaranteed unit is not a special case bolted on for drills so much as
     what "half a recipe" has to mean when the recipe is one of each part. Every
@@ -863,6 +1311,35 @@ def scrap_yield(material_id: str) -> dict[str, int]:
     return {i: q for i, q in out.items() if q > 0}
 
 
+def drill_scrap_yield(drill_id: str) -> dict[str, int]:
+    """What /scrapper drill actually pays out for one drill - different from,
+    and used instead of, plain scrap_yield(drill_id).
+
+    A drill's recipe is one wiring, one chassis and one bit, so
+    scrap_yield(drill_id) itself can only apply its guaranteed-unit rule and
+    hand back exactly one of those three whole (see ScrapYieldShapeTests).
+    Handing back a whole chassis or wiring is a problem specific to drills:
+    unlike every other guaranteed-unit case, that item slots straight into
+    another drill's recipe at no further cost, so scrapping one drill and
+    crafting the missing two parts would rebuild it at a discount.
+    Wiring and chassis are decomposed one tier further instead, via
+    scrap_yield on each of THEM, so what comes back is their own raw inputs
+    (still halved and rounded down) rather than a reusable component. The bit
+    is kept whole and added on top - it isn't a shared drill part, so there is
+    no reuse to prevent - which is also what makes this return strictly more
+    than scrap_yield(drill_id)'s single guaranteed unit did.
+    """
+    inputs = DRILLS[drill_id]["inputs"]
+    bit_id = next(i for i in inputs if i not in ("wiring", "drill_chassis"))
+
+    out: dict[str, int] = {}
+    for component_id in ("wiring", "drill_chassis"):
+        for material_id, quantity in scrap_yield(component_id).items():
+            out[material_id] = out.get(material_id, 0) + quantity * inputs[component_id]
+    out[bit_id] = out.get(bit_id, 0) + inputs[bit_id]
+    return out
+
+
 # Display order for /inventory: one entry per embed field, each listing its
 # materials most-common-to-obtain first. Raw materials go by drop chance;
 # everything crafted goes by raw input cost, cheapest first. Both orderings
@@ -886,12 +1363,17 @@ INVENTORY_CATEGORIES = (
 # /market sell's and /market buy's choice lists.
 #
 # GEMSTONES ARE DELIBERATELY ABSENT, as of 1.2, and this is a balance decision
-# rather than a display one. A ruby's ceiling price is 5,500 against iron ore at
-# 0.01, so one gem sale minted more currency than a server's entire population
-# could earn by playing the game - and because a gemstone's target stock stays
-# at 1 on any server of realistic size, the curve that is meant to damp repeated
-# sales barely engaged: the first four ruby sales alone paid 5,500 + 2,750 +
-# 1,833 + 1,375. scripts/revert_gem_sales.py is the one-time repair.
+# rather than a display one. A ruby's price is 5,500 against iron ore at 0.01,
+# so one gem sale minted more currency than a server's entire population could
+# earn by playing the game - and because a gemstone's target stock stays at 1 on
+# any server of realistic size, the decaying curve that was then meant to damp
+# repeated sales barely engaged: the first four ruby sales alone paid 5,500 +
+# 2,750 + 1,833 + 1,375. scripts/revert_gem_sales.py is the one-time repair.
+#
+# 1.3's static prices REMOVE that damping entirely rather than restore it: four
+# ruby sales would now pay 5,500 apiece. The exclusion is the only thing
+# standing between a gemstone and a server's economy, so treat this list as
+# load-bearing rather than cosmetic.
 #
 # Gemstones now sit alongside components and drills in docs/market.md section 3's
 # non-tradeable category. They are removed from BUYING too, not just selling:
@@ -923,119 +1405,66 @@ TRADEABLE_ORDER: tuple[str, ...] = tuple(
 # aliasing rather than restating it is what stops them drifting apart again.
 #
 # The gem exclusion is a balance decision either way, and worth restating here
-# because it is the board that would pay for it: a gemstone's ceiling price runs
-# from 5,500 to 500,000, so one gem task would pay every player who completed it
-# more than every other source of currency in the game combined.
+# because it is the board that would pay for it: a gemstone's price runs from
+# 5,500 to 500,000, so one gem task would pay more than every other source of
+# currency in the game combined - and as of 1.3 it would pay that per
+# completion, without a daily limit.
 #
 # Note that JOB_BOARD_TARGET_PAYOUT does NOT protect against this on its own,
 # and re-admitting a material on the assumption that it does would be an
 # expensive mistake. The payout is met by lowering the quantity, and the
-# quantity floors at one unit - so for anything worth more than the target
-# payout per unit, the task is one unit and the payout is whatever that unit is
-# worth. Every material here is under 0.52 a unit, which is what makes the rule
-# work; a diamond would simply pay 500,000.
+# quantity floors at one unit - so anything worth more than the target payout
+# per unit becomes a one-unit task, and one unit of a diamond sale is 500,000
+# of goods against a 1.00 bonus. Nothing here is worth more than steel's 0.48
+# a unit, which is what makes the rule work.
 JOB_BOARD_MATERIALS: tuple[str, ...] = TRADEABLE_ORDER
 
-# What the day's task aims to pay. The quantity is worked backwards from this:
-# the smallest number of units whose reward clears it. One task, one dollar,
-# whoever you are and whatever the board picked.
+# What one completion of the day's task pays, on top of what selling the goods
+# earned in the first place. The quantity is worked backwards from it: the
+# fewest units whose sale clears it. One completion, one dollar, whoever you
+# are and whatever the board picked.
 #
-# Pinning the PAYOUT rather than the quantity is what makes the task the same
-# size for everybody. Both terms below derive from member count and cancel:
+# As of 1.3 this is paid PER COMPLETION rather than once per player per day
+# (utils/job_board.py: credit_job_progress). Selling ten times the task
+# quantity pays it ten times, in one command if that is how it was sold. Three
+# things bound what that can become:
 #
-#     quantity = TARGET_PAYOUT / sale_unit_price
-#              = TARGET_PAYOUT / (ceiling * target / (target + stock))
-#              = TARGET_PAYOUT / ceiling * (1 + stock / target)
+#   * A completion never pays more than the goods are worth. quantity is the
+#     fewest units clearing 1.00, so quantity * price >= 1.00 by construction
+#     and the bonus is at most a second copy of the sale.
+#   * Buying the goods back always costs more than the pair paid out. The buy
+#     price is exactly twice the sale price (MARKET_BUY_MARKUP), so a round
+#     trip of q units collects q*price + 1.00 <= 2*q*price and spends exactly
+#     2*q*price. It breaks even at best - on iron ore and copper ore, where
+#     quantity * price is exactly 1.00 - and loses on everything else.
+#   * It still requires real production. The only way to claim it is to put
+#     materials into the market, which is the same work a plain sale is.
 #
-# leaving only the ratio stock/target, which is a statement about how well
-# supplied a server is and not about how many people are in it. A five-member
-# server and a five-hundred-member one sitting at the same fraction of target
-# stock are asked for exactly the same amount. That is the whole point: the
-# task is completed per player, so sizing it off a server-wide total (as the
-# old TARGET_STOCK_FRACTION did) grew the personal quota with the member list
-# while nobody's mining rate grew with it.
-#
-# The rarity scaling the old fraction gave for free survives, because 1/ceiling
-# tracks how common a material is: iron ore comes out at 95 units and steel at
-# 2, without a per-material table to keep in step.
+# What it is no longer bounded by is a per-day cap, and that is the deliberate
+# change: the day's material is now worth roughly twice its market price to
+# whoever wants to mine it, with no ceiling on how much of it they bring.
 JOB_BOARD_TARGET_PAYOUT = 1.00
 
-# Ceiling on the quantity, whatever the arithmetic above asks for. Roughly a
-# day's output from three level 1 diamond drills (about 1,080 items, some 612
-# of them iron ore), so it is "more than a heavily invested player mines in a
-# day" rather than a round number.
-#
-# It exists because quantity has no natural bound as stock climbs: the price
-# a server pays decays toward zero past target stock, so the units needed to
-# clear a fixed payout grow without limit. How far past target stock it starts
-# binding depends on the material - the cheaper one is per unit, the sooner -
-# so it reaches the common ores long before the smelted ones. Once it does
-# bind the payout falls under JOB_BOARD_TARGET_PAYOUT, which is the intended
-# trade: a task nobody can finish pays nothing at all.
-JOB_BOARD_MAX_QUANTITY = 600
 
+def job_quantity(material_id: str) -> int:
+    """How many units one completion of the day's task asks for: the fewest
+    whose sale pays JOB_BOARD_TARGET_PAYOUT.
 
-def job_quantity(material_id: str, current_stock: int, target: int) -> int:
-    """How many units the day's task asks for: the fewest that pay
-    JOB_BOARD_TARGET_PAYOUT, capped at JOB_BOARD_MAX_QUANTITY.
+    Takes nothing but the material as of 1.3. Both of the arguments it used to
+    need - the server's stock and its target stock - were there only to price
+    the sale, and the price no longer moves. The task is now the same size for
+    a given material on every server on every day, which is also what makes it
+    safe to complete repeatedly: nothing about how much has already been sold
+    today can change what the next completion costs.
 
-    Deliberately takes no member count. Only the stock/target ratio survives
-    the algebra (see JOB_BOARD_TARGET_PAYOUT), so server size cannot reach the
-    answer - which is the fix for the task growing past what one player could
-    mine on a server that merely had a lot of people in it.
-
-    Floors at 1 so there is always something to sell, and rises as the server
-    fills up, because each unit is worth less to a server that already has
-    plenty and it takes more of them to clear the same payout.
+    Worked in cents so the division is exact: a task of 34 coal is
+    ceil(100/3), not ceil(1.00/0.029999999999999998).
     """
-    unit_price = _sale_unit_price_of(material_id, current_stock, target)
-    if unit_price <= 0:
+    price_cents = MARKET_PRICE_CENTS[material_id]
+    if price_cents <= 0:
         return 1
-    return max(1, min(JOB_BOARD_MAX_QUANTITY, math.ceil(JOB_BOARD_TARGET_PAYOUT / unit_price)))
-
-
-def job_reward(material_id: str, quantity: int, current_stock: int, target: int) -> float:
-    """What completing the task pays, on top of what selling the goods earned
-    in the first place: what the server itself would pay for that many units,
-    priced at the stock level when the job was posted.
-
-    The ceiling price used to stand here, and it made the board printable at
-    every stock level. Sell the task quantity, claim the bonus, buy the same
-    goods back: the buyback is priced at the higher stock your own sale just
-    created, so it cost less than the sale plus the bonus paid you, and you
-    ended the day with your materials and a little free currency. Paying the
-    server's own rate instead closes that once a server holds a real amount of
-    the material, and the further past target stock it is the wider the loss -
-    at target stock the round trip costs about a currency unit more than the
-    job paid, whatever the server's size.
-
-    It does NOT close below that, and that is the part to know before touching
-    anything here. The leak is driven by quantity/target_stock - how far your
-    own sale moves the price you then buy back at - and quantity is
-    member-independent by design while target stock is not, so it is worst on
-    the smallest servers and shrinks toward nothing as one grows. Any retune of
-    JOB_BOARD_TARGET_PAYOUT or the target-stock constants should re-measure it
-    rather than assume it stayed small.
-
-    The extreme is a lone player: target stock for one member is 17 coal
-    against a task of 31, so the task is nearly twice the entire equilibrium
-    and a single sale swings the price hard. It is also the case worth caring
-    least about - every server's economy is its own, so a solo player printing
-    currency is only doing it to themselves.
-
-    Closing it outright means pricing the bonus at the stock level the task
-    itself creates (current_stock + quantity) rather than at posting stock,
-    which makes the round trip break even at worst. That was left alone
-    deliberately: it needs the quantity solved self-consistently against its own
-    reward, and it lands the payout under JOB_BOARD_TARGET_PAYOUT unless the
-    quantity grows about a quarter to compensate. A capped leak on an
-    under-stocked material was judged the better trade against a bigger daily
-    task for everyone.
-
-    Must be passed the CAPPED quantity - a reward for more units than the task
-    actually asks for would hand back the printable margin by another door.
-    """
-    return _sale_unit_price_of(material_id, current_stock, target) * quantity
+    target_cents = round(JOB_BOARD_TARGET_PAYOUT * 100)
+    return max(1, -(-target_cents // price_cents))
 
 
 def pick_job_material(deficits: dict[str, float], rng=random) -> str:

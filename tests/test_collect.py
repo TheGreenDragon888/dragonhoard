@@ -1,10 +1,11 @@
 """
 Tests for /collect reaching every server a player has drills in.
 
-Two halves: the per-server summary lines, which are pure, and the two SELECTs
-the command picks between, run against a throwaway database so a change to
-either one has to be deliberate. The rest of /collect needs a live Interaction,
-so the guarded UPDATE it does per drill is covered by hand in Discord.
+Two halves: the two SELECTs the command picks between, run against a
+throwaway database so a change to either one has to be deliberate, and the
+pure rendering of a haul into lines. The rest of /collect needs a live
+Interaction, so the guarded UPDATE it does per drill is covered by hand in
+Discord.
 """
 import tempfile
 import unittest
@@ -13,59 +14,12 @@ from pathlib import Path
 from cogs.mining import COLLECT_EVERYWHERE_SQL, COLLECT_HERE_SQL
 from database.db import Database
 from utils.db_helpers import adjust_user_quantity, ensure_user_row
-from utils.drills import collection_summary_lines, material_breakdown_lines
+from utils.drills import material_breakdown_lines
 
 USER = 4242
 OTHER_USER = 9999
 HERE = 100
 THERE = 200
-LEFT = 300
-
-
-class CollectionSummaryTests(unittest.TestCase):
-    NAMES = {HERE: "Dragon's Den", THERE: "Test Server"}
-
-    def test_the_current_server_comes_first_even_when_it_is_the_smallest(self):
-        lines = collection_summary_lines(
-            [(THERE, 500), (HERE, 10)], self.NAMES, current_guild_id=HERE
-        )
-        self.assertEqual(
-            lines, ["**Dragon's Den** - 1 drill · 10", "**Test Server** - 1 drill · 500"]
-        )
-
-    def test_other_servers_follow_by_total_descending(self):
-        names = {1: "one", 2: "two", 3: "three"}
-        lines = collection_summary_lines(
-            [(1, 5), (2, 50), (3, 500)], names, current_guild_id=None
-        )
-        self.assertEqual(
-            lines, ["**three** - 1 drill · 500", "**two** - 1 drill · 50", "**one** - 1 drill · 5"]
-        )
-
-    def test_drills_in_one_server_are_tallied_together(self):
-        lines = collection_summary_lines(
-            [(HERE, 100), (HERE, 250), (HERE, 3)], self.NAMES, current_guild_id=HERE
-        )
-        self.assertEqual(lines, ["**Dragon's Den** - 3 drills · 353"])
-
-    def test_a_server_the_bot_cannot_see_still_gets_named(self):
-        # The drill kept mining after the bot left, so the haul is real and has
-        # to be attributed to something.
-        lines = collection_summary_lines([(LEFT, 42)], self.NAMES, current_guild_id=HERE)
-        self.assertEqual(lines, [f"**server {LEFT}** - 1 drill · 42"])
-
-    def test_totals_use_thousands_separators(self):
-        lines = collection_summary_lines([(HERE, 12345)], self.NAMES, current_guild_id=HERE)
-        self.assertEqual(lines, ["**Dragon's Den** - 1 drill · 12,345"])
-
-    def test_servers_past_the_limit_collapse_into_one_line(self):
-        hauls = [(guild_id, guild_id) for guild_id in range(1, 15)]
-        lines = collection_summary_lines(hauls, {}, current_guild_id=None, limit=10)
-        self.assertEqual(len(lines), 11)
-        self.assertEqual(lines[-1], "... and 4 more")
-
-    def test_no_hauls_produces_no_lines(self):
-        self.assertEqual(collection_summary_lines([], self.NAMES, current_guild_id=HERE), [])
 
 
 class CollectQueryTests(unittest.IsolatedAsyncioTestCase):
@@ -183,11 +137,16 @@ class CollectionLineTests(unittest.TestCase):
         iron_line = next(line for line in lines if "Iron Ore" in line)
         self.assertNotIn("total", iron_line)
 
-    def test_lines_are_ordered_the_same_way_every_time(self):
-        haul = {"coal": 1, "iron_ore": 2, "copper_ore": 3}
-        self.assertEqual(
-            material_breakdown_lines(haul), material_breakdown_lines(dict(reversed(haul.items())))
-        )
+    def test_lines_are_ordered_by_rarity_not_insertion(self):
+        # RAW_MATERIAL_ORDER, commonest first - the same order regardless of
+        # what order the haul dict happened to be built in.
+        haul = {"diamond": 1, "coal": 1, "obsidian": 1, "iron_ore": 1, "ruby": 1, "copper_ore": 1}
+        expected = ["Iron Ore", "Copper Ore", "Coal", "Ruby", "Obsidian", "Diamond"]
+        for ordering in (haul, dict(reversed(haul.items()))):
+            with self.subTest(ordering=list(ordering)):
+                lines = material_breakdown_lines(ordering)
+                for name, line in zip(expected, lines):
+                    self.assertIn(name, line)
 
     def test_an_empty_haul_produces_no_lines(self):
         self.assertEqual(material_breakdown_lines({}, {}), [])

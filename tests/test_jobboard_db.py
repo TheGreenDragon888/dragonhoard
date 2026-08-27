@@ -1,12 +1,15 @@
 """
 Tests for the job board against a real database: posting once a day, progress
-accumulating across sales, and the reward paying exactly once per player.
+accumulating across sales, and the reward paying once per COMPLETION.
 
-The once-per-day-per-player rule is the part worth being careful about. It's
-enforced by a single guarded UPDATE (claimed_at IS NULL AND sold >= quantity)
-rather than by a read followed by a write, precisely so two sales racing to
-finish the task can't both pay it - test_two_racing_sales_pay_the_bonus_once is
-that guarantee, run the way it would actually be broken.
+Paying per completion rather than once a day (1.3) is the part worth being
+careful about, and it cuts both ways. Every completion has to pay - including
+several at once, when one sale finishes the task more than over
+(test_one_sale_can_complete_the_task_many_times) - and none of them may pay
+twice, including when two sales race for the same one
+(test_two_racing_sales_pay_each_completion_once). Both come out of the same
+place: claims_paid is banked in the same guarded statement that computes the
+payout from it.
 """
 import asyncio
 import tempfile
@@ -33,7 +36,6 @@ from data.materials import (
     JOB_BOARD_MATERIALS,
     JOB_BOARD_TARGET_PAYOUT,
     job_quantity,
-    job_reward,
     target_stock,
 )
 
@@ -60,6 +62,13 @@ class JobBoardTestCase(unittest.IsolatedAsyncioTestCase):
             return await ensure_todays_job(tx, GUILD, MEMBERS)
 
     async def sell(self, material_id, quantity, user_id=USER):
+        """The bonus a sale earned. credit_job_progress returns (reward,
+        completions); the completion count is checked where it is the point of
+        the test rather than unpacked into every caller."""
+        reward, _ = await self.sell_with_count(material_id, quantity, user_id)
+        return reward
+
+    async def sell_with_count(self, material_id, quantity, user_id=USER):
         async with self.db.transaction() as tx:
             return await credit_job_progress(tx, GUILD, user_id, material_id, quantity, MEMBERS)
 
@@ -95,12 +104,10 @@ class PostingTests(JobBoardTestCase):
         self.assertEqual(row["n"], 1)
 
     async def test_the_quantity_and_reward_are_frozen_at_posting(self):
-        """Both derive from how well stocked the server is, and the day's own
-        selling moves that constantly - so recomputing on read would grow the
-        task under someone already partway through it every time anybody sold
-        anything. Stock is the goalpost worth nailing down; member count can no
-        longer reach either figure at all (see test_jobboard.py:
-        test_it_does_not_scale_with_member_count)."""
+        """Neither derives from the server's stock or size any more (1.3), so
+        this is no longer load-bearing against the day's own selling - but the
+        row is still what a task in progress is defined by, and a balance
+        retune between two of a player's sales must not move it."""
         job = await self.post()
         await self.db.execute(
             "INSERT INTO server_material_storage (guild_id, material_id, quantity) "
@@ -113,27 +120,25 @@ class PostingTests(JobBoardTestCase):
         self.assertEqual(later["quantity"], job["quantity"])
         self.assertEqual(later["reward"], job["reward"])
 
-    async def test_the_task_is_priced_off_the_stock_it_was_posted_against(self):
+    async def test_the_task_is_sized_for_the_material_it_picked(self):
         """The wiring the arithmetic tests can't see: that ensure_todays_job
-        hands job_quantity and job_reward the CHOSEN material's own stock and
-        target, not another material's or a stale read. Every eligible material
-        is stocked to a different fraction of its target, so crossing the wires
-        gives a different answer for all but one of them."""
-        fractions = {m: (i + 1) / 10 for i, m in enumerate(JOB_BOARD_MATERIALS)}
-        for material_id, fraction in fractions.items():
+        sizes the task for the material it CHOSE rather than for another one.
+        Every eligible material asks for a different quantity, so crossing the
+        wires gives a different answer for all but one of them."""
+        job = await self.post()
+        self.assertEqual(job["quantity"], job_quantity(job["material_id"]))
+
+    async def test_the_reward_is_the_flat_target_payout(self):
+        """One completion, one target payout - not a figure derived from stock
+        (1.3). Stocking the server to wildly different fractions of target must
+        not move it, whichever material comes up."""
+        for i, material_id in enumerate(JOB_BOARD_MATERIALS):
             await self.db.execute(
                 "INSERT INTO server_material_storage (guild_id, material_id, quantity) VALUES (?, ?, ?)",
-                (GUILD, material_id, int(target_stock(MEMBERS, material_id) * fraction)),
+                (GUILD, material_id, target_stock(MEMBERS, material_id) * i),
             )
-
         job = await self.post()
-        material_id = job["material_id"]
-        target = target_stock(MEMBERS, material_id)
-        stock = int(target * fractions[material_id])
-
-        self.assertEqual(job["quantity"], job_quantity(material_id, stock, target))
-        self.assertAlmostEqual(job["reward"], job_reward(material_id, job["quantity"], stock, target))
-        self.assertGreaterEqual(job["reward"], JOB_BOARD_TARGET_PAYOUT)
+        self.assertEqual(job["reward"], JOB_BOARD_TARGET_PAYOUT)
 
     async def test_it_asks_for_what_the_server_is_short_of(self):
         # The selection is weighted, not deterministic, so this checks the
@@ -191,7 +196,8 @@ class ProgressTests(JobBoardTestCase):
         self.assertEqual(await get_currency_balance(self.db, GUILD, USER), 0.0)
 
     async def test_completing_it_pays_the_reward(self):
-        paid = await self.sell(self.material, self.needed)
+        paid, completions = await self.sell_with_count(self.material, self.needed)
+        self.assertEqual(completions, 1)
         self.assertAlmostEqual(paid, self.job["reward"])
         self.assertAlmostEqual(
             await get_currency_balance(self.db, GUILD, USER), self.job["reward"]
@@ -203,29 +209,67 @@ class ProgressTests(JobBoardTestCase):
         await self.sell(self.material, self.needed)
         self.assertAlmostEqual(await self.minted(), self.job["reward"])
 
-    async def test_overshooting_pays_the_reward_once(self):
-        self.assertGreater(await self.sell(self.material, self.needed * 5), 0.0)
-        self.assertEqual(await self.sell(self.material, self.needed * 5), 0.0)
+    async def test_one_sale_can_complete_the_task_many_times(self):
+        """The 1.3 change, and the reason /market sell's limit went to a
+        million: one command can deliver far more than one task's worth, and
+        every completion in it is paid."""
+        reward, completions = await self.sell_with_count(self.material, self.needed * 5)
+        self.assertEqual(completions, 5)
+        self.assertAlmostEqual(reward, self.job["reward"] * 5)
         self.assertAlmostEqual(
-            await get_currency_balance(self.db, GUILD, USER), self.job["reward"]
+            await get_currency_balance(self.db, GUILD, USER), self.job["reward"] * 5
         )
 
-    async def test_selling_again_after_claiming_pays_nothing(self):
+    async def test_a_partial_lap_is_not_paid_until_it_is_finished(self):
+        """The remainder carries, it doesn't round up: selling one and a half
+        tasks pays once, and the half that is left counts toward the next."""
+        if self.needed < 2:
+            self.skipTest("task is a single unit, so there are no partial laps")
+        reward, completions = await self.sell_with_count(
+            self.material, self.needed + self.needed // 2
+        )
+        self.assertEqual(completions, 1)
+        self.assertAlmostEqual(reward, self.job["reward"])
+
+        # The carried remainder plus enough to finish the second lap.
+        _, completions = await self.sell_with_count(
+            self.material, self.needed - self.needed // 2
+        )
+        self.assertEqual(completions, 1)
+
+    async def test_completions_accumulate_across_separate_sales(self):
+        # Three sales of the task quantity are three completions, exactly as
+        # one sale of three times it is.
+        for expected in range(1, 4):
+            _, completions = await self.sell_with_count(self.material, self.needed)
+            self.assertEqual(completions, 1)
+            self.assertAlmostEqual(
+                await get_currency_balance(self.db, GUILD, USER),
+                self.job["reward"] * expected,
+            )
+
+    async def test_each_completion_is_paid_exactly_once(self):
+        # The claims_paid ledger, checked against what was actually credited.
+        await self.sell(self.material, self.needed * 3)
         await self.sell(self.material, self.needed)
-        for _ in range(3):
-            self.assertEqual(await self.sell(self.material, self.needed), 0.0)
-
-    async def test_two_racing_sales_pay_the_bonus_once(self):
-        """The guarded claim, tested the way it would actually fail. Read-then-
-        write would let both of these see claimed_at NULL and both pay."""
-        results = await asyncio.gather(
-            *(self.sell(self.material, self.needed) for _ in range(4))
-        )
-        self.assertEqual(sum(1 for reward in results if reward > 0), 1)
+        row = await get_progress(self.db, GUILD, USER, self.job["job_date"])
+        self.assertEqual(row["claims_paid"], 4)
         self.assertAlmostEqual(
-            await get_currency_balance(self.db, GUILD, USER), self.job["reward"]
+            await get_currency_balance(self.db, GUILD, USER), self.job["reward"] * 4
         )
-        self.assertAlmostEqual(await self.minted(), self.job["reward"])
+
+    async def test_two_racing_sales_pay_each_completion_once(self):
+        """The guarded claim, tested the way it would actually fail. Four
+        sales of one task quantity each are four completions in total, however
+        they interleave - not eight, and not one."""
+        results = await asyncio.gather(
+            *(self.sell_with_count(self.material, self.needed) for _ in range(4))
+        )
+        self.assertEqual(sum(completions for _, completions in results), 4)
+        self.assertAlmostEqual(
+            await get_currency_balance(self.db, GUILD, USER), self.job["reward"] * 4
+        )
+        self.assertAlmostEqual(await self.minted(), self.job["reward"] * 4)
 
     async def test_every_player_can_claim_it(self):
         # It isn't a race - one player finishing doesn't use the job up.
@@ -297,7 +341,7 @@ class SaleReceiptTotalsTests(JobBoardTestCase):
         async with self.db.transaction() as tx:
             await deduct_user_quantity(tx, USER, self.material, quantity)
             await adjust_currency_balance(tx, GUILD, USER, quantity * unit_price)
-            bonus = await credit_job_progress(tx, GUILD, USER, self.material, quantity, MEMBERS)
+            bonus, _ = await credit_job_progress(tx, GUILD, USER, self.material, quantity, MEMBERS)
             remaining = await get_user_quantity(tx, USER, self.material)
             new_balance = await get_currency_balance(tx, GUILD, USER)
         return bonus, remaining, new_balance

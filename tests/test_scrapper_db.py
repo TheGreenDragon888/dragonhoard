@@ -16,7 +16,7 @@ from pathlib import Path
 
 from cogs.scrapper import ScrapperCog
 from database.db import Database
-from data.materials import scrap_yield
+from data.materials import drill_scrap_yield, scrap_yield
 from utils.db_helpers import ensure_server_row, ensure_user_row
 
 GUILD = 8484
@@ -137,7 +137,7 @@ class DrillScrappingTests(ScrapperDrainTestCase):
 
         self.assertFalse(await self.drill_exists(drill_id))
         self.assertEqual(await self.job_status(job_id), ("complete", 0))
-        for material_id, quantity in scrap_yield("iron_drill").items():
+        for material_id, quantity in drill_scrap_yield("iron_drill").items():
             self.assertEqual(await self.quantity(material_id), quantity)
 
     async def test_the_drill_survives_while_the_job_is_still_queued(self):
@@ -156,7 +156,7 @@ class DrillScrappingTests(ScrapperDrainTestCase):
         await self.queue_drill_scrap(cheap)
         await self.set_level(30)
         await self.tick()
-        stock_yield = {m: await self.quantity(m) for m in scrap_yield("iron_drill")}
+        stock_yield = {m: await self.quantity(m) for m in drill_scrap_yield("iron_drill")}
 
         expensive = await self.add_drill("iron_drill", level=9)
         await self.queue_drill_scrap(expensive)

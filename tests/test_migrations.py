@@ -3,10 +3,13 @@ Tests that a database built by an OLDER version of the schema survives being
 opened by this one.
 
 This is the release's highest-risk change: widening production_jobs' job_type
-CHECK to admit 'scrapper' can't be done in place, so init_schema rebuilds the
-table that holds every in-flight queue entry. If that rebuild loses a row, or
-loses a column off a row, a server's whole queue quietly evaporates on restart
-and there is nothing to restore it from.
+CHECK to admit a new machine's jobs can't be done in place, so init_schema
+rebuilds the table that holds every in-flight queue entry. If that rebuild
+loses a row, or loses a column off a row, a server's whole queue quietly
+evaporates on restart and there is nothing to restore it from. It has now
+happened three times - the press, then the scrapper, then 1.3's blast furnace -
+and each time the gate moved to the newest job type rather than a fourth gate
+being added beside the others (database/db.py).
 
 Each test builds a pre-1.1 database by hand rather than checking in a fixture
 file, so what "before" means is visible in the test rather than in a binary.
@@ -16,8 +19,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import config
 from database.db import Database
-from data.materials import MINING_POOL_BAG_SIZE
+from data.materials import (
+    BASE_MINING_SLOTS,
+    MINING_POOL_BAG_SIZE,
+    mining_slot_threshold,
+)
+from utils.db_helpers import mining_slot_status
 
 GUILD = 8484
 USER = 4242
@@ -91,8 +100,15 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         conn.executescript(_PRE_1_1_SCHEMA)
         # A pool with something in it, so 1.2's composition backfill has
         # material to explode into per-material rows.
+        #
+        # The two fee totals are what 1.3's mining slots have to reckon with:
+        # this server banked them years before slots existed, and they sum to
+        # exactly mining_slot_threshold(3). Neither machine paid enough on its
+        # own, so this also pins that the sum - not the larger of the two - is
+        # what the slot ladder reads.
         conn.execute(
-            "INSERT INTO server_config (guild_id, mining_pool_remaining) VALUES (?, 2884)",
+            "INSERT INTO server_config (guild_id, mining_pool_remaining, "
+            "furnace_fees_collected, factory_fees_collected) VALUES (?, 2884, 75.0, 50.0)",
             (GUILD,),
         )
         # An in-flight queue entry of each pre-1.1 job type, including a drill
@@ -139,6 +155,52 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
             "SELECT COUNT(*) AS n FROM production_jobs WHERE job_type = 'scrapper'"
         )
         self.assertEqual(row["n"], 1)
+
+    async def test_blast_furnace_jobs_are_accepted_afterwards(self):
+        # 1.3's half of the same rebuild. A database this old predates BOTH the
+        # scrapper and the blast furnace, and one rebuild has to admit each -
+        # which is exactly what would break if the gate were ever left naming an
+        # older job type than the DDL does.
+        await self.db.execute(
+            "INSERT INTO production_jobs (guild_id, user_id, job_type, target_id, quantity) "
+            "VALUES (?, ?, 'blast_furnace', 'steel', 3)",
+            (GUILD, USER),
+        )
+        row = await self.db.fetchone(
+            "SELECT COUNT(*) AS n FROM production_jobs WHERE job_type = 'blast_furnace'"
+        )
+        self.assertEqual(row["n"], 1)
+
+    async def test_mining_slots_announced_was_added_at_the_base_level(self):
+        # Structural, so it is gated on introspecting server_config like every
+        # other added column. The DEFAULT is the base level rather than 0: an
+        # existing server has been "told" about the slots it already had.
+        row = await self.db.fetchone(
+            "SELECT mining_slots_announced FROM server_config WHERE guild_id = ?",
+            (GUILD,),
+        )
+        self.assertEqual(row["mining_slots_announced"], 1)
+
+    async def test_fees_banked_before_1_3_already_paid_for_their_slots(self):
+        # The whole point of deriving the cap instead of storing it. This
+        # database's 125.00 was collected by a version that had never heard of
+        # mining slots, and the slots are simply there when new code opens it -
+        # there is no backfill step that could have been missed.
+        slots = await mining_slot_status(self.db, GUILD)
+        self.assertEqual(slots.invested, mining_slot_threshold(3))
+        self.assertEqual(slots.level, 3)
+        self.assertEqual(slots.slots, BASE_MINING_SLOTS + 2)
+
+    async def test_the_blast_furnace_columns_were_added_with_their_defaults(self):
+        row = await self.db.fetchone(
+            "SELECT blast_furnace_level, blast_furnace_fee, blast_furnace_fees_collected, "
+            "blast_furnace_max_queue FROM server_config WHERE guild_id = ?",
+            (GUILD,),
+        )
+        self.assertEqual(row["blast_furnace_level"], 1)
+        self.assertEqual(row["blast_furnace_fee"], config.DEFAULT_BLAST_FURNACE_FEE)
+        self.assertEqual(row["blast_furnace_fees_collected"], 0.0)
+        self.assertEqual(row["blast_furnace_max_queue"], 5)
 
     async def test_the_old_job_types_still_work(self):
         for job_type in ("furnace", "factory", "press"):
@@ -199,13 +261,26 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(row["bot_channel_id"])
 
-    async def test_the_job_board_tables_exist(self):
-        for table in ("daily_jobs", "daily_job_progress"):
+    async def test_tables_added_since_are_created(self):
+        # Every one of these arrived after this database was built, and all of
+        # them are plain CREATE TABLE IF NOT EXISTS - no migration, so what
+        # this really checks is that init_schema runs the schema file before
+        # anything that reads them.
+        for table in ("daily_jobs", "daily_job_progress", "user_notifications"):
             with self.subTest(table=table):
                 row = await self.db.fetchone(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
                 )
                 self.assertIsNotNone(row)
+
+    async def test_an_existing_player_is_not_retroactively_notified(self):
+        """user_notifications starts empty, and that is the intended state for
+        a database that predates it. The rows are the record of who has been
+        told; there is no way to work out who WOULD have been told, so somebody
+        already holding a ruby hears about /focus on their next one or not at
+        all - the harmless direction."""
+        row = await self.db.fetchone("SELECT COUNT(*) AS n FROM user_notifications")
+        self.assertEqual(row["n"], 0)
 
     async def test_it_lands_on_the_current_user_version(self):
         """1.1 added no pure-data migration - everything it changed was gated on
@@ -293,6 +368,86 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([tuple(row) for row in before], [tuple(row) for row in after])
 
 
+# daily_job_progress exactly as it stood from 1.1 to 1.2: a claimed_at
+# timestamp and nothing else, because the bonus was paid once per player per
+# day and "have they had it?" was the only question the row had to answer.
+_PRE_1_3_JOB_PROGRESS_SCHEMA = """
+CREATE TABLE daily_job_progress (
+    guild_id        INTEGER NOT NULL,
+    job_date        TEXT NOT NULL,
+    user_id         INTEGER NOT NULL,
+    sold            INTEGER NOT NULL DEFAULT 0,
+    claimed_at      TEXT,
+    PRIMARY KEY (guild_id, job_date, user_id)
+);
+"""
+
+
+class JobBoardClaimsMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """1.3 pays the job board bonus per completion, so claimed_at's boolean
+    answer became a count. The backfill is what stops a player who had already
+    claimed today being paid a second time for the same progress the first time
+    they sell after the upgrade."""
+
+    CLAIMED = 8888
+    UNCLAIMED = 7777
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        conn = sqlite3.connect(self.path)
+        conn.executescript(_PRE_1_3_JOB_PROGRESS_SCHEMA)
+        conn.executemany(
+            "INSERT INTO daily_job_progress (guild_id, job_date, user_id, sold, claimed_at) "
+            "VALUES (?, '2026-08-26', ?, ?, ?)",
+            [
+                # Sold five times the task and was paid once, which is exactly
+                # what the old rule did.
+                (GUILD, self.CLAIMED, 500, "2026-08-26 09:00:00"),
+                # Partway through, never claimed.
+                (GUILD, self.UNCLAIMED, 40, None),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self._dir.cleanup()
+
+    async def claims_paid(self, user_id):
+        row = await self.db.fetchone(
+            "SELECT claims_paid, sold FROM daily_job_progress WHERE user_id = ?", (user_id,)
+        )
+        return row
+
+    async def test_a_claimed_row_counts_as_one_completion_already_paid(self):
+        # NOT sold/quantity - the old rule paid once however much was sold, so
+        # backfilling from the quantity would hand out four completions this
+        # player was never paid for.
+        row = await self.claims_paid(self.CLAIMED)
+        self.assertEqual(row["claims_paid"], 1)
+        self.assertEqual(row["sold"], 500)
+
+    async def test_an_unclaimed_row_starts_at_zero(self):
+        row = await self.claims_paid(self.UNCLAIMED)
+        self.assertEqual(row["claims_paid"], 0)
+        self.assertEqual(row["sold"], 40)
+
+    async def test_opening_it_again_changes_nothing(self):
+        # The gate is the column's absence, so a second open must not re-run
+        # the backfill and overwrite a count that has since moved.
+        await self.db.execute(
+            "UPDATE daily_job_progress SET claims_paid = 6 WHERE user_id = ?", (self.CLAIMED,)
+        )
+        await Database(self.path).init_schema()
+        row = await self.claims_paid(self.CLAIMED)
+        self.assertEqual(row["claims_paid"], 6)
+
+
 class FreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
     """A brand new database has to end up in exactly the state a migrated one
     does - the CHECK clause in schema.sql and the one in the rebuild DDL are
@@ -308,7 +463,7 @@ class FreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_accepts_every_machines_jobs(self):
         await self.db.execute("INSERT INTO server_config (guild_id) VALUES (?)", (GUILD,))
-        for job_type in ("furnace", "factory", "press", "scrapper"):
+        for job_type in ("furnace", "blast_furnace", "factory", "press", "scrapper"):
             with self.subTest(job_type=job_type):
                 await self.db.execute(
                     "INSERT INTO production_jobs (guild_id, user_id, job_type, target_id, quantity) "

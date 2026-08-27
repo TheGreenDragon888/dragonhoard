@@ -16,28 +16,14 @@ from data.materials import (
     ALL_MATERIALS,
     GEMSTONES,
     ORES,
-    RAW_MATERIALS,
     SMELTED_MATERIALS,
     JOB_BOARD_MATERIALS,
-    JOB_BOARD_MAX_QUANTITY,
     JOB_BOARD_TARGET_PAYOUT,
     job_quantity,
-    job_reward,
     pick_job_material,
+    purchase_unit_price,
     sale_unit_price,
-    target_stock,
 )
-
-
-def ceiling(material_id: str) -> float:
-    return ALL_MATERIALS[material_id]["market_ceiling_price"]
-
-
-def buyback_cost(material_id: str, quantity: int, stock: int, target: int) -> float:
-    """What it costs to buy `quantity` back out of the server afterwards, at
-    the stock level the sale itself just created - cogs/economy.py:
-    _sell_price. The other half of the round trip job_reward has to lose."""
-    return ceiling(material_id) * (1 + target / (target + stock + quantity)) * quantity
 
 
 class ResetClockTests(unittest.TestCase):
@@ -103,10 +89,11 @@ class ResetClockTests(unittest.TestCase):
 
 class EligibleMaterialTests(unittest.TestCase):
     def test_gemstones_are_never_asked_for(self):
-        """The balance decision the whole feature turns on. Gemstone ceiling
-        prices run from 5,500 to 500,000, and the reward is ceiling * quantity,
-        so one diamond task would pay every player who completed it more than
-        every other source of currency in the game put together."""
+        """The balance decision the whole feature turns on. Gemstone prices run
+        from 5,500 to 500,000, and a task floors at one unit, so one diamond
+        task would pay every player who completed it more than every other
+        source of currency in the game put together - and since 1.3 it would
+        pay that once per completion rather than once a day."""
         for gem_id in GEMSTONES:
             self.assertNotIn(gem_id, JOB_BOARD_MATERIALS)
 
@@ -117,156 +104,91 @@ class EligibleMaterialTests(unittest.TestCase):
         # The task is completed by selling, so a material the market won't buy
         # would be an impossible task.
         for material_id in JOB_BOARD_MATERIALS:
-            self.assertIn("market_ceiling_price", RAW_MATERIALS.get(material_id, {}) or SMELTED_MATERIALS[material_id])
+            self.assertIn("market_price", ALL_MATERIALS[material_id], material_id)
 
     def test_ores_come_before_smelted_and_commonest_first(self):
         self.assertEqual(JOB_BOARD_MATERIALS[:3], ("iron_ore", "copper_ore", "coal"))
 
 
 class JobQuantityTests(unittest.TestCase):
-    def test_it_does_not_scale_with_member_count(self):
-        """The whole point of pricing the task off a payout rather than off a
-        share of target stock. The task is completed per player, so sizing it
-        from a server-wide total grew one person's quota every time somebody
-        joined, while nobody's mining rate grew to match."""
-        for material_id in JOB_BOARD_MATERIALS:
-            for stock_fraction in (0.0, 0.5, 1.0):
-                with self.subTest(material=material_id, stock=stock_fraction):
-                    quantities = set()
-                    for members in (1, 5, 20, 100, 500):
-                        target = target_stock(members, material_id)
-                        stock = int(target * stock_fraction)
-                        quantities.add(job_quantity(material_id, stock, target))
-                    self.assertEqual(len(quantities), 1)
+    def test_the_task_is_the_same_size_everywhere(self):
+        """A constant of the material as of 1.3, since the price it is worked
+        back from is. It used to grow with the server's stock and had to be
+        argued into member-independence; now there is nowhere for a server's
+        circumstances to reach it at all, which is also what makes it safe to
+        complete the task repeatedly - nothing already sold today can change
+        what the next completion costs."""
+        self.assertEqual(
+            {m: job_quantity(m) for m in JOB_BOARD_MATERIALS},
+            {
+                "iron_ore": 100, "copper_ore": 50, "coal": 34,
+                "iron": 7, "copper": 4, "steel": 3,
+            },
+        )
 
     def test_the_task_pays_just_over_the_target(self):
         """"Just over" is the contract: the fewest units that clear the target,
-        so the payout lands within one unit's worth of it and never under."""
+        so the sale lands within one unit's worth of it and never under. This
+        is what makes the flat bonus safe - a completion can never pay more
+        than the goods it was paid for."""
         for material_id in JOB_BOARD_MATERIALS:
-            for stock_fraction in (0.0, 0.25, 1.0, 3.0):
-                with self.subTest(material=material_id, stock=stock_fraction):
-                    target = target_stock(20, material_id)
-                    stock = int(target * stock_fraction)
-                    quantity = job_quantity(material_id, stock, target)
-                    if quantity == JOB_BOARD_MAX_QUANTITY:
-                        continue  # capped, so the payout is allowed to sag
-                    unit = sale_unit_price(ceiling(material_id), stock, target)
-                    reward = job_reward(material_id, quantity, stock, target)
-                    self.assertGreaterEqual(reward, JOB_BOARD_TARGET_PAYOUT - 1e-9)
-                    self.assertLess(reward, JOB_BOARD_TARGET_PAYOUT + unit)
+            with self.subTest(material=material_id):
+                quantity = job_quantity(material_id)
+                unit = sale_unit_price(material_id)
+                self.assertGreaterEqual(quantity * unit, JOB_BOARD_TARGET_PAYOUT - 1e-9)
+                self.assertLess(quantity * unit, JOB_BOARD_TARGET_PAYOUT + unit)
 
-    def test_the_smallest_server_still_gets_an_achievable_task(self):
+    def test_every_task_is_achievable(self):
         # "Sell 0 of something" would be either unclaimable or free.
         for material_id in JOB_BOARD_MATERIALS:
             with self.subTest(material=material_id):
-                target = target_stock(1, material_id)
-                self.assertGreaterEqual(job_quantity(material_id, 0, target), 1)
+                self.assertGreaterEqual(job_quantity(material_id), 1)
 
-    def test_a_rarer_material_is_asked_for_in_smaller_amounts(self):
-        # Coal drops about a quarter as often as iron ore and is worth more per
-        # unit, so it takes fewer of them to make the same payout. The rarity
+    def test_a_dearer_material_is_asked_for_in_smaller_amounts(self):
+        # Fewer units of something worth more make the same payout. The rarity
         # scaling the old target-stock fraction gave for free has to survive.
-        target_coal = target_stock(20, "coal")
-        target_iron = target_stock(20, "iron_ore")
-        self.assertLess(
-            job_quantity("coal", 0, target_coal), job_quantity("iron_ore", 0, target_iron)
+        quantities = [job_quantity(m) for m in JOB_BOARD_MATERIALS]
+        prices = [sale_unit_price(m) for m in JOB_BOARD_MATERIALS]
+        self.assertEqual(
+            [q for _, q in sorted(zip(prices, quantities))],
+            sorted(quantities, reverse=True),
         )
 
-    def test_the_task_grows_as_the_server_fills_up(self):
-        """Each unit is worth less to a server that already has plenty, so it
-        takes more of them to clear the same payout. This is what replaces the
-        multiplier that was considered for the over-target case - it falls out
-        of the price curve instead of being bolted on top of it."""
-        target = target_stock(20, "iron_ore")
-        quantities = [
-            job_quantity("iron_ore", int(target * f), target) for f in (0.0, 0.5, 1.0, 2.0)
-        ]
-        self.assertEqual(quantities, sorted(quantities))
-        self.assertLess(quantities[0], quantities[-1])
 
-    def test_the_quantity_is_capped(self):
-        """Quantity has no natural bound as stock climbs - the price decays
-        toward zero, so the units needed to clear a fixed payout grow without
-        one. A task nobody can finish pays nothing at all."""
-        target = target_stock(20, "iron_ore")
-        self.assertEqual(job_quantity("iron_ore", target * 10_000, target), JOB_BOARD_MAX_QUANTITY)
+class RepeatableRewardTests(unittest.TestCase):
+    """The bonus is paid per completion with no daily cap (1.3), so what used
+    to be bounded by "once each" is now bounded by arithmetic alone. These are
+    that arithmetic."""
 
-    def test_the_cap_is_the_only_thing_that_lowers_the_payout(self):
-        target = target_stock(20, "iron_ore")
-        stock = target * 10_000
-        quantity = job_quantity("iron_ore", stock, target)
-        self.assertEqual(quantity, JOB_BOARD_MAX_QUANTITY)
-        self.assertLess(job_reward("iron_ore", quantity, stock, target), JOB_BOARD_TARGET_PAYOUT)
+    def test_a_completion_never_pays_more_than_the_goods_are_worth(self):
+        # The first half of why repeating it is safe: the bonus is at most a
+        # second copy of the sale, never more.
+        for material_id in JOB_BOARD_MATERIALS:
+            with self.subTest(material=material_id):
+                sale = job_quantity(material_id) * sale_unit_price(material_id)
+                self.assertGreaterEqual(sale, JOB_BOARD_TARGET_PAYOUT - 1e-9)
 
-
-class JobRewardTests(unittest.TestCase):
-    def test_the_reward_is_what_the_server_pays_for_the_goods(self):
-        target = target_stock(20, "iron_ore")
-        for stock in (0, target // 2, target, target * 4):
-            with self.subTest(stock=stock):
-                unit = sale_unit_price(ceiling("iron_ore"), stock, target)
-                self.assertAlmostEqual(job_reward("iron_ore", 100, stock, target), unit * 100)
-
-    def test_the_reward_is_never_the_flat_ceiling_price(self):
-        """What it used to be, and the reason the round trip below paid. A
-        server holding any stock at all pays under the ceiling."""
-        target = target_stock(20, "iron_ore")
-        self.assertLess(job_reward("iron_ore", 100, target, target), ceiling("iron_ore") * 100)
-
-    def _round_trip(self, material_id, members, stock_fraction):
+    def test_buying_the_goods_back_costs_at_least_what_the_pair_paid(self):
         """The money loop, run the way it would actually be run: sell the task
-        quantity, claim the bonus, buy the same goods straight back out. The
-        buyback is priced at the stock your own sale just created, so it is
-        cheaper than the sale was - and the bonus used to more than cover the
-        difference. Returns the best a player could do across a day's worth of
-        claimants, each selling into the stock the ones before them left; the
-        bonus is frozen at posting, so a later seller claims a figure priced at
-        a fuller warehouse than the one they sold into."""
-        target = target_stock(members, material_id)
-        posted_at = int(target * stock_fraction)
-        quantity = job_quantity(material_id, posted_at, target)
-        bonus = job_reward(material_id, quantity, posted_at, target)
-        return max(
-            sale_unit_price(ceiling(material_id), posted_at + k * quantity, target) * quantity
-            + bonus
-            - buyback_cost(material_id, quantity, posted_at + k * quantity, target)
-            for k in range(12)
-        )
+        quantity, take the bonus, buy the same goods straight back out and do
+        it again. Under the old decaying price curve this leaked on a thinly
+        stocked server and the test here bounded the leak; with a flat price
+        and a buy markup of exactly 2 it cannot leak at all, at any repetition
+        count, on any server.
 
-    def test_buying_the_goods_back_costs_more_than_the_job_paid(self):
-        """Closed at every server size once the server holds a real amount of
-        the material. 70% of target is the threshold that holds even for a
-        one-member server, where the task is nearly twice the whole target
-        stock and a single sale swings the price hardest."""
+        Iron ore and copper ore break exactly even - their task quantity times
+        their price is exactly the target payout - which is why this is
+        assertLessEqual rather than assertLess."""
         for material_id in JOB_BOARD_MATERIALS:
-            for members in (1, 5, 20, 100):
-                for stock_fraction in (0.7, 1.0, 3.0):
-                    with self.subTest(material=material_id, members=members, stock=stock_fraction):
-                        self.assertLess(self._round_trip(material_id, members, stock_fraction), 0)
-
-    def test_it_closes_far_sooner_on_a_server_with_players_in_it(self):
-        """The leak scales with quantity/target_stock, and quantity is
-        member-independent while target stock is not - so it shrinks as a
-        server fills up. A twenty-member server is closed by a quarter of
-        target stock, long before the 70% a lone player needs."""
-        for material_id in JOB_BOARD_MATERIALS:
-            for members in (20, 100):
-                with self.subTest(material=material_id, members=members):
-                    self.assertLess(self._round_trip(material_id, members, 0.25), 0)
-
-    def test_the_leak_on_a_thin_server_stays_bounded(self):
-        """Below those thresholds the round trip still pays. This is the guard
-        on how much: if a change to the price curve or the payout target widens
-        it, this is what should fail. The worst case is a one-member server,
-        which is also the one that matters least - each server's economy is its
-        own, so a solo player prints only for themselves."""
-        worst = max(
-            self._round_trip(material_id, members, stock_fraction)
-            for material_id in JOB_BOARD_MATERIALS
-            for members in (1, 5, 20, 100)
-            for stock_fraction in (0.0, 0.05, 0.1, 0.25, 0.5)
-        )
-        self.assertLess(worst, 0.70)
+            for repeats in (1, 2, 10, 1000):
+                with self.subTest(material=material_id, repeats=repeats):
+                    quantity = job_quantity(material_id) * repeats
+                    received = (
+                        quantity * sale_unit_price(material_id)
+                        + JOB_BOARD_TARGET_PAYOUT * repeats
+                    )
+                    buyback = quantity * purchase_unit_price(material_id)
+                    self.assertLessEqual(received, buyback + 1e-9)
 
 
 class MaterialSelectionTests(unittest.TestCase):

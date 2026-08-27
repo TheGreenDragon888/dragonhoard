@@ -27,7 +27,7 @@ from utils.receipts import build_receipt_embed
 from utils.guild_helpers import human_member_count
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
-    apply_machine_upgrades,
+    bank_infrastructure_fee,
     ensure_server_row,
     get_user_quantity,
     adjust_user_quantity,
@@ -150,11 +150,9 @@ class FurnaceCog(commands.Cog):
 
                 if fee_total > 0:
                     await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await tx.execute(
-                        "UPDATE server_config SET furnace_fees_collected = furnace_fees_collected + ? WHERE guild_id = ?",
-                        (fee_total, interaction.guild_id),
+                    await bank_infrastructure_fee(
+                        tx, interaction.guild_id, "furnace", fee_total
                     )
-                    await apply_machine_upgrades(tx, interaction.guild_id, "furnace")
 
                 # Everything already waiting that will be smelted before this
                 # job. The server's own auto-smelt jobs are excluded because

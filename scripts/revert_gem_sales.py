@@ -7,12 +7,13 @@ the market (docs/market.md section 3).
 
 WHAT WENT WRONG
 
-A ruby's market_ceiling_price is 5,500 and a diamond's is 500,000, against iron
-ore at 0.0106. The server's buy price halves at that material's target stock,
-but target stock for a gemstone is max(1, round(members * 0.015)) - which stays
-at 1 ruby on any server of realistic size. So the curve that is meant to damp
-repeated sales barely engaged: the first four rubies sold into a small server
-paid 5,500 + 2,750 + 1,833 + 1,375 = 11,458.
+A ruby's market price is 5,500 and a diamond's is 500,000, against iron ore at
+0.0106 (its value at the time; 1.3 rounded it to 0.01). Prices then decayed with
+the server's stock, halving at that material's target stock - but target stock
+for a gemstone is max(1, round(members * 0.015)), which stays at 1 ruby on any
+server of realistic size. So the curve that was meant to damp repeated sales
+barely engaged: the first four rubies sold into a small server paid 5,500 +
+2,750 + 1,833 + 1,375 = 11,458.
 
 For scale, a full day's job board task pays a little over 1.00, and the first
 three rungs of the infrastructure ladder are 5, 25 and 125. A single gem sale
@@ -152,13 +153,14 @@ def report(conn: sqlite3.Connection) -> tuple[list, list]:
     if not stock:
         print("  none - no server ever bought a gemstone")
     for row in stock:
-        # What the server paid for these, near enough: the first unit of a
-        # gemstone costs full ceiling price on any server small enough for
-        # target stock to be 1, which is all of them so far.
-        ceiling = RAW_MATERIALS[row["material_id"]]["market_ceiling_price"]
+        # What the server paid for these, near enough: under the decaying
+        # curve in force at the time, the first unit of a gemstone cost full
+        # price on any server small enough for target stock to be 1, which is
+        # all of them so far.
+        price = RAW_MATERIALS[row["material_id"]]["market_price"]
         print(
             f"  guild {row['guild_id']}  {row['material_id']:9s} x{row['quantity']}"
-            f"   (first unit alone paid ~{ceiling:,.2f})"
+            f"   (first unit alone paid ~{price:,.2f})"
         )
 
     balances = rows_to_revert(conn)

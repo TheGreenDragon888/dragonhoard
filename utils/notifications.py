@@ -3,7 +3,7 @@ utils/notifications.py
 
 One-off notices a player sees the next time they use the bot, and only once.
 
-Two independent feeds (the `notifications` table in schema.sql):
+Two BROADCAST feeds (the `notifications` table in schema.sql):
 
   global - from the bot itself. Announcements and disclaimers that ship with a
            release, written as data in data/notifications.py and seeded at
@@ -12,11 +12,20 @@ Two independent feeds (the `notifications` table in schema.sql):
   server - belongs to one guild. Posted at runtime by a feature via
            post_server_notification. Read once per user PER GUILD.
 
-Only the NEWEST notice of each feed is ever shown. A player who has been away
-for three announcements gets the third, not all three - the read marker stores
-an id rather than a set, so everything below it is skipped by construction.
-Superseded rows are kept as a record of what was announced and when; the rule is
-about brevity on screen, not about retention.
+Only the NEWEST notice of each broadcast feed is ever shown. A player who has
+been away for three announcements gets the third, not all three - the read
+marker stores an id rather than a set, so everything below it is skipped by
+construction. Superseded rows are kept as a record of what was announced and
+when; the rule is about brevity on screen, not about retention.
+
+And PERSONAL notices (the `user_notifications` table), which are a different
+shape and get their own table for it: the row belongs to one player, so its
+read state lives on the row rather than in a per-feed watermark, and nothing is
+skipped for being superseded - two things that happened to you are two things
+you should be told. Raised at runtime by a feature via post_user_notification,
+with the wording in data/notifications.py alongside the global announcements.
+The first gemstone of a kind a player obtains is the only thing that raises one
+so far (utils/db_helpers.py: announce_first_gem).
 
 Delivery hangs off utils/responses.py: respond(), which is the single place a
 command's SUCCESSFUL response is sent. That is a deliberate choice of hook.
@@ -35,7 +44,12 @@ import logging
 import discord
 
 from database.db import Database, _Executor
-from utils.embeds import make_embed, GLOBAL_NOTICE_COLOR, SERVER_NOTICE_COLOR
+from utils.embeds import (
+    make_embed,
+    GLOBAL_NOTICE_COLOR,
+    PERSONAL_NOTICE_COLOR,
+    SERVER_NOTICE_COLOR,
+)
 
 log = logging.getLogger("dragonhoard")
 
@@ -93,16 +107,24 @@ async def mark_seen(db: _Executor, user_id: int, rows) -> None:
         )
 
 
+# Color and author line per scope. Each kind gets its own (see
+# docs/stylization.md) because they carry different authority - the bot talking
+# about itself, one guild's own business, or something that happened to you -
+# and a player should be able to tell which without reading. All three can
+# arrive in the same message, so they have to differ from each other as well as
+# from whatever the reply itself is colored.
+_NOTICE_STYLE = {
+    "global": (GLOBAL_NOTICE_COLOR, "Dragonhoard announcement"),
+    "server": (SERVER_NOTICE_COLOR, "Server notice"),
+    "user": (PERSONAL_NOTICE_COLOR, "For you"),
+}
+
+
 def notice_embed(row) -> discord.Embed:
-    """One notice as its own embed. The two feeds get their own colors (see
-    docs/stylization.md) because they carry different authority - a global
-    notice is the bot talking about itself, a server notice is one guild's own
-    business - and a player should be able to tell which without reading."""
-    color = GLOBAL_NOTICE_COLOR if row["scope"] == "global" else SERVER_NOTICE_COLOR
+    """One notice as its own embed, styled by its scope."""
+    color, author = _NOTICE_STYLE[row["scope"]]
     embed = make_embed(row["title"], color, description=row["body"])
-    embed.set_author(
-        name="Dragonhoard announcement" if row["scope"] == "global" else "Server notice"
-    )
+    embed.set_author(name=author)
     return embed
 
 
@@ -117,6 +139,61 @@ async def post_server_notification(db: _Executor, guild_id: int, title: str, bod
         "INSERT INTO notifications (scope, guild_id, title, body) VALUES ('server', ?, ?, ?)",
         (guild_id, title, body),
     )
+
+
+async def post_user_notification(
+    db: _Executor, user_id: int, notice_key: str, title: str, body: str
+) -> bool:
+    """Raises a notice for one player, shown to them once. The entry point for
+    features that need to tell a single person something.
+
+    Returns True if this newly raised one, False if that player already has a
+    notice under this key. Unlike post_server_notification the dedupe is built
+    in, because a personal notice fires off a thing that HAPPENS to a player
+    rather than off an admin action - the caller is a hot path that runs on
+    every one of those events and only the first should say anything. The
+    (user_id, notice_key) primary key is the whole mechanism, so the row is both
+    the notice and the record that this player has had it.
+
+    Safe to call inside a caller's transaction, and that is where it belongs:
+    the notice should commit or roll back with the thing it is announcing.
+    """
+    return bool(await db.execute_changes(
+        "INSERT OR IGNORE INTO user_notifications (user_id, notice_key, title, body) "
+        "VALUES (?, ?, ?, ?)",
+        (user_id, notice_key, title, body),
+    ))
+
+
+async def fetch_unseen_personal(db: Database, user_id: int) -> list:
+    """Every personal notice this player hasn't been shown yet, oldest first.
+
+    ALL of them, not just the newest - a personal notice is not a broadcast
+    that a later one supersedes. Ordered by when it was raised so a player who
+    earned a ruby and then an obsidian reads them in the order they happened;
+    rowid breaks a tie, since created_at has one-second resolution and both can
+    be raised by the same /collect.
+    """
+    return await db.fetchall(
+        "SELECT notice_key, title, body, 'user' AS scope FROM user_notifications "
+        "WHERE user_id = ? AND seen_at IS NULL ORDER BY created_at, rowid",
+        (user_id,),
+    )
+
+
+async def mark_personal_seen(db: _Executor, user_id: int, rows) -> None:
+    """Records that this player has now been shown `rows`.
+
+    The row's own seen_at rather than a watermark, so nothing can be skipped by
+    a later notice being marked first. Already-set values are left alone - the
+    guard means a notice shown twice (see the at-least-once note above) keeps
+    the timestamp of when it was first actually read."""
+    for row in rows:
+        await db.execute(
+            "UPDATE user_notifications SET seen_at = datetime('now') "
+            "WHERE user_id = ? AND notice_key = ? AND seen_at IS NULL",
+            (user_id, row["notice_key"]),
+        )
 
 
 async def seed_global_notices(db: Database, notices) -> int:

@@ -26,6 +26,7 @@ from utils.embeds import (
     INVENTORY_COLOR,
     MARKET_COLOR,
     FURNACE_COLOR,
+    BLAST_FURNACE_COLOR,
     FACTORY_COLOR,
     RECIPE_COLOR,
     PRESS_COLOR,
@@ -35,9 +36,22 @@ from utils.embeds import (
 
 from data.materials import (
     BASE_STORAGE_CAPACITY,
+    BLAST_FURNACE_BATCH_SIZE,
+    BLAST_FURNACE_COAL_COST_PER_BATCH,
+    BLAST_FURNACE_RATE_PER_LEVEL,
+    BLAST_FURNACE_RECIPES,
     FURNACE_COAL_COST_PER_UNIT,
-    MAX_DRILLS_PER_USER_PER_SERVER,
+    FURNACE_RATE_PER_LEVEL,
+    BASE_MINING_SLOTS,
+    MINING_SLOT_THRESHOLD_BASE,
+    UPGRADE_THRESHOLD_STEP,
 )
+
+# What one batch of Steel actually costs, for the blast furnace page below.
+# Read off the recipe rather than typed out, so retuning Steel can't leave the
+# manual quoting the old figure - the same rule the rest of this file follows.
+_STEEL_BATCH = BLAST_FURNACE_RECIPES["steel"]["inputs"]
+_STEEL_BATCH_COAL = _STEEL_BATCH.get("coal", 0) + BLAST_FURNACE_COAL_COST_PER_BATCH
 
 
 @dataclass(frozen=True)
@@ -83,7 +97,7 @@ _add(ManualSection(
         "own currency and its own economy, and everything you own here is yours alone.\n\n"
         "**Your first five minutes**\n"
         "1. `/mine place` - puts a drill in the ground. If you don't own one yet you'll be "
-        "given a free Iron Drill.\n"
+        "given a free Iron Drill, already full.\n"
         "2. Go do something else. Your drill mines on its own, whether or not you're online.\n"
         "3. `/collect` - empties everything your drills have mined into your inventory.\n"
         "4. `/market sell` - sells those materials to the server for currency.\n"
@@ -108,10 +122,11 @@ _add(ManualSection(
     notes=(
         (
             "The games",
-            "**Mining** produces raw materials. The **Furnace** smelts them into metals, the "
-            "**Factory** turns metals into components, drills and gear, and the **Hydraulic "
-            "Press** crushes huge piles of ore into gemstones. The **Market** is where all of "
-            "it turns into money.",
+            "**Mining** produces raw materials. The **Furnace** smelts them into metals (and "
+            "the **Blast Furnace** does the same in batches of "
+            f"{BLAST_FURNACE_BATCH_SIZE}), the **Factory** turns metals into components, "
+            "drills and gear, and the **Hydraulic Press** crushes huge piles of ore into "
+            "gemstones. The **Market** is where all of it turns into money.",
         ),
         (
             "Who can see your replies",
@@ -139,8 +154,15 @@ _add(ManualSection(
         "what's genuinely in it, so a gemstone isn't a long shot re-rolled forever - it's a "
         "real thing sitting in the batch that somebody will dig up before it runs out. Mine "
         "through a batch, find a Diamond. `/mine status` shows exactly which gems are left.\n\n"
-        f"You can have up to **{MAX_DRILLS_PER_USER_PER_SERVER} drills** placed in any one "
-        f"server. Every drill holds **{BASE_STORAGE_CAPACITY}** items by itself, and once it "
+        f"Every server starts you with **{BASE_MINING_SLOTS} mining slots** - {BASE_MINING_SLOTS} "
+        "drills you can have in the ground here at once - and unlocks more as the server "
+        "invests in its machines. Every fee anyone pays to the furnace, blast furnace, "
+        "factory, press or scrapper counts toward the same total, and so does anything given "
+        f"with `/donate infrastructure`. The first extra slot costs "
+        f"**{MINING_SLOT_THRESHOLD_BASE:,.0f}** in total fees and each one after that costs "
+        f"{UPGRADE_THRESHOLD_STEP} times the last. `/mine status` shows how far along your "
+        "server is. Slots are server-wide: when one unlocks, *everybody* here gets it.\n\n"
+        f"Every drill holds **{BASE_STORAGE_CAPACITY}** items by itself, and once it "
         "fills up it stops and waits for you - so a bigger container, or simply collecting "
         "more often, is the difference between a drill that works all day and one that "
         "spends the afternoon idle.\n\n"
@@ -157,7 +179,7 @@ _add(ManualSection(
             "/mine place", "/mine place [drill]",
             "Puts one of your drills to work in this server. Leave the drill blank if you "
             "only have one spare. If you own no drills at all, you'll be given a free Iron "
-            "Drill to start with.",
+            "Drill, already full, to start with.",
         ),
         ManualCommand(
             "/mine status", "/mine status",
@@ -168,9 +190,9 @@ _add(ManualSection(
         ManualCommand(
             "/collect", "/collect [here]",
             "Empties every drill you have placed - in every server, not just this one - into "
-            "your inventory at once, tells you what came from where, and shows what you now "
-            "hold of each material altogether. This is the command you'll run most. Set "
-            "`here` to True to collect only from your drills in this server.",
+            "your inventory at once, and shows what you now hold of each material "
+            "altogether. This is the command you'll run most. Set `here` to True to collect "
+            "only from your drills in this server.",
         ),
         ManualCommand(
             "/mine remove", "/mine remove <drill>",
@@ -193,6 +215,13 @@ _add(ManualSection(
             "instead. Costs one Ruby to unlock, then changing is free once a day. Run it "
             "with no option to see what each one does before you spend anything.",
         ),
+        ManualCommand(
+            "/efficiency", "/efficiency [efficiency]",
+            "Doubles the raw materials one smelted recipe needs, then converts a little of "
+            "whichever one you end up with too much of into the other. Costs one Obsidian "
+            "to unlock, then changing is free once a day. Run it with no option to see what "
+            "each one does, and whether your focus can feed it.",
+        ),
     ),
     notes=(
         (
@@ -200,6 +229,14 @@ _add(ManualSection(
             "A copper ore is worth two iron ore because iron drops twice as often, so a "
             "focus trades evenly for the digging you did - you just get more of what you "
             "actually want. Gemstone odds never change, whatever you choose.",
+        ),
+        (
+            "Mining Efficiency",
+            "Separate from your focus - you can have either, both or neither, and they "
+            "stack. A focus decides which ore you dig up; an efficiency decides how much of "
+            "it you get and in what proportion, so a haul smelts down with less left over. "
+            "Pick the one matching what your focus actually mines: Steel wants iron ore, so "
+            "it does very little on a Copper & Coal focus.",
         ),
         (
             "Gemstones",
@@ -256,6 +293,69 @@ _add(ManualSection(
             "can't monopolise the furnace. Your server's admin sets it with `/setup max_queue`.",
         ),
         ("Recipes", "`/recipe furnace` lists everything the furnace can make and what it costs."),
+        (
+            "Smelting in bulk",
+            f"Once you're moving thousands of ore at a time, the **Blast Furnace** smelts the "
+            f"same recipes {BLAST_FURNACE_BATCH_SIZE} at a time and a great deal faster. Same "
+            f"cost per bar, same fee per bar - see `/help blast`.",
+        ),
+    ),
+))
+
+
+_add(ManualSection(
+    key="blast",
+    label="Blast Furnace",
+    emoji="♨️",
+    color=BLAST_FURNACE_COLOR,
+    summary=f"Smelt in batches of {BLAST_FURNACE_BATCH_SIZE}, for when the furnace can't keep up",
+    body=(
+        f"The blast furnace is a second, bulk-only smelter. It runs exactly the same recipes "
+        f"the furnace does, {BLAST_FURNACE_BATCH_SIZE} at a time: one **batch** of Iron costs "
+        f"{BLAST_FURNACE_BATCH_SIZE} times what one Iron costs at the furnace, and hands back "
+        f"{BLAST_FURNACE_BATCH_SIZE} Iron.\n\n"
+        f"It is not a discount. The ore per bar, the coal per bar and the fee per bar are all "
+        f"identical to the furnace's - what you are buying is speed and elbow room. A blast "
+        f"furnace smelts {BLAST_FURNACE_RATE_PER_LEVEL * BLAST_FURNACE_BATCH_SIZE:,} items an "
+        f"hour per level against the furnace's {FURNACE_RATE_PER_LEVEL}, and the enormous jobs "
+        f"that used to sit in the shared furnace queue for a day now happen out of everyone "
+        f"else's way.\n\n"
+        f"**Everything here is counted in batches.** The quantity you give `/blast smelt` is "
+        f"how many batches of {BLAST_FURNACE_BATCH_SIZE} to make, the fee is charged per "
+        f"batch, and your queue limit is a number of batches. Your receipt shows the real "
+        f"totals: what came out of your inventory, and how many items are coming back.\n\n"
+        f"Like the furnace, it takes the materials and the fee **when you queue the job**, it "
+        f"levels up on the fees paid into it, and it's shared with everyone in the server."
+    ),
+    commands=(
+        ManualCommand(
+            "/blast smelt", "/blast smelt <material> <batches>",
+            f"Queues bulk smelting, in batches of {BLAST_FURNACE_BATCH_SIZE}. You'll get a "
+            f"receipt showing what was consumed, the fuel burned, and the fee charged.",
+        ),
+        ManualCommand(
+            "/blast status", "/blast status",
+            "Shows the blast furnace's level, everything queued on it, when the queue clears, "
+            "and how close it is to its next level.",
+        ),
+        ManualCommand(
+            "/blast queue", "/blast queue",
+            "The same screen as `/blast status`, under the name you probably reached for.",
+        ),
+    ),
+    notes=(
+        (
+            "Is it worth it?",
+            f"Only if you have the ore. One batch of Steel needs "
+            f"{_STEEL_BATCH['iron_ore']:,} Iron Ore and {_STEEL_BATCH_COAL:,} Coal in one go, "
+            f"and there's no part-batch - if you can't fill one, the furnace is still your "
+            f"machine.",
+        ),
+        (
+            "Recipes",
+            "`/recipe furnace` lists both smelters' recipes side by side, so you can see the "
+            "ratios are the same.",
+        ),
     ),
 ))
 
@@ -302,7 +402,7 @@ _add(ManualSection(
         ),
     ),
     notes=(
-        ("Recipes", "`/recipe factory <section>` lists the factory recipes for drill components, drills or containers."),
+        ("Recipes", "`/recipe factory` lists every factory recipe: drill components, drills and containers."),
     ),
 ))
 
@@ -363,11 +463,14 @@ _add(ManualSection(
         "buys from you, and sells back to you at a markup.\n\n"
         "**Selling is the only way currency comes into existence.** There's no payout for "
         "chatting and no daily handout - if you want money, you mine and you sell. Money "
-        "leaves again through the fees you pay to the furnace, factory and press, and when "
+        "leaves again through the fees you pay to the machines you use, and when "
         "you buy materials back off the server.\n\n"
-        "Prices move with what the server is holding. The less of something it has, the more "
-        "it will pay you for it; as its shelves fill up, the price it offers drops. So a "
-        "material nobody has bothered mining is usually the one worth mining.\n\n"
+        "**Prices are fixed.** Every material is worth the same whether the server's "
+        "warehouse is empty or overflowing, and every price is a round number of cents - so "
+        "what a pile of ore is worth is something you can work out before you sell it. "
+        "Buying back always costs exactly double what selling paid, which is where the "
+        "server makes its margin.\n\n"
+        "You can move up to **1,000,000** at a time in either direction.\n\n"
         "**Gemstones can't be traded.** Rubies, obsidian and diamonds are worth so much more "
         "than anything else that a single sale used to be worth more than a whole server "
         "could earn playing the game. They're crafting materials now, and only that - what a "
@@ -387,13 +490,16 @@ _add(ManualSection(
         ManualCommand(
             "/market status", "/market status",
             "Shows what the server will pay, what it charges, and how much of each material "
-            "it's holding. Check it before a big sale.",
+            "it's holding. The prices don't change, so this is really a stock list - what "
+            "the server has is what you can buy back.",
         ),
         ManualCommand(
             "/donate infrastructure", "/donate infrastructure <machine> <amount>",
             "Pays your own currency into one of the server's machines. It counts exactly "
             "like a fee, so it levels the machine up for everyone - the only way to push a "
-            "machine along deliberately instead of waiting for use to do it.",
+            "machine along deliberately instead of waiting for use to do it. It also counts "
+            "toward the server's mining slots, which every machine's fees feed into "
+            "together, so a donation buys progress on two ladders at once.",
         ),
         ManualCommand(
             "/donate player", "/donate player <member> <amount>",
@@ -425,20 +531,22 @@ _add(ManualSection(
         "running short of. Finish it and you're paid a bonus on top of what the sale itself "
         "earned you.\n\n"
         "Every job is worth about the same: the amount asked for is whatever it takes to pay a "
-        "little over **1** of your server's currency. A job on something the server already has "
-        "plenty of asks for more of it, because each one is worth less to them - but it pays "
-        "the same at the end.\n\n"
-        "The bonus is what the server would pay for those goods, so finishing a job is worth "
-        "roughly the sale all over again - a job you were going to do anyway is worth doing "
-        "today instead.\n\n"
+        "little over **1** of your server's currency, and the bonus is that same **1** again. "
+        "So finishing a job is worth roughly the sale all over again - a job you were going to "
+        "do anyway is worth doing today instead.\n\n"
+        "**It pays every time you finish it, not once a day.** Bring twice the amount asked "
+        "for and you're paid twice; bring fifty times it and you're paid fifty times, all in "
+        "the one command. Whatever the board asks for today is worth about double its market "
+        "price for as long as you keep bringing it.\n\n"
         "You complete it through `/market sell` like any other sale; there's no separate "
         "hand-in. Progress adds up across as many sales as you like, so ten now and forty "
-        "later counts the same as fifty at once.\n\n"
-        "**Everyone can claim it, but only once each.** It isn't a race - the job doesn't run "
-        "out when the first player finishes it. A new one is posted at midnight Arizona time, and "
-        "unfinished progress doesn't carry over.\n\n"
+        "later counts the same as fifty at once - and anything left over after a finish counts "
+        "toward the next one.\n\n"
+        "It isn't a race: the job doesn't run out, and one player finishing it doesn't use it "
+        "up for anyone else. A new one is posted at midnight Arizona time, and unfinished "
+        "progress doesn't carry over.\n\n"
         "Which material gets asked for leans towards whatever the server's warehouse is "
-        "shortest on, so the job board and `/market status` usually point the same way."
+        "shortest on."
     ),
     commands=(
         ManualCommand(
@@ -488,14 +596,15 @@ _add(ManualSection(
     ),
     commands=(
         ManualCommand(
-            "/recipe factory", "/recipe factory <section>",
-            "The factory recipes, a section at a time: **Drill Components** (components and "
-            "drill bits), **Drills** (drills, upgrade packs and how upgrading works), or "
-            "**Containers** (with the capacity each one adds).",
+            "/recipe factory", "/recipe factory",
+            "Every factory recipe at once: components and drill bits, drills and upgrade "
+            "packs (with how upgrading works), and containers (with the capacity each one "
+            "adds).",
         ),
         ManualCommand(
             "/recipe furnace", "/recipe furnace",
-            "Every furnace recipe and the raw materials it takes.",
+            "Every furnace recipe and the raw materials it takes, with the blast furnace's "
+            "bulk version of each one beside it.",
         ),
         ManualCommand(
             "/recipe press", "/recipe press",
@@ -523,15 +632,18 @@ _add(ManualSection(
         "It exists because components and drills can't be sold. The market only deals in raw "
         "and smelted materials, so before the scrapper a mis-planned batch of drill bits or a "
         "drill you'd outgrown just sat in your inventory forever. Now it's metal again.\n\n"
-        "It only undoes **one step** at a time. Scrapping an Iron Drill gives you a Drill "
-        "Chassis; scrapping that chassis gives you iron and copper; scrapping the iron gives "
-        "you ore. Chain it as far down as you need to go.\n\n"
+        "It only undoes **one step** at a time - scrapping a Drill Chassis gives you iron and "
+        "copper, and scrapping that iron gives you ore. Chain it as far down as you need to "
+        "go.\n\n"
+        "**Drills are the exception.** Scrapping one skips the component step entirely: you get "
+        "the drill's bit back whole, plus the iron and copper its wiring and chassis were made "
+        "from (10 iron, 12 copper, whichever drill it is) - never a spare chassis or wiring you "
+        "could put toward another drill for free.\n\n"
         "Two things are worth knowing before you commit. **A drill loses its levels** - a "
         "Level 8 drill comes back as exactly the same parts as a Level 1, so upgrade the drill "
         "you mean to keep. And **you never lose a gemstone to it**: the scrapper always returns "
         "at least one of a recipe's most valuable part, so a Ruby Container gives its ruby "
-        "back. That same rule is what makes scrapping a drill worth anything at all, since a "
-        "drill's recipe is one of each part and half of one is nothing.\n\n"
+        "back.\n\n"
         "Like the other machines it takes a fee, works through a queue, and levels up on the "
         "fees it collects - a level 1 scrapper gets through 2 items an hour, a level 2 gets "
         "through 4."
@@ -606,14 +718,15 @@ _add(ManualSection(
         ),
         ManualCommand(
             "/setup fee", "/setup fee <infrastructure> <amount>",
-            "Sets what the furnace, factory, press or scrapper charges. Per item produced - "
-            "except the press, which charges per press-day.",
+            "Sets what one of the server's machines charges. Per item produced - except the "
+            "press, which charges per press-day, and the blast furnace, which charges per "
+            f"batch of {BLAST_FURNACE_BATCH_SIZE}.",
         ),
         ManualCommand(
             "/setup max_queue", "/setup max_queue <infrastructure> <amount>",
-            "Limits how many items one player can have queued on a machine at a time, so no "
-            "one person can tie it up. Multiplied by the machine's level, so a machine that "
-            "gets faster gets roomier too.",
+            "Limits how many items one player can have queued on a machine at a time (batches, "
+            "for the blast furnace), so no one person can tie it up. Multiplied by the "
+            "machine's level, so a machine that gets faster gets roomier too.",
         ),
     ),
 ))

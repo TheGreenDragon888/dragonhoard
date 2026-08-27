@@ -33,7 +33,7 @@ class EffectiveMaxQueueTests(unittest.TestCase):
         self.assertEqual(effective_max_queue(25, 4), 100)
 
     def test_a_level_one_machine_is_unchanged(self):
-        # Nothing may regress for a server that has never levelled anything.
+        # Nothing may regress for a server that has never leveled anything.
         for base in (1, 5, 25, 50):
             self.assertEqual(effective_max_queue(base, 1), base)
 

@@ -21,10 +21,10 @@ from discord import app_commands
 from discord.ext import commands
 
 from utils.formatting import format_currency
-from utils.db_helpers import ensure_server_row, MACHINES
+from utils.db_helpers import ensure_server_row, machine_label, MACHINES
 from utils.embeds import make_embed, DEFAULT_COLOR
 from utils.notifications import post_server_notification
-from data.materials import effective_max_queue
+from data.materials import BLAST_FURNACE_BATCH_SIZE, effective_max_queue
 
 log = logging.getLogger("dragonhoard")
 
@@ -59,9 +59,9 @@ def setup_guide_embed(guild_name: str) -> discord.Embed:
         name="2. Set your machine fees",
         value=(
             "```/setup fee <machine> <amount>```"
-            "Fees are what level your furnace, factory, press and scrapper up - a server "
-            "charging nothing has machines that never improve, and one charging too much "
-            "prices its players out. This is the main dial you have."
+            "Fees are what level your furnace, blast furnace, factory, press and scrapper "
+            "up - a server charging nothing has machines that never improve, and one "
+            "charging too much prices its players out. This is the main dial you have."
         ),
         inline=False,
     )
@@ -225,14 +225,25 @@ class SetupCog(commands.Cog):
     # Every machine's settings live in one column per machine, named the same
     # way, so both commands below just prefix the choice value. Derived from
     # MACHINES rather than written out, so a new machine appears in both
-    # commands the moment it's added there.
+    # commands the moment it's added there. The name shown is prose and the
+    # value behind it is the column prefix, which is the only reason a machine
+    # whose id has an underscore in it reads properly here.
     INFRASTRUCTURE_CHOICES = [
-        app_commands.Choice(name=machine, value=machine) for machine in MACHINES
+        app_commands.Choice(name=machine_label(machine), value=machine) for machine in MACHINES
     ]
+
+    # What one unit of a machine's fee actually buys, and what its queue cap
+    # counts in. Both are an item for most machines: the press charges per
+    # ruby-equivalent of press time instead, and the blast furnace charges and
+    # queues in batches of BLAST_FURNACE_BATCH_SIZE items. A confirmation that
+    # said "per item" for either would understate the real cost by a factor of
+    # nine or a hundred.
+    FEE_UNITS = {"press": "press-day", "blast_furnace": f"batch of {BLAST_FURNACE_BATCH_SIZE}"}
+    QUEUE_UNITS = {"blast_furnace": "batch"}
 
     @setup_group.command(name="fee", description="Set a fee (in server currency) to use a machine")
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(infrastructure="Which infrastructure to set a fee for", amount="Fee per item produced (per press-day for the press)")
+    @app_commands.describe(infrastructure="Which infrastructure to set a fee for", amount="Fee per item produced (per press-day for the press, per batch for the blast furnace)")
     @app_commands.choices(infrastructure=INFRASTRUCTURE_CHOICES)
     async def setup_fee(self, interaction: discord.Interaction, infrastructure: app_commands.Choice[str], amount: float):
         if amount < 0:
@@ -248,16 +259,18 @@ class SetupCog(commands.Cog):
         )
         currency_emoji = cfg["currency_emoji"] if cfg else None
         # The press charges per press-day rather than per item, so a diamond
-        # (nine press-days) costs nine times what this number says.
-        unit = "press-day" if infrastructure.value == "press" else "item"
+        # (nine press-days) costs nine times what this number says; the blast
+        # furnace charges per batch of a hundred items.
+        unit = self.FEE_UNITS.get(infrastructure.value, "item")
         await interaction.response.send_message(
-            f"✅ {infrastructure.value.title()} fee set to {format_currency(amount, currency_emoji)} per {unit}.",
+            f"✅ {machine_label(infrastructure.value).title()} fee set to "
+            f"{format_currency(amount, currency_emoji)} per {unit}.",
             ephemeral=True,
         )
 
     @setup_group.command(name="max_queue", description="Set the maximum queued items per user, per level, for a machine")
     @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(infrastructure="Which infrastructure to set a queue limit for", amount="Maximum queued items per user, per machine level (1-50)")
+    @app_commands.describe(infrastructure="Which infrastructure to set a queue limit for", amount="Maximum queued items (batches, for the blast furnace) per user, per machine level (1-50)")
     @app_commands.choices(infrastructure=INFRASTRUCTURE_CHOICES)
     async def setup_max_queue(self, interaction: discord.Interaction, infrastructure: app_commands.Choice[str], amount: app_commands.Range[int, 1, 50]):
         await ensure_server_row(self.db, interaction.guild_id)
@@ -274,9 +287,11 @@ class SetupCog(commands.Cog):
             (interaction.guild_id,),
         )
         level = cfg["level"] if cfg else 1
+        unit = self.QUEUE_UNITS.get(infrastructure.value, "item")
         await interaction.response.send_message(
-            f"✅ {infrastructure.value.title()} max queue set to **{amount}** items per user, per level "
-            f"- **{effective_max_queue(amount, level):,}** at its current level {level:,}.",
+            f"✅ {machine_label(infrastructure.value).title()} max queue set to **{amount}** "
+            f"{unit}s per user, per level - **{effective_max_queue(amount, level):,}** at its "
+            f"current level {level:,}.",
             ephemeral=True,
         )
 

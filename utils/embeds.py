@@ -16,17 +16,20 @@ MINING_COLOR = discord.Color(0x8C00FF)     # purple
 INVENTORY_COLOR = discord.Color(0xFF8C00)  # orange (also /balance)
 MARKET_COLOR = discord.Color(0xFFE600)     # yellow
 FURNACE_COLOR = discord.Color(0xFF0059)    # purple-red
+BLAST_FURNACE_COLOR = discord.Color(0xFF0000)  # pure red
 FACTORY_COLOR = discord.Color(0xFF4000)    # red-orange
 RECIPE_COLOR = discord.Color(0x00FFEA)     # cyan
 PRESS_COLOR = discord.Color(0x0066FF)       # blue
 SCRAPPER_COLOR = discord.Color(0x9EFF00)   # chartreuse
 JOBBOARD_COLOR = discord.Color(0xFF00AA)   # magenta
-# The two notification feeds (utils/notifications.py). They get separate colors
-# because they carry different authority - one is the bot announcing something
-# about itself to everybody, the other is one server's own business - and a
-# player should be able to tell which without reading a word.
-GLOBAL_NOTICE_COLOR = discord.Color(0x00FF00)  # green
-SERVER_NOTICE_COLOR = discord.Color(0xFFFF00)  # yellow
+# The three kinds of notice (utils/notifications.py). They get separate colors
+# because they carry different authority - the bot announcing something about
+# itself to everybody, one server's own business, or something that happened to
+# you personally - and a player should be able to tell which without reading a
+# word.
+GLOBAL_NOTICE_COLOR = discord.Color(0x00FF00)    # green
+SERVER_NOTICE_COLOR = discord.Color(0xFFFF00)    # yellow
+PERSONAL_NOTICE_COLOR = discord.Color(0x2200FF)  # indigo
 
 FOOTER_TEXT = f"Dragonhoard by Isaac Day · Version {config.VERSION}"
 
@@ -50,7 +53,8 @@ def make_infrastructure_embed(
     upgrade_cost: float,
     currency_emoji: str | None,
 ) -> discord.Embed:
-    """The shared shell of the /furnace, /factory and /press status embeds.
+    """The shared shell of the /furnace, /blast, /factory, /press and
+    /scrapper status embeds.
 
     All three used to open with six inline fields - Level, Speed, Queue Limit,
     Fee, Pending, Queue Finishes - four of which were one number each. The
@@ -78,20 +82,24 @@ def make_infrastructure_embed(
     return embed
 
 
-def queue_field_name(items: int, jobs: int, wait_hours: float) -> str:
+def queue_field_name(items: int, jobs: int, wait_hours: float, unit: str = "item") -> str:
     """The queue field's heading, which carries the counts and the total wait
     that used to be their own "Pending" and "Queue Finishes" fields.
 
     format_duration rather than a relative timestamp: this is a field NAME, and
-    Discord doesn't render <t:...> markup there."""
+    Discord doesn't render <t:...> markup there.
+
+    `unit` is what the machine counts in - "batch" for the blast furnace, whose
+    queue is measured in batches of BLAST_FURNACE_BATCH_SIZE rather than in
+    single items."""
     if not jobs:
         return "Queue • empty"
-    item_word = "item" if items == 1 else "items"
+    item_word = unit if items == 1 else f"{unit}s"
     job_word = "job" if jobs == 1 else "jobs"
     return f"Queue • {items:,} {item_word} / {jobs:,} {job_word} ({format_duration(wait_hours)} wait)"
 
 
-def queue_limit_field_value(base: int, level: int) -> str:
+def queue_limit_field_value(base: int, level: int, unit: str = "item") -> str:
     """The "Queue Limit" field on every infrastructure status embed.
 
     Shows the cap that is actually enforced, with the arithmetic underneath it.
@@ -101,8 +109,8 @@ def queue_limit_field_value(base: int, level: int) -> str:
     buys queue room as well as speed."""
     effective = effective_max_queue(base, level)
     if level <= 1:
-        return f"**{effective:,}** items per user"
-    return f"**{effective:,}** items per user\n({base:,} × level {level:,})"
+        return f"**{effective:,}** {unit}s per user"
+    return f"**{effective:,}** {unit}s per user\n({base:,} × level {level:,})"
 
 
 def job_owner_label(user_id: int) -> str:

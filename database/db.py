@@ -196,7 +196,7 @@ class Database(_Executor):
             job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
             guild_id        INTEGER NOT NULL,
             user_id         INTEGER NOT NULL,
-            job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'factory', 'press', 'scrapper')),
+            job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'blast_furnace', 'factory', 'press', 'scrapper')),
             target_id       TEXT NOT NULL,
             quantity        INTEGER NOT NULL,
             queued_at       TEXT NOT NULL DEFAULT (datetime('now')),
@@ -302,6 +302,13 @@ class Database(_Executor):
             config_columns = {row[1] for row in conn.execute("PRAGMA table_info(server_config)")}
             added_config_columns = (
                 ("press_level", "INTEGER NOT NULL DEFAULT 1"),
+                # The blast furnace, added in 1.3. Its fee is quoted per BATCH
+                # of data.materials.BLAST_FURNACE_BATCH_SIZE items, which is
+                # why its default dwarfs the furnace's - see config.py.
+                ("blast_furnace_level", "INTEGER NOT NULL DEFAULT 1"),
+                ("blast_furnace_fee", f"REAL NOT NULL DEFAULT {config.DEFAULT_BLAST_FURNACE_FEE}"),
+                ("blast_furnace_fees_collected", "REAL NOT NULL DEFAULT 0.0"),
+                ("blast_furnace_max_queue", "INTEGER NOT NULL DEFAULT 5"),
                 ("press_fee", f"REAL NOT NULL DEFAULT {config.DEFAULT_PRESS_FEE}"),
                 ("press_fees_collected", "REAL NOT NULL DEFAULT 0.0"),
                 ("press_max_queue", "INTEGER NOT NULL DEFAULT 1"),
@@ -310,6 +317,16 @@ class Database(_Executor):
                 ("scrapper_fee", f"REAL NOT NULL DEFAULT {config.DEFAULT_SCRAPPER_FEE}"),
                 ("scrapper_fees_collected", "REAL NOT NULL DEFAULT 0.0"),
                 ("scrapper_max_queue", "INTEGER NOT NULL DEFAULT 5"),
+                # Mining slots, added in 1.3. Deliberately NOT a level column:
+                # the cap is summed on read from the <machine>_fees_collected
+                # columns already here, which is what makes an existing server's
+                # slots reflect fees it paid long before this shipped. All this
+                # stores is how much of that has been announced (see
+                # utils/db_helpers.py: announce_mining_slot_unlocks), so 1 - the
+                # level every server starts at - is the right value for a row
+                # that predates the feature: whatever it has already unlocked is
+                # announced the next time it pays a fee.
+                ("mining_slots_announced", "INTEGER NOT NULL DEFAULT 1"),
                 # Nullable with no default: NULL means "answer in every
                 # channel", which is what every existing server was doing
                 # before this column existed and should keep doing.
@@ -340,13 +357,14 @@ class Database(_Executor):
             # queue entry, so the rebuild copies each job_id across explicitly
             # and runs inside one transaction.
             #
-            # Gating on 'scrapper' SUBSUMES the older press migration rather
-            # than dropping it: a database predating the press also predates the
-            # scrapper, so it fails this check too, and the one rebuild writes
-            # the DDL naming all four types. Deleting the separate press gate is
-            # deliberate - two gates against the same rebuild would just make
-            # the second one dead code.
-            if not self._job_type_allows(conn, "scrapper"):
+            # Gating on the NEWEST job type SUBSUMES every older gate rather
+            # than stacking beside it: a database predating the press also
+            # predates the scrapper and the blast furnace, so it fails this
+            # check too, and the one rebuild writes the DDL naming all five
+            # types. That is why this gate has moved from 'press' to 'scrapper'
+            # to 'blast_furnace' instead of accumulating - two gates against the
+            # same rebuild would just make the second one dead code.
+            if not self._job_type_allows(conn, "blast_furnace"):
                 conn.execute("BEGIN")
                 try:
                     conn.execute("DROP TABLE IF EXISTS production_jobs_new")
@@ -413,6 +431,53 @@ class Database(_Executor):
             if "carry" in pool_columns:
                 conn.execute("ALTER TABLE server_mining_pool DROP COLUMN carry")
 
+            # The job board's bonus is paid per completion rather than once
+            # per player per day (1.3), so the boolean claimed_at answered the
+            # wrong question and a count replaced it. Adding a NOT NULL column
+            # with a DEFAULT is legal in place - deliberately not a rebuild,
+            # since this table holds today's in-progress tasks.
+            #
+            # The backfill in the same branch is what makes an old row mean
+            # what it says: everyone who had claimed under the old rule had
+            # been paid exactly once, and leaving them at the column DEFAULT of
+            # 0 would hand every one of them a second payout for progress they
+            # had already been paid for. Safe to run unguarded because the
+            # column not existing is itself the proof this hasn't run.
+            progress_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(daily_job_progress)")
+            }
+            if "claims_paid" not in progress_columns:
+                conn.execute(
+                    "ALTER TABLE daily_job_progress "
+                    "ADD COLUMN claims_paid INTEGER NOT NULL DEFAULT 0"
+                )
+                conn.execute(
+                    "UPDATE daily_job_progress SET claims_paid = 1 "
+                    "WHERE claimed_at IS NOT NULL"
+                )
+
+            # user_version is untouched by 1.3 for the same reason it was by
+            # 1.1: everything the blast furnace adds is structural and gated on
+            # introspection above - four server_config columns and a widened
+            # job_type CHECK, both of which the schema itself reveals. The job
+            # board's claims_paid is the same story: the column's absence is
+            # what says the migration hasn't run.
+            #
+            # Personal notifications add nothing here either. user_notifications
+            # is a NEW table, which CREATE TABLE IF NOT EXISTS handles on its
+            # own, and it starts empty on purpose: the rows in it are the record
+            # of who has been told what, so an existing player who already owns
+            # a ruby has simply not been told yet and gets the notice on their
+            # next one. There is nothing to backfill and no way to work out
+            # retroactively who would have wanted it.
+            #
+            # Mining slots add nothing here either, and notably no data
+            # migration: a server's slot cap is summed on read from fee columns
+            # that already hold every figure it needs, so there is no stored
+            # level to backfill and an old database is correct the moment new
+            # code opens it. mining_slots_announced is the one column, and its
+            # DEFAULT is already the right answer for every existing row.
+            #
             # user_version deliberately stays at 3 through 1.1. Everything that
             # release added is structural and gated on introspection above: the
             # scrapper's columns, bot_channel_id, the widened job_type CHECK,

@@ -85,7 +85,9 @@ class MachineUpgradeTests(DonateTestCase):
     def test_every_machine_shares_the_rule(self):
         # Not a database test - just that the four names the helper accepts are
         # the four the rest of the code knows about.
-        self.assertEqual(set(MACHINES), {"furnace", "factory", "press", "scrapper"})
+        self.assertEqual(
+            set(MACHINES), {"furnace", "blast_furnace", "factory", "press", "scrapper"}
+        )
 
     async def test_an_unknown_machine_is_refused(self):
         # The helper interpolates its argument into SQL (the columns are named

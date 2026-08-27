@@ -1,10 +1,10 @@
 """
 utils/receipts.py
 
-Builds the receipt embed shown when a user queues a furnace or factory job.
-Because both fees and input materials are taken up front at queue time (see
-cogs/furnace.py), the user has already been charged by the time they see a
-response - so the response has to account for every item and coin that left
+Builds the receipt embed shown when a user queues a job at one of the server's
+machines. Because both fees and input materials are taken up front at queue
+time (see cogs/furnace.py), the user has already been charged by the time they
+see a response - so the response has to account for every item and coin that left
 their inventory, and what they have left afterwards.
 
 Remaining amounts are passed in by the caller rather than re-read from the
@@ -21,11 +21,15 @@ from utils.formatting import format_relative_timestamp, format_price, DEFAULT_CU
 
 def _material_line(material_id: str, amount: int, remaining: int) -> str:
     """One consumed-material row: what came out of the inventory, and what
-    that material is down to now."""
+    that material is down to now.
+
+    Thousands separators because the blast furnace consumes in the thousands
+    (2,000 iron ore for one batch of steel), and an unseparated 540000 in a
+    receipt is a number the reader has to count digits on."""
     info = get_material_info(material_id)
     emoji = info["emoji"] if info else "❓"
     name = info["name"] if info else material_id
-    return f"{emoji} **{amount} {name}** ({remaining} remaining)"
+    return f"{emoji} **{amount:,} {name}** ({remaining:,} remaining)"
 
 
 def build_receipt_embed(
@@ -37,6 +41,7 @@ def build_receipt_embed(
     quantity: int,
     consumed: list[tuple[str, int, int]],
     fuel: tuple[str, int, int] | None = None,
+    fuel_label: str = "Furnace Fuel",
     fee_total: float,
     balance_after: float,
     currency_emoji: str,
@@ -49,7 +54,8 @@ def build_receipt_embed(
     tuples. fuel is kept separate from consumed so the furnace's flat
     per-item coal burn is visible as its own cost even when the recipe
     already consumes coal of its own (e.g. steel), which would otherwise
-    hide it inside a single combined coal total.
+    hide it inside a single combined coal total. fuel_label names that field,
+    because the blast furnace burns the same fuel under its own name.
 
     product_label overrides the (emoji, name) that product_id would look up.
     A drill level-up is queued as a factory job whose target is a sentinel
@@ -72,7 +78,7 @@ def build_receipt_embed(
         product_emoji = product["emoji"] if product else "❓"
         product_name = product["name"] if product else product_id
 
-    description = f"Queued {product_emoji} **{quantity} {product_name}** for {action}."
+    description = f"Queued {product_emoji} **{quantity:,} {product_name}** for {action}."
     if eta_hours is not None:
         # The LAST item of the job, not the first - this is answering "when do I
         # have all of this", which is what was just paid for.
@@ -83,7 +89,7 @@ def build_receipt_embed(
     add_multi_field(embed, "Consumed", [_material_line(*entry) for entry in consumed])
 
     if fuel is not None:
-        add_multi_field(embed, "Furnace Fuel", [_material_line(*fuel)])
+        add_multi_field(embed, fuel_label, [_material_line(*fuel)])
 
     if fee_total > 0:
         # Laid out like a consumed-material line: emoji, then the bolded
@@ -105,5 +111,56 @@ def build_receipt_embed(
         )
     else:
         embed.add_field(name="Fee Paid", value="Free", inline=False)
+
+    return embed
+
+
+def build_market_receipt_embed(
+    *,
+    title: str,
+    color: discord.Color,
+    description: str,
+    material_field: str,
+    material_id: str,
+    quantity: int,
+    material_remaining: int,
+    currency_field: str,
+    currency_amount: float,
+    balance_after: float,
+    currency_emoji: str | None,
+    round_up_currency: bool,
+) -> discord.Embed:
+    """Assembles a /market sell or /market buy receipt.
+
+    A trade has no fee or fuel of its own - it's just a material moving one
+    way and currency moving the other - but it's laid out like
+    build_receipt_embed's queue receipts anyway: a description sentence, then
+    one field per side of the trade. material_field/currency_field name those
+    two sides ("Sold"/"Received" for a sale, "Bought"/"Spent" for a
+    purchase), and each line reuses _material_line's and Fee Paid's exact
+    shape - emoji, bolded amount, remainder in parentheses - so a trade
+    reads the same way a production job's receipt does.
+
+    round_up_currency mirrors Fee Paid's round_up=True: round up when the
+    amount is being taken from the user (a purchase must never look cheaper
+    than it was) and down when it's being paid to them (a sale must never
+    look more generous than it was).
+    """
+    embed = make_embed(title, color, description=description)
+
+    embed.add_field(
+        name=material_field,
+        value=_material_line(material_id, quantity, material_remaining),
+        inline=False,
+    )
+    embed.add_field(
+        name=currency_field,
+        value=(
+            f"{currency_emoji or DEFAULT_CURRENCY_EMOJI} "
+            f"**{format_price(currency_amount, round_up=round_up_currency)}** "
+            f"({format_price(balance_after)} remaining)"
+        ),
+        inline=False,
+    )
 
     return embed

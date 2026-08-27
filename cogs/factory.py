@@ -32,7 +32,7 @@ from utils.formatting import format_currency
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
-    apply_machine_upgrades,
+    bank_infrastructure_fee,
     ensure_server_row,
     get_user_quantity,
     adjust_user_quantity,
@@ -162,11 +162,9 @@ class FactoryCog(commands.Cog):
 
                 if fee_total > 0:
                     await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await tx.execute(
-                        "UPDATE server_config SET factory_fees_collected = factory_fees_collected + ? WHERE guild_id = ?",
-                        (fee_total, interaction.guild_id),
+                    await bank_infrastructure_fee(
+                        tx, interaction.guild_id, "factory", fee_total
                     )
-                    await apply_machine_upgrades(tx, interaction.guild_id, "factory")
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
 
@@ -335,11 +333,9 @@ class FactoryCog(commands.Cog):
 
                 if fee_total > 0:
                     await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await tx.execute(
-                        "UPDATE server_config SET factory_fees_collected = factory_fees_collected + ? WHERE guild_id = ?",
-                        (fee_total, interaction.guild_id),
+                    await bank_infrastructure_fee(
+                        tx, interaction.guild_id, "factory", fee_total
                     )
-                    await apply_machine_upgrades(tx, interaction.guild_id, "factory")
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
 
@@ -559,7 +555,7 @@ class FactoryCog(commands.Cog):
     async def _deliver_drills(self, db, user_id: int, drill_type: str, count: int):
         """A crafted drill becomes a tracked instance rather than an inventory
         stack, so it carries its own level and container from the moment it
-        exists. `count` can be more than one when a levelled-up factory drains
+        exists. `count` can be more than one when a leveled-up factory drains
         several units of the same job in a tick, hence the loop."""
         for _ in range(count):
             await db.execute(

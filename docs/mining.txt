@@ -1,7 +1,7 @@
 Materials
 All mining menu embeds (/mine, /collect) are purple, #8C00FF (see docs/stylization.md).
 
-Materials are stored universally (per user). Raw materials can be mined from anywhere in the server - there is no designated "dig site" channel. Users can individually place up to three drills per server.
+Materials are stored universally (per user). Raw materials can be mined from anywhere in the server - there is no designated "dig site" channel. Users can individually place one drill per mining slot the server has unlocked, starting at three (see Mining Slots below).
 
 Each server holds a single pool of raw materials instead of separate blocks or per-channel pools. As of 1.2 that pool is a BAG of exactly 1,000,000 items, and it refills the instant it empties. There is no daily top-up and no cap - both were removed.
 
@@ -17,7 +17,7 @@ Those gemstone counts are the point. A drill draws from what is genuinely in the
 
 The bag is deliberately NOT scaled to server size. A smaller bag for a smaller server would make its diamonds commoner per item mined, which is a different game rather than the same one at a different pace.
 
-How long a bag lasts is now entirely a matter of investment. At 3 drills per player: 5 members on level 1 Iron Drills mine 1,800/day and take 556 days; the same 5 on level 10 Diamond Drills mine 120,960/day and take 8; 200 members on level 1 Iron Drills take 14. A lone player on starter drills waits years. That is the accepted trade for removing the ceiling - gem timing is now the player's own choice, where before it was their member count's. An earlier design floored it at one diamond a year by injecting gems on a timer; that was dropped along with the daily top-up it hung off.
+How long a bag lasts is now entirely a matter of investment. At the base 3 slots per player (a server that has unlocked more drains it proportionally faster): 5 members on level 1 Iron Drills mine 1,800/day and take 556 days; the same 5 on level 10 Diamond Drills mine 483,840/day and take 2; 200 members on level 1 Iron Drills take 14. A lone player on starter drills waits years. That is the accepted trade for removing the ceiling - gem timing is now the player's own choice, where before it was their member count's. An earlier design floored it at one diamond a year by injecting gems on a timer; that was dropped along with the daily top-up it hung off.
 
 /mine status shows what is actually in the bag, including exactly which gemstones are still in it. Every number it prints is a fact read from the database; there are no estimates anywhere in that embed.
 
@@ -25,11 +25,24 @@ Drills likewise hold specific materials rather than a count, from the moment the
 
 Mining drills automatically harvest raw materials from their server's pool until their storage capacity fills; then they stop until their owner runs /collect. A full drill is the ONLY thing that stops mining - the bag refills the moment it empties, so a drill is never left idle waiting on a clock. Use /mine status to see your active drills and what is left in the server's bag, from any channel.
 
-/collect is cross-server: one call empties every drill you have placed anywhere, wherever you run it from, and its embed breaks the haul down per server when more than one contributed. Everything else about mining stays per-server - each server has its own pool, its own three-drill-per-player cap, and its own /mine status. Collection can be global because materials are stored per user, not per server, so a drill's haul was always going to land in the same inventory regardless of where the drill sat. Drills in servers you or the bot have since left are collected too; they kept mining, and the material is already yours. Pass here:True to collect only from the drills you have in the server you're running it from.
+/collect is cross-server: one call empties every drill you have placed anywhere, wherever you run it from, into one combined haul. Everything else about mining stays per-server - each server has its own pool, its own mining slot count, and its own /mine status. Collection can be global because materials are stored per user, not per server, so a drill's haul was always going to land in the same inventory regardless of where the drill sat. Drills in servers you or the bot have since left are collected too; they kept mining, and the material is already yours. Pass here:True to collect only from the drills you have in the server you're running it from.
 
-If a player places a drill without having one (nothing in inventory, nothing already placed anywhere), they're automatically given a free Iron Drill to place. Use /mine remove to pull a drill back out early - you get the drill back in your inventory plus whatever raw materials it had collected so far.
+If a player places a drill without having one (nothing in inventory, nothing already placed anywhere), they're automatically given a free Iron Drill, drawn full from the server's own pool and placed immediately - so /collect has something to bank right away rather than a wait. Use /mine remove to pull a drill back out early - you get the drill back in your inventory plus whatever raw materials it had collected so far.
 
 Every drill is tracked individually rather than as a stack, and keeps its level and its attached container for its whole life - including while it sits unplaced in your inventory. Commands that act on a drill (/mine place, /mine remove, /mine attach, /mine detach, /factory upgrade) take a specific drill picked from a list rather than a drill type.
+
+Mining Slots
+How many drills one player may have placed in a server is a SERVER-wide unlock, not a per-player one. Every server starts at 3 (BASE_MINING_SLOTS) and buys more with the fees its infrastructure collects. The ladder is 25 / 125 / 625 / 3,125 in cumulative fees, each rung five times the last (MINING_SLOT_THRESHOLD_BASE and UPGRADE_THRESHOLD_STEP in data/materials.py), and there is no maximum - the cost climbs out of reach on its own, exactly as machine levels do.
+
+What counts toward it is the SUM of every machine's lifetime fees - furnace, blast furnace, factory, press and scrapper - plus anything given through /donate infrastructure, which lands in the same per-machine pots. That is the point of summing rather than picking one machine: a slot is the whole server's investment paying off, so a server that spread its spending across five machines is not punished against one that funnelled everything into a single ladder.
+
+The same money counts twice on purpose. Fees paid to the furnace still level the furnace; they also count toward slots. Nothing is spent or deducted - both levels are high-water marks read off totals that only ever grow, which is also why a slot can never be lost and why a server that had already paid its way past a threshold before 1.3 had the slot the moment the release shipped.
+
+The cap is DERIVED on read (utils/db_helpers.py: mining_slot_status) rather than stored in a column. There is consequently no way for it to disagree with the money that paid for it, and no migration was needed to backfill it. server_config.mining_slots_announced is the one stored number, and it tracks only which unlock has been ANNOUNCED - see announce_mining_slot_unlocks for why that guard exists and why announcing can lag the unlock by one fee.
+
+Why 25 for the first one: it is five times UPGRADE_THRESHOLD_BASE, which is exactly what taking one machine to level 3 costs. A slot is a permanent multiplier on everything the server mines - more so than any single machine level, because it multiplies the input the machines are fed - so pricing it below a machine level would have made it the obvious first purchase and the machine ladders an afterthought. Measured against the production backup taken 2026-08-18 (a live figure, not one reproducible from this repo), that put 12 of its 15 servers at the base 3 slots, one at 4, one at 5, and one - which had banked 5,502 in furnace and factory fees - at 7.
+
+An unlocked slot is not a granted drill. It is permission to place one more, and the player still has to own or craft it - so a server unlocking its fourth slot does not hand every member a fourth drill, it lets the members who built one use it.
 
 Drill Levels
 Every drill starts at level 1 mining at its type's base rate, and each level above that adds a fifth of that drill's own base rate - so a level is worth the same proportion whichever drill you spend it on, and the upgrade path doesn't get worse the better your drill is. There is no maximum level; the cost is the only limit.
@@ -59,7 +72,7 @@ Gemstones are never affected by any focus. Rubies, obsidian and diamonds drop at
 
 Three consequences worth stating plainly, because two of them are bad news that is easy to discover too late:
 - Copper & Coal and Coal focus make steel impossible to self-supply, because steel needs iron ore and neither produces any. That rules out every steel component, both steel drill bits, the Steel Container, and diamonds via the press.
-- Iron & Coal helps steel far less than doubling your iron ore sounds like it should. It takes the stream to 7.56 iron ore per coal and steel wants 5:1, so coal becomes the binding input instead - steel per item mined improves by about 32%, not 100%.
+- Iron & Coal helps steel far less than doubling your iron ore sounds like it should. It takes the stream to 7.56 iron ore per coal, and steel wants 4:1 once the coal the furnace burns as fuel is counted alongside the recipe's own, so coal becomes the binding input instead - steel per item mined improves by 5.8%, not 100%. Mining Efficiency is what unlocks the rest of that doubling (docs/mining-efficiency.md).
 - It roughly halves the mining behind a pressed ruby or obsidian, since the press is priced at ~95% of what a player would have mined alongside finding that gem naturally. That is intended - accelerating the gem economy is the point - but it is the largest downstream effect of the feature.
 
 Storage Containers
@@ -93,25 +106,25 @@ Rates below are at level 1; every level adds a fifth of that drill's own level 1
 <:IronMiningDrill:1523433637398450347> Iron Drill (Wiring, Drill Chassis, and Iron Drill Bit) [Mines 5 raw materials / hour]
 <:SteelMiningDrill:1523433646613069824> Steel Drill (Wiring, Drill Chassis, and Steel Drill Bit) [Mines 7.5 raw materials / hour]
 <:RubyMiningDrill:1523433666800517262> Ruby Drill (Wiring, Drill Chassis, and Ruby Drill Bit) [Mines 30 raw materials / hour]
-<:ObsidianMiningDrill:1523433678825459893> Obsidian Drill (Wiring, Drill Chassis, and Obsidian Drill Bit) [Mines 60 raw materials / hour]
-<:DiamondMiningDrill:1523433688656908408> Diamond Drill (Wiring, Drill Chassis, and Diamond Drill Bit) [Mines 120 raw materials / hour]
+<:ObsidianMiningDrill:1523433678825459893> Obsidian Drill (Wiring, Drill Chassis, and Obsidian Drill Bit) [Mines 120 raw materials / hour]
+<:DiamondMiningDrill:1523433688656908408> Diamond Drill (Wiring, Drill Chassis, and Diamond Drill Bit) [Mines 480 raw materials / hour]
 
 (Storage containers, produced in a factory - attach with /mine attach)
 📦 Iron Container (10 Iron, 5 Copper) [+150 storage, so 250 on a drill]
 🗃️ Steel Container (10 Steel, 10 Copper) [+400 storage, so 500 on a drill]
 💼 Ruby Container (1 Ruby, 20 Copper) [+1900 storage, so 2000 on a drill]
-🧳 Obsidian Container (1 Obsidian, 40 Copper) [+3900 storage, so 4000 on a drill]
-🎁 Diamond Container (1 Diamond, 80 Copper) [+7900 storage, so 8000 on a drill]
+🧳 Obsidian Container (1 Obsidian, 40 Copper) [+7900 storage, so 8000 on a drill]
+🎁 Diamond Container (1 Diamond, 80 Copper) [+31900 storage, so 32000 on a drill]
 
-As of 1.2.1, Ruby/Obsidian/Diamond container capacity scales by the same factor the matched drill's speed was buffed by that release (Steel->Ruby is a x4 jump on both; Ruby->Obsidian and Obsidian->Diamond are both x2). That keeps a container proportionally as useful relative to its own tier's drill as it always was, but because capacity and rate now scale by the same factor at each of those steps, a container buys an identical 66.67 hours of runtime from Steel through Diamond - Iron is the only tier that still buys strictly less (50 hours). See the STORAGE_CONTAINERS comment in data/materials.py for the full reasoning.
+Every step from Steel up is now a uniform x4 on both the matched drill's speed and its container's capacity (Steel->Ruby, Ruby->Obsidian and Obsidian->Diamond all x4; only Iron->Steel is x2). That keeps a container proportionally as useful relative to its own tier's drill as it always was, and because capacity and rate scale by the same factor at every one of those steps, a container buys an identical 66.67 hours of runtime from Steel through Diamond - Iron is the only tier that still buys strictly less (50 hours). Ruby->Obsidian and Obsidian->Diamond were only x2 from 1.2.1 through 1.2.2; see the STORAGE_CONTAINERS comment in data/materials.py for the full reasoning and history.
 
 (Upgrade materials, produced in a factory)
 🧰 Drill Upgrade Pack (5 Copper) [consumed by /factory upgrade]
 
 Server Infrastructure
-Each server comes with a level 1 furnace, factory, hydraulic press and scrapper. Infrastructure is installed onto servers, and can be accessed anywhere within that server.
+Each server comes with a level 1 furnace, blast furnace, factory, hydraulic press and scrapper. Infrastructure is installed onto servers, and can be accessed anywhere within that server.
 
-Furnace menu embeds are purple-red, #FF0059; factory menu embeds are red-orange, #FF4000; press menu embeds are blue, #0066FF (see docs/stylization.md).
+Furnace menu embeds are purple-red, #FF0059; blast furnace menu embeds are pure red, #FF0000; factory menu embeds are red-orange, #FF4000; press menu embeds are blue, #0066FF (see docs/stylization.md).
 
 Infrastructure has no maximum level. Every machine's output scales linearly with its level, and every level costs five times the fees the last one did - 5 to reach level 2, 25 for level 3, 125 for level 4, and so on. The cost is what puts a ceiling on it, not a hard cap.
 
@@ -120,6 +133,27 @@ That step was ten until 1.2, and the resulting ladder (5, 50, 500, 5000) was unr
 Furnaces: (/furnace smelt <smelt material result> <quantity>)
 5 smelted materials / hour, per level
 Every item smelted also burns 1 extra Coal to fuel the furnace, on top of whatever Coal the recipe itself requires (e.g. Steel already needs 4 Coal - smelting 1 Steel burns 5 Coal total).
+
+Blast furnaces: (/blast smelt <smelt material result> <batches>)
+1 batch / hour, per level, a batch being 100 items - so 100 smelted materials / hour, per level
+
+The blast furnace is an auxiliary furnace that only smelts in bulk. Its recipes ARE the furnace's, multiplied by 100 and derived from them in data/materials.py rather than written out separately:
+
+100 Iron (1,000 Iron Ore)
+100 Copper (1,000 Copper Ore)
+100 Steel (2,000 Iron Ore, 400 Coal)
+
+Fuel scales the same way - a batch burns 100 Coal on top of its recipe, so one batch of Steel costs 500 Coal in total - and so does the fee, whose default of 1.00 per batch is the furnace's 0.01 an item times the hundred items in a batch. Ore per bar, coal per bar and fee per bar are therefore identical at both machines. Bulk smelting buys speed, not a discount, and it is deliberately not a better exchange rate: the moment it were, the furnace would stop being worth using at all.
+
+Everything about this machine is counted in BATCHES rather than items - the quantity argument, the fee, the queue cap, and production_jobs.quantity. Only the credit at the end of a job is in items.
+
+What it buys is throughput, and that is the one figure that is not the furnace's times a hundred: 100 items an hour per level against the furnace's 5, or twenty times as much. Two things made that the right size when the blast furnace shipped in 1.3. First, mining scales with a server's player count and a single shared furnace does not - one player running three Diamond Drills generated 20.4 Iron/hour of smelting demand against the 25/hour a level 5 furnace manages, so a single player very nearly saturated the machine the whole server shares. Second, the furnace cannot be leveled out of that: fees are a high-water mark, so at the 0.01 default the 3,125 that level 6 costs is 13,467 hours - 561 days - of nonstop smelting, and level 5-6 is where a real server stops.
+
+1.3 also quadrupled the Diamond Drill's own rate (120 -> 480/hour), which moves the first number without the blast furnace being retuned to match: one such player's demand is now 81.6 Iron/hour, which exceeds a level 5 furnace outright rather than merely saturating it, and leaves the level 1 blast furnace only about 1.2x that demand rather than the 4x of room it launched with. That is an accepted consequence of the drill buff, not a redesign of the furnace - see tests/test_blast_furnace.py::test_one_player_can_saturate_the_furnace_the_whole_server_shares.
+
+Measured against the thing it exists for, the 27,000 Steel behind one pressed diamond takes a level 5 furnace 45 days of smelting nothing else, and a level 1 blast furnace 11.25 days. Ten players running three Diamond Drills each used to mine that much ore in about 11 days, putting the constraint back on the ore supply rather than on the machine at twenty times - the same buff above cut that to about 3 days, so for a group mining this hard the ore now arrives faster than even a level 1 blast furnace can smelt it, and the constraint has shifted back toward the machine. A hundred times would have removed the machine as a constraint entirely and left the press as the only pacing in the gem loop. (See tests/test_blast_furnace.py, which pins every figure in these two paragraphs.)
+
+The blast furnace has no auto-smelt of its own. The market's surplus-ore smelting stays on the furnace, which queues it one item at a time so it can't overshoot the stock it is steering toward; a machine whose smallest action is a hundred items would sail past a target that is 83 steel or 200 iron on a twenty-member server.
 
 Factories: (/factory craft <component, drill, container, or upgrade pack> <quantity>, and /factory upgrade <drill>)
 1 component / hour, per level
@@ -140,7 +174,7 @@ A recipe's cost in press time is measured in press-days, against a ruby. A press
 
 Ultra dense matter is priced in diamonds rather than ore: at 27x a ruby's press time it sits a full tier beyond diamond, and costing it in ore would put it out of reach of any server that will ever exist. Nothing consumes it yet - it's reserved for a later feature, and like drills and components it can never be sold on the market (docs/market.md section 3).
 
-Players can queue jobs up for their server's furnace, factory & press. If there's any jobs ahead of them they must wait until those complete before the server can process their items and send the result back to their inventory. Each player can have at most a set number of items queued at once per infrastructure type (default: 25 for the furnace, 5 for the factory, 1 for the press, 5 for the scrapper), configurable per server via /setup max_queue <furnace / factory / press / scrapper> <amount>. That number is per machine LEVEL - what is actually enforced is the setting multiplied by the machine's level.
+Players can queue jobs up for every one of their server's machines. If there's any jobs ahead of them they must wait until those complete before the server can process their items and send the result back to their inventory. Each player can have at most a set number of items queued at once per infrastructure type (default: 25 for the furnace, 5 for the blast furnace, 5 for the factory, 1 for the press, 5 for the scrapper), configurable per server via /setup max_queue <machine> <amount>. That number is per machine LEVEL - what is actually enforced is the setting multiplied by the machine's level. The blast furnace's is counted in batches, so its default 5 is 500 items.
 
 The press fee is charged per press-day rather than per item, so a diamond costs nine times what a ruby does to run (default: 5.00 per press-day, meaning 5.00 for a ruby, 15.00 for an obsidian, 45.00 for a diamond and 135.00 for ultra dense matter).
 
@@ -156,11 +190,13 @@ Server currencies are earned by selling ores and smelted materials to the server
 
 Each server's currency is currently the only spendable currency in the game - a previously-planned universal "DragonCoin" currency remains a non-spendable, non-earnable unit reserved for a future cross-server exchange rate (docs/market.md).
 
-Server managers can set up a fee to use their server's infrastructure using their server's own currency. The default fee is 0.01 for the furnace, 0.25 for the factory, 5.00 per press-day for the press and 0.10 for the scrapper. The fee is charged up front when a job is queued, not when it completes.
+Server managers can set up a fee to use their server's infrastructure using their server's own currency. The default fee is 0.01 for the furnace, 1.00 per batch for the blast furnace (the same 0.01 an item), 0.25 for the factory, 5.00 per press-day for the press and 0.10 for the scrapper. The fee is charged up front when a job is queued, not when it completes.
 
-/setup fee <furnace / factory / press / scrapper> <amount per item>
+/setup fee <furnace / blast furnace / factory / press / scrapper> <amount per item>
 
 If a server collects 5.00 of the server's currency in fees, then the respective furnace / factory will upgrade from level 1 to level 2. The same thing will happen upon reaching 25.00 in fees, but instead from level 2 to level 3.
+
+Every fee also counts a second time, toward mining slots (see Mining Slots above). That ladder reads the SUM of all five machines' fees rather than any one machine's, so the same 25.00 that takes one machine to level 3 is also what buys the server's first extra drill slot. Nothing is deducted twice - both are high-water marks on totals that only grow.
 
 Players can also pay into a machine directly with /donate infrastructure <machine> <amount>. It goes into the same fees_collected pot the machine's own fees do and levels it the same way - a machine's level is meant to say how much the server has put into it, and money is money, so splitting donations into a separate fund would only produce a server that had "donated 500" next to a level 1 furnace. Donated currency is burned exactly as a fee is (docs/market.md section 1).
 

@@ -15,9 +15,12 @@ import unittest
 from pathlib import Path
 
 from database.db import Database
+from cogs.mining import unlock_footer
 from data.materials import (
     DEFAULT_MINING_FOCUS,
     GEMSTONES,
+    MINING_EFFICIENCY_UNLOCK_COST,
+    MINING_FOCUS_UNLOCK_COST,
     MINING_POOL_BAG_SIZE,
     MINING_FOCUSES,
     ORES,
@@ -29,6 +32,7 @@ from data.materials import (
     pool_bag_contents,
 )
 from utils.db_helpers import ensure_server_row, ensure_user_row, get_user_quantity
+from utils.embeds import FOOTER_TEXT
 from utils.drills import add_drill_contents, take_drill_contents
 from utils.mining_focus import convert_haul, get_focus, set_focus
 from utils.mining_pool import pool_contents, pool_display_lines, refill_pool, take_from_pool
@@ -539,6 +543,48 @@ class FocusMenuTests(MiningDatabaseTestCase):
         marked = [f.name for f in embed.fields if "(selected)" in f.name]
         self.assertEqual(len(marked), 1)
         self.assertIn(MINING_FOCUSES[DEFAULT_MINING_FOCUS]["name"], marked[0])
+
+
+class UnlockFooterTests(unittest.TestCase):
+    """The footer a just-unlocked /focus or /efficiency embed carries.
+
+    Footer text renders no emoji at all (docs/stylization.md), which is
+    stricter than anywhere else these two commands write - every other mention
+    of the unlock cost in cogs/mining.py shows the gem's icon. So the footer
+    names the gem instead, and these pin both halves of that: no emoji, and the
+    gem still identified."""
+
+    COSTS = {
+        "focus": MINING_FOCUS_UNLOCK_COST,
+        "efficiency": MINING_EFFICIENCY_UNLOCK_COST,
+    }
+
+    def test_no_footer_carries_an_emoji(self):
+        # The separator in the standard footer is the only non-ASCII character
+        # a footer is allowed - anything else here is a glyph that will not
+        # render, and a custom <:Name:ID> arrives as its own literal markup.
+        for label, cost in self.COSTS.items():
+            with self.subTest(label):
+                footer = unlock_footer(cost)
+                self.assertEqual({c for c in footer if not c.isascii()}, {"·"})
+                self.assertNotIn("<:", footer)
+
+    def test_each_footer_names_the_gemstone_it_cost(self):
+        # Dropping the emoji must not drop the fact. Which gem it took is the
+        # only thing the line is for.
+        for label, cost in self.COSTS.items():
+            with self.subTest(label):
+                footer = unlock_footer(cost)
+                for material_id, quantity in cost.items():
+                    self.assertIn(material_id, GEMSTONES)
+                    self.assertIn(
+                        f"{quantity} {RAW_MATERIALS[material_id]['name']}", footer
+                    )
+
+    def test_it_extends_the_standard_footer_rather_than_replacing_it(self):
+        for label, cost in self.COSTS.items():
+            with self.subTest(label):
+                self.assertTrue(unlock_footer(cost).startswith(FOOTER_TEXT))
 
 
 class FocusDataTests(unittest.TestCase):

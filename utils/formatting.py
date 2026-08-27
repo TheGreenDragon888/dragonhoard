@@ -9,15 +9,6 @@ from datetime import datetime, timedelta, timezone
 
 DEFAULT_CURRENCY_EMOJI = "💰"
 
-# (threshold, suffix) pairs for format_compact_price, ascending order.
-_COMPACT_TIERS = [
-    (1, ""),
-    (1_000, "K"),
-    (1_000_000, "M"),
-    (1_000_000_000, "B"),
-    (1_000_000_000_000, "T"),
-]
-
 
 def format_price(amount: float, round_up: bool = False) -> str:
     """The bare numeric text (no currency emoji) for a price, rounded to the
@@ -26,12 +17,13 @@ def format_price(amount: float, round_up: bool = False) -> str:
     charged, so the displayed price is never less than what's taken). This
     only affects what's shown - the underlying balance keeps its full
     floating-point precision in the database. Nonzero amounts that would
-    display as 0.00 (market prices are often worth fractions of a cent)
-    extend to 4 decimals instead. The 1e-9 nudge guards against float
-    imprecision landing an exact cent just on the wrong side of the
-    floor/ceiling (0.29 * 100 == 28.999999999999996, which would otherwise
-    floor to 0.28), and flips sign with the rounding direction so it never
-    over-corrects a value that's already exact."""
+    display as 0.00 extend to 4 decimals instead: market prices are whole
+    cents as of 1.3, but a server can set any fee it likes with /setup fee,
+    and a sub-cent one shown as 0.00 would read as free. The 1e-9 nudge
+    guards against float imprecision landing an exact cent just on the wrong
+    side of the floor/ceiling (0.29 * 100 == 28.999999999999996, which would
+    otherwise floor to 0.28), and flips sign with the rounding direction so
+    it never over-corrects a value that's already exact."""
     if round_up:
         rounded_cents = math.ceil(amount * 100 - 1e-9) / 100
     else:
@@ -86,41 +78,3 @@ def format_relative_timestamp(hours: float) -> str:
     format_duration instead."""
     ready_at = datetime.now(timezone.utc) + timedelta(hours=max(0.0, hours))
     return f"<t:{int(ready_at.timestamp())}:R>"
-
-
-def _format_compact_tier(magnitude: float, threshold: float, suffix: str) -> str | None:
-    """Formats magnitude at one specific tier, or returns None if rounding
-    pushes it past 3 integer digits (e.g. 999.996 -> "1000.0") - the caller
-    then retries at the next tier up, which has room."""
-    scaled = magnitude / threshold
-    digit_budget = 5 - len(suffix)
-    for int_digits in (1, 2, 3):
-        decimals = digit_budget - int_digits
-        rounded = round(scaled, decimals)
-        if rounded < 10 ** int_digits:
-            return f"{rounded:.{decimals}f}{suffix}"
-    return None
-
-
-def format_compact_price(value: float) -> str:
-    """A fixed 5-character-wide compact numeric string (digits plus an
-    optional metric suffix, not counting the decimal point), so prices of
-    any magnitude take up the same on-screen width and line up in embed
-    text without a code block (which would stop custom material emoji from
-    rendering): 0.0000 / 00.000 / 000.00 below 1000, then the same
-    three-step digit-count pattern repeats with a K/M/B/T suffix eating one
-    digit slot per tier above it - 0.000K / 00.00K / 000.0K / 0.000M / ..."""
-    magnitude = abs(value)
-    tier_index = 0
-    for i, (threshold, _) in enumerate(_COMPACT_TIERS):
-        if magnitude >= threshold:
-            tier_index = i
-    for threshold, suffix in _COMPACT_TIERS[tier_index:]:
-        text = _format_compact_tier(magnitude, threshold, suffix)
-        if text is not None:
-            return f"-{text}" if value < 0 else text
-    # Larger than even the biggest suffix tier can express within 5 digits -
-    # let the integer part grow past 3 digits rather than lose precision.
-    threshold, suffix = _COMPACT_TIERS[-1]
-    text = f"{magnitude / threshold:.0f}{suffix}"
-    return f"-{text}" if value < 0 else text

@@ -19,6 +19,7 @@ from data.materials import (
     STORAGE_CONTAINERS,
     UPGRADE_MATERIALS,
     SCRAP_RETURN_RATE,
+    drill_scrap_yield,
     raw_input_cost,
     scrap_yield,
     scrapper_rate,
@@ -66,9 +67,12 @@ class ScrapYieldInvariantTests(unittest.TestCase):
 
 
 class ScrapYieldShapeTests(unittest.TestCase):
-    def test_a_drill_returns_exactly_one_component(self):
-        # Every drill's recipe is one of each of three parts, so the only whole
-        # thing half of it can be is a single part - the most valuable one.
+    def test_scrap_yield_alone_gives_a_drill_exactly_one_component(self):
+        # Pins scrap_yield's own generic behavior, not what /scrapper drill
+        # actually pays out any more (see DrillScrapYieldTests below, and
+        # drill_scrap_yield's docstring for why that differs). Every drill's
+        # recipe is one of each of three parts, so the only whole thing half
+        # of it can be is a single part - the most valuable one.
         for drill_id in DRILLS:
             with self.subTest(drill=drill_id):
                 yields = scrap_yield(drill_id)
@@ -102,21 +106,76 @@ class ScrapYieldShapeTests(unittest.TestCase):
                 self.assertAlmostEqual(back / raw_input_cost(material_id), SCRAP_RETURN_RATE, delta=0.05)
 
     def test_scrapping_chains_down_to_raw_materials(self):
-        # An Iron Drill has to be scrappable all the way to ore, one tier at a
-        # time, or the "chain it as far as you need" promise is empty.
+        # An Iron Drill has to be scrappable all the way to ore. The first hop
+        # is drill_scrap_yield - what /scrapper drill actually pays out -
+        # and everything after that is plain scrap_yield, one tier at a time.
         seen = set()
-        frontier = ["iron_drill"]
+        frontier = list(drill_scrap_yield("iron_drill"))
         while frontier:
             material_id = frontier.pop()
             if material_id in seen:
                 continue
             seen.add(material_id)
             frontier.extend(scrap_yield(material_id))
-        self.assertIn("drill_chassis", seen)
+        self.assertIn("iron_drill_bit", seen)
         self.assertIn("iron", seen)
         self.assertIn("iron_ore", seen)
+        # drill_scrap_yield skips the component tier entirely (see its
+        # docstring), so a chassis or wiring never appears in the chain.
+        self.assertNotIn("drill_chassis", seen)
+        self.assertNotIn("wiring", seen)
         # And it terminates: ore has no recipe, so the walk above can't loop.
         self.assertEqual(scrap_yield("iron_ore"), {})
+
+
+class DrillScrapYieldTests(unittest.TestCase):
+    """What /scrapper drill actually pays out, via drill_scrap_yield rather
+    than plain scrap_yield (see ScrapYieldShapeTests for the generic
+    behavior this replaces for drills specifically)."""
+
+    def test_it_never_returns_a_whole_wiring_or_chassis(self):
+        # The whole point: a component that slots straight into another
+        # drill's recipe must never come back intact.
+        for drill_id in DRILLS:
+            with self.subTest(drill=drill_id):
+                yields = drill_scrap_yield(drill_id)
+                self.assertNotIn("wiring", yields)
+                self.assertNotIn("drill_chassis", yields)
+
+    def test_it_returns_the_drills_own_bit_whole(self):
+        for drill_id, info in DRILLS.items():
+            bit_id = next(i for i in info["inputs"] if i not in ("wiring", "drill_chassis"))
+            with self.subTest(drill=drill_id):
+                self.assertEqual(drill_scrap_yield(drill_id)[bit_id], 1)
+
+    def test_it_matches_scrapping_the_wiring_and_chassis_separately(self):
+        # By construction: half of what the wiring and chassis were each made
+        # from, summed, rather than either of them handed back intact.
+        expected = dict(scrap_yield("wiring"))
+        for material_id, quantity in scrap_yield("drill_chassis").items():
+            expected[material_id] = expected.get(material_id, 0) + quantity
+        for drill_id, info in DRILLS.items():
+            bit_id = next(i for i in info["inputs"] if i not in ("wiring", "drill_chassis"))
+            with self.subTest(drill=drill_id):
+                yields = dict(drill_scrap_yield(drill_id))
+                del yields[bit_id]
+                self.assertEqual(yields, expected)
+
+    def test_it_never_exceeds_the_drills_recipe_in_value(self):
+        # Same safety property as scrap_yield's own invariant: a scrap must
+        # never be worth more than what was originally spent.
+        for drill_id in DRILLS:
+            with self.subTest(drill=drill_id):
+                back = sum(raw_input_cost(m) * q for m, q in drill_scrap_yield(drill_id).items())
+                self.assertLessEqual(back, raw_input_cost(drill_id) + 1e-9)
+
+    def test_it_returns_strictly_more_than_the_single_guaranteed_component(self):
+        # The value increase this exists for - both call sites in
+        # cogs/scrapper.py use this instead of scrap_yield(drill_id) so a
+        # scrapped drill is worth more than the one part it used to be.
+        for drill_id in DRILLS:
+            with self.subTest(drill=drill_id):
+                self.assertGreater(len(drill_scrap_yield(drill_id)), len(scrap_yield(drill_id)))
 
 
 class ScrappableListTests(unittest.TestCase):

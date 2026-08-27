@@ -22,7 +22,13 @@ import logging
 import discord
 
 from database.db import Database
-from utils.notifications import fetch_unseen, mark_seen, notice_embed
+from utils.notifications import (
+    fetch_unseen,
+    fetch_unseen_personal,
+    mark_personal_seen,
+    mark_seen,
+    notice_embed,
+)
 
 log = logging.getLogger("dragonhoard")
 
@@ -60,9 +66,14 @@ async def respond(interaction: discord.Interaction, db: Database, **kwargs):
         )
         public = bool(cfg["public_messages"]) if cfg else False
 
+    # Broadcasts first, then anything personal. Broadest to narrowest, matching
+    # the order fetch_unseen already puts global ahead of server in - and it
+    # puts "something happened to YOU" closest to the reply the player asked
+    # for, which is the notice most likely to be worth acting on.
     notices = await fetch_unseen(db, interaction.user.id, interaction.guild_id)
-    if notices:
-        _merge_embeds(kwargs, [notice_embed(row) for row in notices])
+    personal = await fetch_unseen_personal(db, interaction.user.id)
+    if notices or personal:
+        _merge_embeds(kwargs, [notice_embed(row) for row in (*notices, *personal)])
 
     await interaction.response.send_message(ephemeral=not public, **kwargs)
 
@@ -72,3 +83,5 @@ async def respond(interaction: discord.Interaction, db: Database, **kwargs):
     # one, which is what marking beforehand would risk.
     if notices:
         await mark_seen(db, interaction.user.id, notices)
+    if personal:
+        await mark_personal_seen(db, interaction.user.id, personal)

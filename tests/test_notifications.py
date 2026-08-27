@@ -2,9 +2,13 @@
 Tests for the notification system against a real database.
 
 The rules worth pinning are the ones a player would notice going wrong: a
-notice is shown once and not again, only the NEWEST of each feed is shown, the
-global feed is per-user while the server feed is per-user-per-guild, and seeding
-the same release twice doesn't re-announce anything.
+notice is shown once and not again, only the NEWEST of each BROADCAST feed is
+shown, the global feed is per-user while the server feed is per-user-per-guild,
+and seeding the same release twice doesn't re-announce anything.
+
+Personal notices are the deliberate exception to the newest-only rule and are
+tested for it below: they belong to one player, so none of them is superseded
+by a later one and all of them are shown.
 """
 import tempfile
 import unittest
@@ -13,14 +17,24 @@ from pathlib import Path
 import discord
 
 from database.db import Database
-from data.notifications import GLOBAL_NOTICES, GlobalNotice
+from data.materials import MINING_EFFICIENCY_UNLOCK_COST, MINING_FOCUS_UNLOCK_COST
+from data.notifications import GEM_UNLOCK_NOTICES, GLOBAL_NOTICES, GlobalNotice
+from utils.db_helpers import (
+    adjust_user_quantity,
+    announce_first_gem,
+    deduct_user_quantity,
+    ensure_user_row,
+)
 from utils.responses import _merge_embeds
 from utils.notifications import (
     GLOBAL_FEED_ID,
     fetch_unseen,
+    fetch_unseen_personal,
+    mark_personal_seen,
     mark_seen,
     notice_embed,
     post_server_notification,
+    post_user_notification,
     seed_global_notices,
 )
 
@@ -214,6 +228,143 @@ class ShippedNoticeTests(unittest.TestCase):
             self.assertLessEqual(len(notice.title), 256, notice.key)
 
 
+class PersonalNoticeTests(NotificationTestCase):
+    """Notices raised for one player. The gem hints are the only thing that
+    raises one today, and they arrive through adjust_user_quantity rather than
+    from a command, which is what these go through the funnel to check."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await ensure_user_row(self.db, USER)
+        await ensure_user_row(self.db, OTHER_USER)
+
+    async def personal(self, user_id=USER):
+        return [row["notice_key"] for row in await fetch_unseen_personal(self.db, user_id)]
+
+    async def test_a_first_gem_raises_its_notice(self):
+        await adjust_user_quantity(self.db, USER, "ruby", 1)
+        self.assertEqual(await self.personal(), [GEM_UNLOCK_NOTICES["ruby"].key])
+
+    async def test_an_ordinary_material_raises_nothing(self):
+        # The hot path: every /collect credits ore, and none of it announces.
+        for material_id in ("iron_ore", "coal", "steel", "iron_drill_bit"):
+            await adjust_user_quantity(self.db, USER, material_id, 50)
+        self.assertEqual(await self.personal(), [])
+
+    async def test_a_diamond_raises_nothing(self):
+        # The third gemstone unlocks no command, so there is nothing to tell
+        # anyone. This is the guard on "gemstone" being the trigger rather than
+        # "the two gems that open something".
+        await adjust_user_quantity(self.db, USER, "diamond", 1)
+        self.assertEqual(await self.personal(), [])
+
+    async def test_the_second_gem_of_a_kind_says_nothing(self):
+        await adjust_user_quantity(self.db, USER, "ruby", 1)
+        await mark_personal_seen(self.db, USER, await fetch_unseen_personal(self.db, USER))
+        for _ in range(3):
+            await adjust_user_quantity(self.db, USER, "ruby", 5)
+        self.assertEqual(await self.personal(), [])
+
+    async def test_spending_the_gem_and_finding_another_says_nothing(self):
+        """The reason "first" is the notice row and not a 0 -> 1 transition in
+        the inventory. Spending the ruby on /focus is the NORMAL thing to do
+        with it, and mining another afterwards is common - re-explaining the
+        command to somebody already using it is the failure this avoids."""
+        await adjust_user_quantity(self.db, USER, "ruby", 1)
+        await mark_personal_seen(self.db, USER, await fetch_unseen_personal(self.db, USER))
+        await deduct_user_quantity(self.db, USER, "ruby", 1)
+        await adjust_user_quantity(self.db, USER, "ruby", 1)
+        self.assertEqual(await self.personal(), [])
+
+    async def test_taking_a_gem_away_raises_nothing(self):
+        # Nothing calls adjust_user_quantity with a negative delta today, but
+        # "you found your first ruby" fired by losing one would be a strange
+        # way to hear about it.
+        await adjust_user_quantity(self.db, USER, "ruby", -1)
+        self.assertEqual(await self.personal(), [])
+
+    async def test_both_gems_are_shown_rather_than_the_newest_only(self):
+        """The rule personal notices deliberately break. A broadcast feed shows
+        only its newest, because an announcement supersedes the one before it;
+        two things that happened to YOU are two separate things to be told."""
+        await adjust_user_quantity(self.db, USER, "ruby", 1)
+        await adjust_user_quantity(self.db, USER, "obsidian", 1)
+        self.assertEqual(
+            await self.personal(),
+            [GEM_UNLOCK_NOTICES["ruby"].key, GEM_UNLOCK_NOTICES["obsidian"].key],
+        )
+
+    async def test_one_players_gem_is_their_own(self):
+        await adjust_user_quantity(self.db, USER, "ruby", 1)
+        self.assertEqual(await self.personal(OTHER_USER), [])
+
+    async def test_a_notice_is_shown_once_and_not_again(self):
+        await adjust_user_quantity(self.db, USER, "ruby", 1)
+        rows = await fetch_unseen_personal(self.db, USER)
+        await mark_personal_seen(self.db, USER, rows)
+        self.assertEqual(await self.personal(), [])
+
+    async def test_marking_it_seen_keeps_the_row_as_the_dedupe_record(self):
+        # Seen rows are never deleted - the row IS the record that this player
+        # has been told, so removing it would re-notify them on the next gem.
+        await adjust_user_quantity(self.db, USER, "ruby", 1)
+        await mark_personal_seen(self.db, USER, await fetch_unseen_personal(self.db, USER))
+        row = await self.db.fetchone(
+            "SELECT seen_at FROM user_notifications WHERE user_id = ?", (USER,)
+        )
+        self.assertIsNotNone(row)
+        self.assertIsNotNone(row["seen_at"])
+
+    async def test_posting_reports_whether_it_was_new(self):
+        self.assertTrue(await post_user_notification(self.db, USER, "k", "T", "B"))
+        self.assertFalse(await post_user_notification(self.db, USER, "k", "T", "B"))
+
+    async def test_announce_first_gem_reports_the_same(self):
+        self.assertTrue(await announce_first_gem(self.db, USER, "ruby"))
+        self.assertFalse(await announce_first_gem(self.db, USER, "ruby"))
+        self.assertFalse(await announce_first_gem(self.db, USER, "iron_ore"))
+
+
+class GemUnlockNoticeTests(unittest.TestCase):
+    """The two hints as data. Their wording is meant to be edited freely - what
+    these check is the handful of things the rest of the system relies on."""
+
+    def test_they_cover_exactly_the_gems_that_unlock_a_command(self):
+        self.assertEqual(set(GEM_UNLOCK_NOTICES), {"ruby", "obsidian"})
+
+    def test_keys_are_unique(self):
+        # Two notices sharing a key means the second never fires: the primary
+        # key on user_notifications is (user_id, notice_key), so posting it is
+        # a no-op for anyone who already has the first.
+        keys = [n.key for n in GEM_UNLOCK_NOTICES.values()]
+        self.assertEqual(len(keys), len(set(keys)))
+
+    def test_no_key_collides_with_a_shipped_announcement(self):
+        # Different tables, so this could not actually break anything - but a
+        # key meaning two things in two places is how it starts.
+        self.assertFalse(
+            {n.key for n in GEM_UNLOCK_NOTICES.values()} & {n.key for n in GLOBAL_NOTICES}
+        )
+
+    def test_each_names_the_command_it_is_about(self):
+        # The entire point of the notice. Everything else in it is flavour.
+        self.assertIn("/focus", GEM_UNLOCK_NOTICES["ruby"].body)
+        self.assertIn("/efficiency", GEM_UNLOCK_NOTICES["obsidian"].body)
+
+    def test_each_still_costs_the_one_gem_the_text_promises(self):
+        # The bodies say the unlock is paid once, in the singular. If either
+        # cost stops being a single gem of that type, the wording is wrong.
+        self.assertEqual(MINING_FOCUS_UNLOCK_COST, {"ruby": 1})
+        self.assertEqual(MINING_EFFICIENCY_UNLOCK_COST, {"obsidian": 1})
+
+    def test_they_fit_an_embed(self):
+        for notice in GEM_UNLOCK_NOTICES.values():
+            self.assertTrue(notice.title, notice.key)
+            self.assertTrue(notice.body, notice.key)
+            self.assertLessEqual(len(notice.body), 4096, notice.key)
+            self.assertLessEqual(len(notice.title), 256, notice.key)
+
+
 class MergeEmbedsTests(unittest.TestCase):
     """Folding notices onto a reply that may already carry an embed.
 
@@ -251,12 +402,19 @@ class MergeEmbedsTests(unittest.TestCase):
 
 
 class NoticeEmbedTests(NotificationTestCase):
-    async def test_the_two_feeds_render_in_different_colors(self):
+    async def test_every_kind_of_notice_renders_in_its_own_color(self):
+        """All three can land in one message (utils/responses.py merges them
+        onto the reply), so they have to be distinguishable from each other,
+        not merely from the reply."""
+        await ensure_user_row(self.db, USER)
         await self.add_global("a", title="global")
         await post_server_notification(self.db, GUILD, "server", "Body")
-        embeds = [notice_embed(row) for row in await self.unseen()]
-        self.assertEqual(len(embeds), 2)
-        self.assertNotEqual(embeds[0].color, embeds[1].color)
+        await adjust_user_quantity(self.db, USER, "ruby", 1)
+        rows = [*await self.unseen(), *await fetch_unseen_personal(self.db, USER)]
+        embeds = [notice_embed(row) for row in rows]
+        self.assertEqual(len(embeds), 3)
+        self.assertEqual(len({e.color for e in embeds}), 3)
+        self.assertEqual(len({e.author.name for e in embeds}), 3)
 
     async def test_the_embed_carries_the_notice_text(self):
         await self.add_global("a", title="Heads up", body="Something happened.")

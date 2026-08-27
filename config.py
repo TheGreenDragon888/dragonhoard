@@ -19,13 +19,18 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/dragonhoard.db")
 
 # Shown in every embed's footer (see utils/embeds.py and docs/stylization.md).
-VERSION = "1.2.2"
+VERSION = "1.3"
 
 # Per-item infrastructure fees a server starts with (docs/mining.txt).
 # Server managers can change them with /setup fee. Also mirrored in the
 # server_config column DEFAULTs in database/schema.sql, which SQL can't
 # read from here - keep the two in sync.
 DEFAULT_FURNACE_FEE = 0.01
+# The blast furnace charges per BATCH, and a batch is
+# data.materials.BLAST_FURNACE_BATCH_SIZE items, so this is the furnace's fee
+# times that batch size. Bulk smelting is meant to be faster, not cheaper: a
+# smelted unit costs the same 0.01 in fees whichever machine produced it.
+DEFAULT_BLAST_FURNACE_FEE = 1.00
 DEFAULT_FACTORY_FEE = 0.25
 # Charged per ruby-equivalent of press time, so a recipe pays this multiplied
 # by its press_days - a diamond costs nine times a ruby. Far above the other

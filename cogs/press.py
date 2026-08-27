@@ -43,7 +43,7 @@ from utils.formatting import format_currency
 from utils.receipts import build_receipt_embed
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
-    apply_machine_upgrades,
+    bank_infrastructure_fee,
     ensure_server_row,
     get_user_quantity,
     adjust_user_quantity,
@@ -160,11 +160,9 @@ class PressCog(commands.Cog):
 
                 if fee_total > 0:
                     await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await tx.execute(
-                        "UPDATE server_config SET press_fees_collected = press_fees_collected + ? WHERE guild_id = ?",
-                        (fee_total, interaction.guild_id),
+                    await bank_infrastructure_fee(
+                        tx, interaction.guild_id, "press", fee_total
                     )
-                    await apply_machine_upgrades(tx, interaction.guild_id, "press")
 
                 # Press-days already spoken for by the jobs in front of this
                 # one. Recipes cost wildly different amounts of press time, so

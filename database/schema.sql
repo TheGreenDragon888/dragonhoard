@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS user_materials (
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
--- Per-server settings: the server's custom currency name/emoji, furnace/
--- factory levels, and its shared raw-material mining pool.
+-- Per-server settings: the server's custom currency name/emoji, machine
+-- levels, and its shared raw-material mining pool.
 CREATE TABLE IF NOT EXISTS server_config (
     guild_id            INTEGER PRIMARY KEY,
     currency_name       TEXT,
@@ -38,6 +38,16 @@ CREATE TABLE IF NOT EXISTS server_config (
     factory_fees_collected REAL NOT NULL DEFAULT 0.0,
     furnace_max_queue   INTEGER NOT NULL DEFAULT 25,
     factory_max_queue   INTEGER NOT NULL DEFAULT 5,
+    -- The blast furnace: an auxiliary furnace that smelts in batches of 100
+    -- (data/materials.py: BLAST_FURNACE_BATCH_SIZE). Everything here is
+    -- counted in BATCHES, not items - the fee is charged per batch and the
+    -- queue cap is measured in them - so blast_furnace_fee's DEFAULT is the
+    -- furnace's fee times that batch size. Keep it in sync with
+    -- DEFAULT_BLAST_FURNACE_FEE in config.py.
+    blast_furnace_level          INTEGER NOT NULL DEFAULT 1,
+    blast_furnace_fee            REAL NOT NULL DEFAULT 1.0,
+    blast_furnace_fees_collected REAL NOT NULL DEFAULT 0.0,
+    blast_furnace_max_queue      INTEGER NOT NULL DEFAULT 5,
     -- The hydraulic press. press_fee is the fee for ONE ruby-equivalent of
     -- press time; a recipe pays it multiplied by its press_days, so a diamond
     -- costs nine times a ruby. Keep the DEFAULT in sync with
@@ -82,6 +92,14 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- by material and the two must agree. There is deliberately no daily top-up
     -- and no cap - the bag refills when it empties (utils/mining_pool.py).
     mining_pool_remaining    INTEGER NOT NULL DEFAULT 0,
+    -- The highest mining slot level this server has been TOLD about (see
+    -- utils/db_helpers.py: announce_mining_slot_unlocks). Not the level itself:
+    -- the cap is derived on read from the sum of every machine's
+    -- <machine>_fees_collected, so it is always current and needs no column.
+    -- This one exists purely so a server notice fires once per unlock rather
+    -- than on every fee paid afterwards. 1 is the level every server starts at,
+    -- so a fresh row has nothing outstanding to announce.
+    mining_slots_announced   INTEGER NOT NULL DEFAULT 1,
     -- Lifetime faucet/sink running totals for this server's currency, per
     -- docs/market.md section 4. Minted by the market buying materials from
     -- users and by the daily job board's bonus; burned by every machine's
@@ -118,9 +136,10 @@ CREATE TABLE IF NOT EXISTS server_material_storage (
 -- thing to keep running.
 --
 -- quantity and reward are frozen at posting time rather than recomputed on
--- read, because both derive from member count: without that, someone joining
--- halfway through the day would move the goalposts on a player already partway
--- through the task.
+-- read, so the task somebody is partway through stays the task they started
+-- even across a balance retune. Since 1.3 neither derives from the server's
+-- stock or size at all: quantity is a constant of the material and reward is a
+-- flat JOB_BOARD_TARGET_PAYOUT per completion.
 CREATE TABLE IF NOT EXISTS daily_jobs (
     guild_id        INTEGER NOT NULL,
     -- ISO date on the board's OWN clock (midnight America/Phoenix) - see
@@ -128,24 +147,29 @@ CREATE TABLE IF NOT EXISTS daily_jobs (
     -- load-bearing.
     job_date        TEXT NOT NULL,
     material_id     TEXT NOT NULL,
-    -- Both frozen at posting time. They derive from the server's stock of the
-    -- material, which the day's own selling moves constantly, so recomputing
-    -- either on read would grow the task under someone partway through it.
-    quantity        INTEGER NOT NULL,   -- fewest units paying JOB_BOARD_TARGET_PAYOUT, capped
-    reward          REAL NOT NULL,      -- data/materials.py: job_reward
+    -- Both frozen at posting time (see above).
+    quantity        INTEGER NOT NULL,   -- units per completion: data/materials.py: job_quantity
+    reward          REAL NOT NULL,      -- paid PER completion: JOB_BOARD_TARGET_PAYOUT
     posted_at       TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (guild_id, job_date)
 );
 
 -- One row per user who has sold ANY of the day's material, so progress
--- accumulates across as many /market sell calls as it takes. claimed_at is the
--- once-per-user guard: the payout UPDATE carries "claimed_at IS NULL" in its
--- WHERE clause, so two sells racing can't both pay the reward out.
+-- accumulates across as many /market sell calls as it takes.
+--
+-- claims_paid is how many completions have already been paid for. Since 1.3
+-- the bonus is paid per completion rather than once a day, so this is the
+-- running count rather than the boolean it replaced: a payout is worth
+-- sold/quantity - claims_paid completions, and banking that difference in the
+-- same statement is what makes each completion pay exactly once.
 CREATE TABLE IF NOT EXISTS daily_job_progress (
     guild_id        INTEGER NOT NULL,
     job_date        TEXT NOT NULL,
     user_id         INTEGER NOT NULL,
     sold            INTEGER NOT NULL DEFAULT 0,
+    claims_paid     INTEGER NOT NULL DEFAULT 0,
+    -- When the most recent completion was paid. Kept as a record of when
+    -- someone last finished a task; claims_paid is what the payout reads.
     claimed_at      TEXT,
     PRIMARY KEY (guild_id, job_date, user_id)
 );
@@ -194,6 +218,44 @@ CREATE TABLE IF NOT EXISTS notification_reads (
     last_seen_id    INTEGER NOT NULL,
     PRIMARY KEY (user_id, guild_id)
 );
+
+-- Personal one-off notices: something that happened to ONE player, shown to
+-- them once, the next time they use the bot. The first gemstone of a kind
+-- somebody mines or presses is the only thing that raises one so far - it
+-- unlocks a command they have no other reason to know exists
+-- (data/notifications.py: GEM_UNLOCK_NOTICES).
+--
+-- Deliberately its own table rather than a third scope on `notifications`.
+-- The two scopes there are BROADCASTS with a per-feed watermark: everyone gets
+-- the same row, only the newest is shown, and notification_reads stores how far
+-- through the feed each reader is. A personal notice is not a broadcast - the
+-- row belongs to one player - so its read state belongs on the row itself, and
+-- nothing about it should be skipped for being superseded. A player who earns a
+-- ruby and an obsidian before next running a command has two things to be told,
+-- not one.
+--
+-- notice_key is what makes raising one idempotent: it is part of the primary
+-- key, so the INSERT OR IGNORE that posts "your first ruby" is a no-op on every
+-- ruby after it, and the row itself is the record that this player has been
+-- told. That is the same job notifications.notice_key does for a shipped
+-- announcement, and it means no separate "have they been told yet" column has
+-- to be kept in step with anything.
+CREATE TABLE IF NOT EXISTS user_notifications (
+    user_id     INTEGER NOT NULL,
+    notice_key  TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    -- NULL until the player has actually been shown it. Set after the reply
+    -- sends, not before - see utils/notifications.py on at-least-once.
+    seen_at     TEXT,
+    PRIMARY KEY (user_id, notice_key)
+);
+-- Partial index: every read of this table asks for one player's UNSEEN notices,
+-- and the seen rows are kept forever as the dedupe record, so they would
+-- otherwise grow the thing the hot path scans.
+CREATE INDEX IF NOT EXISTS idx_user_notifications_unseen
+    ON user_notifications(user_id) WHERE seen_at IS NULL;
 
 -- One row per drill for that drill's entire lifetime. A drill is never a
 -- fungible stack in user_materials, because its level and attached container
@@ -295,14 +357,54 @@ CREATE TABLE IF NOT EXISTS user_mining_focus (
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
--- A queued furnace (smelting), factory (crafting), press or scrapper job for a
--- user in a guild. target_id is the material_id being produced or broken down
--- (e.g. "iron", "wiring", "ruby"), or one of the two drill sentinels below.
+-- A player's mining efficiency: which SMELTED material their haul is boosted
+-- and re-proportioned for (data/materials.py: apply_mining_efficiency).
+-- Separate from user_mining_focus in every sense - a player may have either,
+-- both or neither, and the two features multiply. See docs/mining-efficiency.md.
+--
+-- As with the focus, THE ROW IS THE UNLOCK: no row means the obsidian has
+-- never been paid and the player is on DEFAULT_MINING_EFFICIENCY.
+CREATE TABLE IF NOT EXISTS user_mining_efficiency (
+    user_id         INTEGER PRIMARY KEY,
+    efficiency_id   TEXT NOT NULL,
+    -- ISO date of the last change, on the job board's Arizona clock, same
+    -- once-a-day rule the focus has. Empty string means never changed.
+    last_changed    TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+-- The rounding remainders an efficiency owes, ONE PER MATERIAL rather than the
+-- single float user_mining_focus keeps.
+--
+-- A focus has exactly one primary ore, so every fraction it owes is a fraction
+-- of the same material and one column covers it. An efficiency's correction
+-- produces fractions on both sides at once, and which materials those are
+-- depends on the player's focus - so a single shared carry would pay a
+-- fraction of a coal out as iron ore the first time the direction flipped.
+--
+-- Cleared wholesale when efficiency_id changes, for the same reason
+-- user_mining_focus.carry is.
+CREATE TABLE IF NOT EXISTS user_mining_efficiency_carry (
+    user_id         INTEGER NOT NULL,
+    material_id     TEXT NOT NULL,
+    carry           REAL NOT NULL DEFAULT 0.0,
+    PRIMARY KEY (user_id, material_id),
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
+-- A queued furnace (smelting), blast furnace (bulk smelting), factory
+-- (crafting), press or scrapper job for a user in a guild. target_id is the
+-- material_id being produced or broken down (e.g. "iron", "wiring", "ruby"),
+-- or one of the two drill sentinels below.
+--
+-- quantity is counted in whatever unit the machine charges and drains in,
+-- which for a 'blast_furnace' row is BATCHES of BLAST_FURNACE_BATCH_SIZE
+-- items rather than single items.
 CREATE TABLE IF NOT EXISTS production_jobs (
     job_id          INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id        INTEGER NOT NULL,
     user_id         INTEGER NOT NULL,
-    job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'factory', 'press', 'scrapper')),
+    job_type        TEXT NOT NULL CHECK (job_type IN ('furnace', 'blast_furnace', 'factory', 'press', 'scrapper')),
     target_id       TEXT NOT NULL,
     quantity        INTEGER NOT NULL,
     queued_at       TEXT NOT NULL DEFAULT (datetime('now')),
