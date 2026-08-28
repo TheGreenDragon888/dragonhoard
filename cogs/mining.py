@@ -122,6 +122,14 @@ COLLECT_HERE_SQL = (
     "SELECT * FROM drills WHERE guild_id = ? AND owner_id = ? AND stored_amount > 0"
 )
 
+# /mine status groups "Your Drills" by material, best first - the reverse of
+# DRILLS' own iron-to-diamond declaration order, which follows the crafting
+# ladder rather than what a player wants to see at the top of their list.
+DRILL_STATUS_ORDER = {
+    drill_type: rank
+    for rank, drill_type in enumerate(reversed(DRILLS))
+}
+
 
 def unlock_footer(cost: dict[str, int]) -> str:
     """The footer on a just-unlocked Mining Focus or Mining Efficiency embed,
@@ -470,7 +478,14 @@ class MiningCog(commands.Cog):
         else:
             # Same compact prefix /inventory uses, plus the two things that only
             # mean anything for a drill that's actually in the ground: how full
-            # it is, and whether it's still working.
+            # it is, and whether it's still working. Grouped by drill material,
+            # best first (diamond down to iron), and within a material the
+            # most-leveled drill leads - the two things a player actually
+            # scans this list for.
+            drills = sorted(
+                drills,
+                key=lambda d: (DRILL_STATUS_ORDER[d["drill_type"]], -d["level"]),
+            )
             lines = []
             for d in drills:
                 status = "FULL - awaiting /collect" if d["is_full"] else f"mining {rate_of(d):g}/hr"
@@ -509,7 +524,13 @@ class MiningCog(commands.Cog):
                 counts[d["drill_type"]] = counts.get(d["drill_type"], 0) + 1
             # Same "{emoji} {count}" cell /inventory uses for stacked
             # materials, one per drill type rather than one line per type.
-            cells = [f"{DRILLS[drill_type]['emoji']} {count}" for drill_type, count in counts.items()]
+            # Fastest to slowest, same ordering as "Your Drills" above.
+            cells = [
+                f"{DRILLS[drill_type]['emoji']} {count}"
+                for drill_type, count in sorted(
+                    counts.items(), key=lambda item: DRILL_STATUS_ORDER[item[0]]
+                )
+            ]
 
             embed.add_field(
                 name="Server Mining Speed",
@@ -839,29 +860,30 @@ class MiningCog(commands.Cog):
         server_count = len({guild_id for guild_id, _ in hauls})
 
         embed = make_embed("Collection Complete", MINING_COLOR)
-        embed.description = (
-            f"📦 Emptied **{total_collected:,}** raw materials from **{len(hauls)}** drill(s)"
-        )
+        description_lines = [f"📦 Emptied **{total_collected:,}** raw materials"]
+        drill_line = f"from **{len(hauls)}** drill(s)"
         if server_count > 1:
-            embed.description += f" across **{server_count}** servers"
+            drill_line += f" across **{server_count}** servers"
+        description_lines.append(drill_line)
 
         # A focus changes the item count as well as the mix - a coal focus
         # returns fewer, denser items and an iron focus more - so the haul and
         # what landed in the inventory are two different numbers and the embed
         # has to say which is which rather than quietly contradicting itself.
+        # `applied` lists every unlockable that moved the count, so a third
+        # raw-material-output modifier joins this line the same way focus and
+        # efficiency do rather than needing its own.
         received = sum(collected_breakdown.values())
         if received != total_collected:
-            # Either feature can move this number and a player may have both,
-            # so the line names the ones actually in play rather than blaming
-            # the focus for an efficiency's doubling.
             applied = []
             if focus_id != DEFAULT_MINING_FOCUS:
                 applied.append(f"**{focus_label(focus_id)}** focus")
             if efficiency_id != DEFAULT_MINING_EFFICIENCY:
                 applied.append(f"**{efficiency_label(efficiency_id)}** efficiency")
-            embed.description += (
-                f", which your {' and '.join(applied)} turned into **{received:,}**"
+            description_lines.append(
+                f"\nWhich your {'\nand '.join(applied)}\nturned into **{received:,}** raw materials"
             )
+        embed.description = "\n".join(description_lines)
 
         lines = material_breakdown_lines(collected_breakdown, totals)
         if lines:

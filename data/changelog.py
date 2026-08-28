@@ -55,6 +55,33 @@ def _add(version: ChangelogVersion):
 
 
 _add(ChangelogVersion(
+    version="1.3.1",
+    released="2026-08-28",
+    emoji="⛏️",
+    color=MINING_COLOR,
+    summary="Drills sorted by material in /mine status, and a cleaner /collect receipt",
+    headline=(
+        "A small readability patch: `/mine status` and `/collect` are easier to scan, "
+        "nothing about how mining works has changed."
+    ),
+    entries=(
+        ChangelogEntry(
+            "⛏️ Drills Sorted By Material",
+            "`/mine status` now lists **Your Drills**, and the drill-type breakdown under "
+            "**Server Mining Speed**, from Diamond down to Iron, and within a material the "
+            "highest-leveled drill leads - instead of whatever order they happened to be "
+            "placed in.",
+        ),
+        ChangelogEntry(
+            "📦 A Cleaner /collect Receipt",
+            "`/collect`'s summary now reads over a few short lines instead of one long "
+            "sentence, and leaves room for however many focus- or efficiency-style options "
+            "end up affecting your haul at once.",
+        ),
+    ),
+))
+
+_add(ChangelogVersion(
     version="1.3",
     released="2026-08-24",
     emoji="♨️",
