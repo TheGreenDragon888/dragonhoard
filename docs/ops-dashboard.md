@@ -31,9 +31,26 @@ venv-web/bin/uvicorn web.app:app --host 127.0.0.1 --port 8420
 
 Then open `http://127.0.0.1:8420/` in a browser. It only reads
 `dragonhoard.db` (opened with SQLite's own read-only mode, so it can't write
-even by accident) and never talks to Discord - `127.0.0.1` is deliberate,
-put it behind your own reverse proxy/auth if you want to reach it from
-somewhere else.
+even by accident) and never talks to Discord - `127.0.0.1` is deliberate:
+this dashboard has **no login of its own** (it was built for an audience of
+one - see `web/README.md`), so whatever can reach the port can see every
+server's balances and player names with nothing else standing in the way.
+
+## Reaching it from another machine
+
+Bind to a real interface instead of `127.0.0.1`. Prefer your Tailscale
+interface over the raw LAN - Tailscale's own auth is what's standing in for
+the login screen this dashboard doesn't have, whereas `0.0.0.0` hands the
+page to anything on the network (roommates, guests, IoT devices):
+
+```bash
+tailscale ip -4                                                # your tailnet IP
+venv/bin/uvicorn web.app:app --host <that-ip> --port 8420      # tailnet-only
+venv/bin/uvicorn web.app:app --host 0.0.0.0 --port 8420        # whole LAN - avoid unless you trust it
+```
+
+If `ufw` is enabled, scope the rule to the tailnet range rather than opening
+the port broadly: `sudo ufw allow from 100.64.0.0/10 to any port 8420`.
 
 ## Display names: `web/directory.json`
 
