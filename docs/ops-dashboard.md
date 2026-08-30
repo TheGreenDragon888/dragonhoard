@@ -102,24 +102,52 @@ deliberately built without:
 
 ## Running it permanently (systemd)
 
-Mirrors `dragonhoard.service` (see `docs/deployment.md`) - same user,
-adjacent `WorkingDirectory`:
+Beta's own working unit file lives at the repo root -
+`dragonhoard-beta-web.service` (mirrors `dragonhoard-beta.service`: runs as
+`isaac`, no dependency on the bot's own service since the dashboard only
+needs the `.db` file to exist). Install and enable it once, after `pip
+install -r requirements-web.txt` in this checkout's venv:
+
+```bash
+cp dragonhoard-beta-web.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now dragonhoard-beta-web
+```
+
+Production's counterpart is **not** shipped as a file here - `/opt/dragonhoard`
+is never edited directly (see its own `CLAUDE.md`), so this only ever gets
+created by hand there, the same way `dragonhoard.service` originally was.
+Once `web/` has been merged to `main` and pulled into `/opt/dragonhoard`
+(`update.sh`), and `venv/bin/pip install -r requirements-web.txt` has run
+there too:
 
 ```ini
 [Unit]
 Description=Dragonhoard Ops dashboard
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User=dragonbot
 WorkingDirectory=/opt/dragonhoard
-ExecStart=/opt/dragonhoard/venv/bin/uvicorn web.app:app --host 127.0.0.1 --port 8420
+# Same host as beta's - this is one machine, two checkouts - on the next
+# port up so the two don't collide.
+ExecStart=/opt/dragonhoard/venv/bin/uvicorn web.app:app --host 100.70.34.72 --port 8421
 Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+Save as `/etc/systemd/system/dragonhoard-web.service`, then
+`systemctl daemon-reload && systemctl enable --now dragonhoard-web` -
+deliberately not done as part of this change, since the branch it depends
+on hadn't been merged yet when this was written.
 
 Save as `/etc/systemd/system/dragonhoard-web.service`, then
 `systemctl daemon-reload && systemctl enable --now dragonhoard-web`.
