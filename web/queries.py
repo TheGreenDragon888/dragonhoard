@@ -162,6 +162,16 @@ def build_payload(
     ).fetchall()
     today = job_board_today()
 
+    # Resolve every name this request will need in one concurrent batch,
+    # before the per-row loops below call directory.*_name() one id at a
+    # time. Player ids are skipped when anonymizing - nothing downstream
+    # will use a real name in that mode, so there's no reason to fetch one.
+    directory.warm(
+        guild_ids=[cfg["guild_id"] for cfg in server_configs],
+        user_ids=None if anonymize else [u["user_id"] for u in all_users],
+        channel_ids=[cfg["bot_channel_id"] for cfg in server_configs if cfg["bot_channel_id"]],
+    )
+
     def guild_balances(guild_id: int) -> list[sqlite3.Row]:
         return conn.execute(
             "SELECT user_id, balance FROM server_currency_balances "

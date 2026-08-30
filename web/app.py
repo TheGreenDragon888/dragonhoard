@@ -3,9 +3,10 @@ web/app.py
 
 Dragonhoard Ops: a private, read-only developer dashboard over
 dragonhoard.db. Run it as its own tiny process alongside the bot (see
-web/README.md) - it never writes to the database and never talks to
-Discord, so it can be opened to a browser without carrying any of the
-bot's own credentials beyond what config.py already loads.
+web/README.md) - it never writes to the database, and the only thing it
+does over the network is resolve display names via Discord's REST API
+(web/discord_lookup.py), reusing the bot's own DISCORD_BOT_TOKEN rather
+than carrying a credential of its own.
 
     uvicorn web.app:app --host 127.0.0.1 --port 8420
 

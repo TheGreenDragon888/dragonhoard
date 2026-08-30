@@ -6,3 +6,5 @@
 
 fastapi>=0.115.0
 uvicorn>=0.30.0
+# web/discord_lookup.py: resolving display names via Discord's REST API.
+requests>=2.31.0

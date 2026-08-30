@@ -16,7 +16,10 @@ summed across servers, since they aren't the same money).
   from what the bot itself computes.
 - `app.py` - the one `/api/ops` endpoint (query-string settings: anonymize,
   hideDeparted, dormantDays, burnFloor, stalledDays) plus static serving.
-- `directory.py` / `directory.example.json` - the guild/user/channel
-  display-name lookup (the database only stores Discord snowflakes).
+- `directory.py` - the guild/user/channel display-name lookup (the database
+  only stores Discord snowflakes): `directory.json` overrides, then
+  `discord_lookup.py`, then a truncated-ID label as the last resort.
+- `discord_lookup.py` - resolves real names via Discord's REST API (the
+  bot's own token, no gateway, cached in memory).
 - `static/` - the frontend: `index.html` + `app.js` (vanilla, no build
   step) + `styles.css` (vendored Isaac Day Design System tokens/components).

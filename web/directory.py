@@ -1,21 +1,27 @@
 """
 web/directory.py
 
-dragonhoard.db never stores a Discord display name - only the numeric
-snowflake IDs the bot itself uses (guild_id, user_id, bot_channel_id). A
-guild's name, a user's username, and a channel's name all live on Discord's
-side, and resolving them for real would mean giving this read-only dashboard
-its own Discord API credentials and network access - the exact dependency
-the ops dashboard was deliberately built without (see web/README.md).
+Resolves a display name for a guild/user/channel id, in this order:
 
-Instead this is a small, optionally-present JSON file the dashboard's one
-human operator hand-maintains for their own ~8 servers and ~15 players -
-cheap for them, since they already know who everyone is, and it never has to
-match production automation deploy machinery. Missing entirely, or missing a
-given id, both degrade to a truncated-ID label rather than an error.
+  1. web/directory.json - a manual, hand-maintained override. Always wins,
+     since it's an explicit human decision (a custom label, or a correction
+     for something Discord's API got wrong or can't answer - e.g. a
+     departed guild the bot can no longer look up).
+  2. web/discord_lookup.py - Discord's REST API, cached (the bot's own
+     DISCORD_BOT_TOKEN, no new credential - see that module's docstring).
+  3. A truncated-ID label (`Server •1234`, `user_5678`) - the last resort
+     when neither of the above has an answer, so the dashboard always shows
+     *something* rather than erroring.
+
+warm() should be called once per request, before the loop that calls
+guild_name/user_name/channel_name repeatedly, so a cold Discord-lookup
+cache costs one batch of concurrent requests instead of many sequential
+ones - see web/queries.py.
 """
 import json
 from pathlib import Path
+
+from web import discord_lookup
 
 _DIRECTORY_PATH = Path(__file__).parent / "directory.json"
 
@@ -43,18 +49,42 @@ def reload() -> None:
     _DIRECTORY = _load()
 
 
+def warm(guild_ids: list[int], user_ids: list[int] | None, channel_ids: list[int]) -> None:
+    """Pre-resolves every id NOT already covered by a directory.json
+    override, via Discord, in parallel. `user_ids` is None when the caller
+    is rendering with anonymize on - player names never reach Discord in
+    that mode, since nothing would use the result."""
+    def unmapped(ids: list[int], table: dict) -> list[int]:
+        return [i for i in ids if not table.get(str(i))]
+
+    discord_lookup.warm_cache(
+        guild_ids=unmapped(guild_ids, _DIRECTORY["guilds"]),
+        user_ids=unmapped(user_ids, _DIRECTORY["users"]) if user_ids is not None else [],
+        channel_ids=unmapped(channel_ids, _DIRECTORY["channels"]),
+    )
+
+
 def guild_name(guild_id: int) -> str:
-    name = _DIRECTORY["guilds"].get(str(guild_id))
-    return name if name else f"Server •{str(guild_id)[-4:]}"
+    override = _DIRECTORY["guilds"].get(str(guild_id))
+    if override:
+        return override
+    looked_up = discord_lookup.guild_name(guild_id)
+    return looked_up or f"Server •{str(guild_id)[-4:]}"
 
 
 def user_name(user_id: int) -> str:
-    name = _DIRECTORY["users"].get(str(user_id))
-    return name if name else f"user_{str(user_id)[-4:]}"
+    override = _DIRECTORY["users"].get(str(user_id))
+    if override:
+        return override
+    looked_up = discord_lookup.user_name(user_id)
+    return looked_up or f"user_{str(user_id)[-4:]}"
 
 
 def channel_name(channel_id: int | None) -> str | None:
     if channel_id is None:
         return None
-    name = _DIRECTORY["channels"].get(str(channel_id))
-    return name if name else f"#channel-•{str(channel_id)[-4:]}"
+    override = _DIRECTORY["channels"].get(str(channel_id))
+    if override:
+        return override
+    looked_up = discord_lookup.channel_name(channel_id)
+    return looked_up or f"#channel-•{str(channel_id)[-4:]}"

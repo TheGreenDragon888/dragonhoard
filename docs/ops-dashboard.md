@@ -31,10 +31,13 @@ venv-web/bin/uvicorn web.app:app --host 127.0.0.1 --port 8420
 
 Then open `http://127.0.0.1:8420/` in a browser. It only reads
 `dragonhoard.db` (opened with SQLite's own read-only mode, so it can't write
-even by accident) and never talks to Discord - `127.0.0.1` is deliberate:
-this dashboard has **no login of its own** (it was built for an audience of
-one - see `web/README.md`), so whatever can reach the port can see every
-server's balances and player names with nothing else standing in the way.
+even by accident); the one thing it does over the network is resolve
+display names via Discord's REST API, reusing the bot's own
+`DISCORD_BOT_TOKEN` (see "Display names" below) - `127.0.0.1` is still
+deliberate, though: this dashboard has **no login of its own** (it was
+built for an audience of one - see `web/README.md`), so whatever can reach
+the port can see every server's balances and player names with nothing
+else standing in the way.
 
 ## Reaching it from another machine
 
@@ -52,17 +55,21 @@ venv/bin/uvicorn web.app:app --host 0.0.0.0 --port 8420        # whole LAN - avo
 If `ufw` is enabled, scope the rule to the tailnet range rather than opening
 the port broadly: `sudo ufw allow from 100.64.0.0/10 to any port 8420`.
 
-## Display names: `web/directory.json`
+## Display names
 
 `dragonhoard.db` only ever stores Discord's numeric IDs - `server_config`
 has no guild name column, `users` has no username column, and there's no
-channel-name column either. Resolving those for real means giving this
-dashboard Discord API credentials of its own, which it deliberately doesn't
-have (see `web/README.md`).
+channel-name column either. `web/discord_lookup.py` resolves real names for
+them via Discord's REST API (the bot's own `DISCORD_BOT_TOKEN`, already in
+your `.env` - no gateway connection, no new credential), cached in memory
+for an hour so it isn't refetching on every page load. The first load after
+a (re)start is the only slow one, while that first batch resolves.
 
-Instead, copy `web/directory.example.json` to `web/directory.json`
-(gitignored - it's personal to your servers, not secret) and fill in the
-guilds/users/channels you recognize:
+A guild the bot has been removed from, or a deleted account, can't be
+looked up this way and falls back to a truncated-ID label (`Server •0121`,
+`user_2096`) - and you can override any name, looked-up or not, with
+`web/directory.json` (gitignored - personal to your servers, not secret;
+template at `web/directory.example.json`):
 
 ```json
 {
@@ -72,9 +79,8 @@ guilds/users/channels you recognize:
 }
 ```
 
-Anything left out falls back to a truncated-ID label (`Server •0121`,
-`user_2096`). The file is re-read on every request, so renaming something
-doesn't need a restart.
+An entry there always wins over Discord. The file is re-read on every
+request, so editing it doesn't need a restart.
 
 ## Approximate figures
 
