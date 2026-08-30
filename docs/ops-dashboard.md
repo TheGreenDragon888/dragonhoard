@@ -8,13 +8,25 @@ running in. It's for you, not for players or server managers - see
 
 ## Running it
 
-From the repo root, in the same environment the bot runs in (it imports
-`config.py` and `data/materials.py` directly, so it needs a real `.env` -
-see the top-level README - and the same virtualenv):
+From the repo root, through the bot's own `venv` (it imports `config.py`
+and `data/materials.py` directly, so it needs the same `.env` and the same
+interpreter that already has `python-dotenv`/`tzdata` installed - a bare
+`uvicorn` on your `$PATH` is very likely a *different* Python, typically an
+apt/system one or a `pip install --user`, that has never heard of this
+project's dependencies):
 
 ```bash
-pip install -r requirements-web.txt
-uvicorn web.app:app --host 127.0.0.1 --port 8420
+venv/bin/pip install -r requirements-web.txt
+venv/bin/uvicorn web.app:app --host 127.0.0.1 --port 8420
+```
+
+If you'd rather not add fastapi/uvicorn to the bot's own venv at all, make
+a second one just for this and use its `pip`/`uvicorn` instead:
+
+```bash
+python3 -m venv venv-web
+venv-web/bin/pip install -r requirements-web.txt
+venv-web/bin/uvicorn web.app:app --host 127.0.0.1 --port 8420
 ```
 
 Then open `http://127.0.0.1:8420/` in a browser. It only reads
