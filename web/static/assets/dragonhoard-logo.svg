@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="32"
+   height="32"
+   viewBox="0 0 8.4666666 8.4666666"
+   version="1.1"
+   id="svg1"
+   inkscape:version="1.4.2 (f4327f4, 2025-05-13)"
+   sodipodi:docname="Dragonhoard Logo.svg"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#505050"
+     bordercolor="#ffffff"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="1"
+     inkscape:deskcolor="#505050"
+     inkscape:document-units="mm"
+     inkscape:zoom="5.6568543"
+     inkscape:cx="-43.575455"
+     inkscape:cy="-6.4523494"
+     inkscape:window-width="2560"
+     inkscape:window-height="1369"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="layer1" />
+  <defs
+     id="defs1">
+    <inkscape:path-effect
+       effect="fillet_chamfer"
+       id="path-effect2"
+       is_visible="true"
+       lpeversion="1"
+       nodesatellites_param="F,0,0,1,0,0,0,1 @ F,0,0,1,0,0,0,1"
+       radius="0"
+       unit="px"
+       method="auto"
+       mode="F"
+       chamfer_steps="1"
+       flexible="false"
+       use_knot_distance="true"
+       apply_no_radius="true"
+       apply_with_radius="true"
+       only_selected="false"
+       hide_knots="false" />
+  </defs>
+  <g
+     inkscape:label="Layer 1"
+     inkscape:groupmode="layer"
+     id="layer1">
+    <path
+       id="path2"
+       style="font-variation-settings:'wght' 700;fill:#ffffff;stroke-width:0.301767"
+       d="M 7.5037669,4.9619396 C 5.195858,5.0220202 5.1548517,3.2689276 4.2333333,2.9664765 3.1764647,2.6196022 2.5250631,3.2744633 2.1844794,4.2333333 1.8920567,5.056612 2.6123156,7.1101661 4.2333333,7.3615035 5.5190866,7.5608584 7.0170437,6.3959539 7.4138407,6.3541468 7.199379,6.7677676 5.7766638,8.3738541 4.2333333,8.4666667 2.1379006,8.5926815 -0.26024255,6.1689713 0,4.2333333 0.31025432,1.9257166 2.2273151,0 4.2333333,0 5.2605046,0 6.3461674,1.6543801 7.3798904,2.6528884 7.6428797,2.9069188 8.1714932,2.2222511 8.3195001,2.4922518 8.7045818,3.1947346 8.2879668,4.9415249 7.5037669,4.9619396 Z"
+       sodipodi:nodetypes="sssscssssss" />
+  </g>
+</svg>

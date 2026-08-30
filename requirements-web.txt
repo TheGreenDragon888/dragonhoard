@@ -1,0 +1,8 @@
+# Extra packages needed only for the read-only ops dashboard (web/), not for
+# running the bot. Install alongside requirements.txt in the same
+# environment - web/app.py imports config.py and data/materials.py directly
+# for formula parity, so it needs the bot's own dependencies resolvable too.
+-r requirements.txt
+
+fastapi>=0.115.0
+uvicorn>=0.30.0

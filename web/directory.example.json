@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy this file to web/directory.json (gitignored) and fill in the servers/players you recognize. Anything left out falls back to a truncated-ID label - see web/directory.py.",
+  "guilds": {
+    "1039472118835200121": "Dragon's Den"
+  },
+  "users": {
+    "284119203847172096": "greendragon888"
+  },
+  "channels": {
+    "1039472118835200122": "#dragonhoard"
+  }
+}

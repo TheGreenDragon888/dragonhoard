@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dragonhoard Ops</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="dho-header">
+  <div class="dho-header-inner">
+    <div class="dho-brand">
+      <img src="assets/dragonhoard-logo.svg" alt="">
+      <span>Dragon<span class="accent">hoard</span></span>
+      <span class="ops-badge">Ops</span>
+    </div>
+    <div class="dho-tabs">
+      <button type="button" class="dho-tab" data-view="overview">Overview<span class="bar"></span></button>
+      <button type="button" class="dho-tab" data-view="servers">Servers<span class="bar"></span></button>
+      <button type="button" class="dho-tab" data-view="players">Players<span class="bar"></span></button>
+    </div>
+    <div class="dho-meta">
+      <span class="dho-timestamp" id="capturedAt"></span>
+      <span class="pill"><span class="pill-dot"></span><span>live · read-only</span></span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="settings-bar">
+    <label><input type="checkbox" id="setAnonymize"> Anonymize names</label>
+    <label><input type="checkbox" id="setHideDeparted" checked> Hide departed servers</label>
+    <label>Dormant after <input type="number" id="setDormantDays" value="14" min="1" max="90"> days</label>
+    <label>Burn floor <input type="number" id="setBurnFloor" value="15" min="0" max="60">%</label>
+    <label>Stalled after <input type="number" id="setStalledDays" value="5" min="1" max="30"> days</label>
+    <button type="button" class="btn btn-ghost btn-sm" id="btnRefresh">Re-read database</button>
+  </div>
+
+  <div id="loading" style="color:var(--text-subtle);font-size:14px">Reading dragonhoard.db…</div>
+  <div id="viewOverview" hidden></div>
+  <div id="viewServers" hidden></div>
+  <div id="viewPlayers" hidden></div>
+</main>
+
+<footer class="dho-footer">
+  <div class="dho-footer-inner">
+    <span id="dbLine"></span>
+    <span id="versionLine">Dragonhoard by Isaac Day</span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

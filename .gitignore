@@ -9,3 +9,8 @@ __pycache__/
 .venv/
 venv/
 *.service
+
+# Hand-maintained guild/user/channel display-name lookup for the ops
+# dashboard (web/directory.py) - not secret, just personal to one operator's
+# servers. web/directory.example.json is the tracked template.
+web/directory.json

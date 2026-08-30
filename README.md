@@ -72,6 +72,7 @@ dragonhoard/
 │   └── responses.py          # Public-vs-ephemeral response handling
 ├── assets/                   # Files the bot sends, plus branding (logo, banner)
 ├── docs/                     # Design docs (market, mining, stylization, deployment, ...)
+├── web/                      # Dragonhoard Ops: a private read-only stats dashboard (see docs/ops-dashboard.md)
 ├── tests/                    # unittest suite
 └── cogs/                     # One file per command group ("cog" = discord.py's plugin unit)
     ├── setup.py              # /setup currency, /setup channel, /setup fee, /setup max_queue, /setup messages
