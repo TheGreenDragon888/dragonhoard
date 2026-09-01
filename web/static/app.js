@@ -87,7 +87,7 @@
           <div><div class="alert-title">${esc(a.title)}</div><div class="alert-detail">${esc(a.detail)}</div></div>
           <button type="button" class="alert-action" data-view="${a.view}" data-guild="${a.guild_id ?? ''}">${esc(a.action)}</button>
         </div>`).join('')
-      : `<div class="card" style="font-size:15px">Nothing flagged. Every server has a stocked pool, a moving queue and a burn ratio inside its band.</div>`;
+      : `<div class="card" style="font-size:15px">Nothing flagged. Every server has a moving queue and a burn ratio inside its band.</div>`;
 
     const serverTable = `
       <div class="table-wrap">
@@ -188,7 +188,7 @@
           <div class="grid-4" style="margin-top:28px">
             ${statCard('Sitting in drills', o.uncollected, 'Raw materials mined and never collected.', 'md')}
             ${statCard('Full and stopped', o.fullDrills, 'Drills mining nothing until someone runs /collect.', 'md')}
-            ${statCard('Median pool left', o.medianPool, 'Of a full bag. Refills the moment it empties.', 'md')}
+            ${statCard('Median pool left', o.medianPool, 'Measured against one bag. A refill can leave more, and reads as full.', 'md')}
             ${statCard('Gems above ground', o.gemCount, o.gemSub, 'md')}
           </div>
           <div class="card" style="margin-top:20px;padding:26px 26px 8px">

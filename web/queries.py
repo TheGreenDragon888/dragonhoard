@@ -222,7 +222,14 @@ def build_payload(
             if ts:
                 oldest_hours = max(oldest_hours, (now - ts).total_seconds() / 3600)
         pool_remaining = cfg["mining_pool_remaining"]
-        pool_pct = round(pool_remaining / MINING_POOL_BAG_SIZE * 100)
+        # Capped, like the machine and slot bars below it. A refill ADDS a
+        # bag to whatever was left, so a pool legitimately holds more than
+        # one bag and an uncapped percentage would run past the end of a bar
+        # that .progress silently clips at full anyway. The bag size is a
+        # scale for the bar and nothing more - it is NOT quoted as a
+        # denominator anywhere the player or an operator reads a number; see
+        # the comment in utils/mining_pool.py:pool_display_lines for why.
+        pool_pct = min(100, round(pool_remaining / MINING_POOL_BAG_SIZE * 100))
 
         machines = []
         for m in MACHINES:
@@ -340,7 +347,7 @@ def build_payload(
             "slotNote": f"{_m(min(invested, mining_slot_threshold(slot_level + 1)))} / "
                         f"{_m(mining_slot_threshold(slot_level + 1))} lifetime fees toward slot {mining_slots(slot_level) + 1}",
             "machines": machines,
-            "poolLabel": f"{_n(pool_remaining)} / {_n(MINING_POOL_BAG_SIZE)}",
+            "poolLabel": _n(pool_remaining),
             "poolPct": pool_pct,
             "poolComp": pool_comp_rows,
             "stock": stock_rows,
@@ -370,13 +377,6 @@ def build_payload(
                 "kicker": "Dormant", "accent": "var(--accent-blue)",
                 "title": f"{s['name']} has been quiet for {s['quiet_days']} days",
                 "detail": f"No production job, daily job post, or job-board claim recorded since. {s['players']} players have ever traded here.",
-                "action": "Open server", "view": "servers", "guild_id": gid,
-            })
-        if s["poolPct"] == 0:
-            alerts.append({
-                "kicker": "Pool empty", "accent": "var(--accent-blue)",
-                "title": f"{s['name']}'s mining bag is exhausted",
-                "detail": "Refills on the next draw — drills there are idle until it does.",
                 "action": "Open server", "view": "servers", "guild_id": gid,
             })
         if s["oldest_hours"] >= stalled_days * 24:
@@ -466,7 +466,7 @@ def build_payload(
                 "currency": servers[gid]["currency_name"] or "no currency set",
                 "players": servers[gid]["players"], "drills": servers[gid]["drills_placed"],
                 "pool": _n(servers[gid]["pool_remaining_raw"]),
-                "poolColor": "var(--accent-blue)" if servers[gid]["poolPct"] == 0 else "var(--text-muted)",
+                "poolColor": "var(--text-muted)",
                 "invested": servers[gid]["invested"], "slots": servers[gid]["slots"],
                 "minted": servers[gid]["minted"], "burned": servers[gid]["burned"],
                 "circulating": servers[gid]["circulating"], "burnPct": servers[gid]["burnPct"],
