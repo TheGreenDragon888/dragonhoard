@@ -14,7 +14,7 @@ Every server the bot joins gets its **own currency and its own economy** — not
 
 The core loop:
 
-1. **Mine** — `/mine place` puts a drill in the ground (your first Iron Drill is free). It mines on its own, online or not, pulling from a server-wide raw-material pool that tops up daily.
+1. **Mine** — `/mine place` puts a drill in the ground (your first Iron Drill is free). It mines on its own, online or not, pulling from a server-wide bag of raw materials that refills the moment it runs out — no daily allowance, no cap.
 2. **Collect** — `/collect` empties everything your drills have produced into your inventory.
 3. **Sell** — `/market sell` sells materials to the server for currency. The server is itself an economic actor: buying from players is the *only* way new currency enters circulation, and it resells its stock back at a markup via `/market buy`.
 4. **Reinvest** — smelt ore in the `/furnace` (or a hundred at a time in the `/blast` furnace), craft better gear in the `/factory`, compress materials into gems with the hydraulic `/press`, break what you no longer want back down in the `/scrapper`, and upgrade your drills so the whole loop runs faster. Production fees burn currency back out of the economy — and every fee the server has ever paid adds up toward **mining slots**, which let *everyone* in that server keep another drill in the ground.
