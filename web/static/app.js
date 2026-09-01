@@ -300,7 +300,7 @@
 
           <div class="split-11">
             <div class="card">
-              <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:18px"><div class="stat-label" style="margin-bottom:0">Mining bag</div><div style="font-size:13px;color:var(--text-primary)">${esc(s.poolLabel)}</div></div>
+              <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:18px"><div class="stat-label" style="margin-bottom:0">Mining bag, gems included</div><div style="font-size:13px;color:var(--text-primary)">${esc(s.poolLabel)}</div></div>
               <div class="progress"><div style="width:${s.poolPct}%"></div></div>
               <div style="margin-top:20px;display:flex;flex-direction:column;gap:10px">${poolComp}</div>
             </div>

@@ -150,7 +150,12 @@ def pool_display_lines(remaining: int, contents: dict[str, int]) -> list[str]:
     #
     # Nothing is lost by dropping it: the gemstone counts below are the progress
     # indicator that actually matters, and they are exact.
-    lines = [f"**{remaining:,}** raw materials left"]
+
+    # The total is gem-INCLUSIVE: mining_pool_remaining counts every item in
+    # the bag, gemstones among them, and the gem line below is a breakdown of
+    # part of this number rather than a second pile beside it. Saying so in
+    # the label is the whole reason the two can be read together.
+    lines = [f"**{remaining:,}** materials left in this bag (gems included)"]
 
     # ore_cells = [
     #     f"{_emoji(ore)} {contents[ore]:,}" for ore in ORES if contents.get(ore)
@@ -162,7 +167,7 @@ def pool_display_lines(remaining: int, contents: dict[str, int]) -> list[str]:
         f"{_emoji(gem)} **{contents[gem]}**" for gem in GEMSTONES if contents.get(gem)
     ]
     lines.append(
-        "Gemstones remaining:\n**(** " + " ".join(gem_cells) + " **)**" if gem_cells
+        "Gemstones remaining (part of that total):\n**(** " + " ".join(gem_cells) + " **)**" if gem_cells
         else "No gemstones left in this batch - a fresh one starts when it runs out."
     )
     return lines
