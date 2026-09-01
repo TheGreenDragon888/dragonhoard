@@ -28,8 +28,6 @@ import logging
 from database.db import _Executor
 from data.materials import (
     GEMSTONES,
-    MINING_POOL_BAG_SIZE,
-    ORES,
     draw_from_pool,
     pool_bag_contents,
 )
@@ -157,11 +155,9 @@ def pool_display_lines(remaining: int, contents: dict[str, int]) -> list[str]:
     # the label is the whole reason the two can be read together.
     lines = [f"**{remaining:,}** materials left in this bag (gems included)"]
 
-    # ore_cells = [
-    #     f"{_emoji(ore)} {contents[ore]:,}" for ore in ORES if contents.get(ore)
-    # ]
-    # if ore_cells:
-    #     lines.append(" ".join(ore_cells))
+    # No per-ore breakdown, deliberately: the gemstone counts below are the
+    # progress indicator that matters, and three ore counts in drop-chance
+    # proportion say nothing the total has not already said.
 
     gem_cells = [
         f"{_emoji(gem)} **{contents[gem]}**" for gem in GEMSTONES if contents.get(gem)
