@@ -393,10 +393,9 @@ async def own_entries(db, guild_id: int, user_id: int):
     """This player's own open listings and orders, as (kind, id, material_id,
     drill_type, quantity, price_units) rows.
 
-    /market cancel takes an id, and the only other place an id appears is the
-    receipt from when the entry was made - which scrolls away. Aggregating the
+    Feeds /market entries and /market cancel's autocomplete. Aggregating the
     books by material (listing_depth) removed the last place a player could
-    look one up, so this puts their own back where they can see them.
+    see their own entries one by one, so this puts them back.
     """
     listings = await db.fetchall(
         "SELECT l.listing_id AS id, l.material_id, l.quantity, l.price_units, "

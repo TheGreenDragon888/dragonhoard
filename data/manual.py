@@ -554,14 +554,12 @@ _add(ManualSection(
         ManualCommand(
             "/market entries", "/market entries",
             "Everything you personally have on the market - what you're selling, what "
-            "you're bidding for, and how much of your balance those bids are holding. "
-            "Each one carries the number `/market cancel` takes.",
+            "you're bidding for, and how much of your balance those bids are holding.",
         ),
         ManualCommand(
-            "/market cancel", "/market cancel <id>",
+            "/market cancel", "/market cancel <entry>",
             "Takes back one of your own listings or orders and returns whatever it was "
-            "holding - the goods, or the money. The number comes from the receipt you got "
-            "when you made it, and `/market entries` lists it too.",
+            "holding - the goods, or the money. Pick which one from the list.",
         ),
         ManualCommand(
             "/market status", "/market status",

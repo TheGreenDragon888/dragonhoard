@@ -117,9 +117,11 @@ class MarketTestCase(unittest.IsolatedAsyncioTestCase):
         await EconomyCog.market_order.callback(self.cog, i, item, quantity, price)
         return i
 
-    async def cancel(self, user, row_id):
+    async def cancel(self, user, entry):
+        """`entry` is what /market cancel's autocomplete submits:
+        "listing:<id>" or "order:<id>"."""
         i = FakeInteraction(user)
-        await EconomyCog.market_cancel.callback(self.cog, i, row_id)
+        await EconomyCog.market_cancel.callback(self.cog, i, entry)
         return i
 
     async def buy(self, user, material_id, quantity):
@@ -386,7 +388,7 @@ class EscrowTests(MarketTestCase):
         self.assertEqual(await get_user_quantity(self.db, ALICE, "steel"), 300)
 
         row = await self.db.fetchone("SELECT listing_id FROM market_listings")
-        await self.cancel(ALICE, row["listing_id"])
+        await self.cancel(ALICE, f"listing:{row['listing_id']}")
         self.assertEqual(await get_user_quantity(self.db, ALICE, "steel"), 500)
         self.assertEqual(await self.db.fetchall("SELECT * FROM market_listings"), [])
 
@@ -396,7 +398,7 @@ class EscrowTests(MarketTestCase):
         self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), 40.0)
 
         row = await self.db.fetchone("SELECT order_id FROM market_orders")
-        await self.cancel(ALICE, row["order_id"])
+        await self.cancel(ALICE, f"order:{row['order_id']}")
         self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), 100.0)
         self.assertEqual(await self.db.fetchall("SELECT * FROM market_orders"), [])
 
@@ -412,15 +414,61 @@ class EscrowTests(MarketTestCase):
         before = await self.totals()
         await self.order(ALICE, "steel", 100, 0.60)
         row = await self.db.fetchone("SELECT order_id FROM market_orders")
-        await self.cancel(ALICE, row["order_id"])
+        await self.cancel(ALICE, f"order:{row['order_id']}")
         self.assertEqual(await self.totals(), before)
 
     async def test_you_cannot_cancel_somebody_elses(self):
         await adjust_user_quantity(self.db, ALICE, "steel", 10)
         await self.list_item(ALICE, "steel", 0.60, 10)
         row = await self.db.fetchone("SELECT listing_id FROM market_listings")
-        interaction = await self.cancel(BOB, row["listing_id"])
-        self.assertIn("no listing or order", interaction.sent or "")
+        interaction = await self.cancel(BOB, f"listing:{row['listing_id']}")
+        self.assertIn("no listing numbered", interaction.sent or "")
+        self.assertEqual(len(await self.db.fetchall("SELECT * FROM market_listings")), 1)
+
+    async def test_cancel_offers_only_your_own_entries(self):
+        await adjust_user_quantity(self.db, ALICE, "steel", 10)
+        await adjust_user_quantity(self.db, BOB, "steel", 10)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
+        await self.list_item(ALICE, "steel", 0.60, 10)
+        await self.list_item(BOB, "steel", 0.60, 10)
+        await self.order(ALICE, "copper", 5, 0.40)
+        listing = await self.db.fetchone(
+            "SELECT listing_id FROM market_listings WHERE seller_id = ?", (ALICE,)
+        )
+        order = await self.db.fetchone("SELECT order_id FROM market_orders")
+
+        choices = await self.cog._cancellable_autocomplete(FakeInteraction(ALICE), "")
+        self.assertEqual(
+            [c.value for c in choices],
+            [f"listing:{listing['listing_id']}", f"order:{order['order_id']}"],
+        )
+        self.assertTrue(choices[0].name.startswith("Selling 10 Steel"))
+        self.assertTrue(choices[1].name.startswith("Buying 5 Copper"))
+
+        typed = await self.cog._cancellable_autocomplete(FakeInteraction(ALICE), "copper")
+        self.assertEqual([c.value for c in typed], [f"order:{order['order_id']}"])
+
+    async def test_a_listing_and_an_order_with_the_same_number_are_told_apart(self):
+        """The two books number their rows separately, so a bare id could name
+        one of each - the prefix is what picks the book."""
+        await adjust_user_quantity(self.db, ALICE, "steel", 10)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
+        await self.list_item(ALICE, "steel", 0.60, 10)
+        await self.order(ALICE, "copper", 10, 0.40)
+        listing = await self.db.fetchone("SELECT listing_id FROM market_listings")
+        order = await self.db.fetchone("SELECT order_id FROM market_orders")
+        self.assertEqual(listing["listing_id"], order["order_id"])
+
+        await self.cancel(ALICE, f"order:{order['order_id']}")
+        self.assertEqual(await self.db.fetchall("SELECT * FROM market_orders"), [])
+        self.assertEqual(len(await self.db.fetchall("SELECT * FROM market_listings")), 1)
+
+    async def test_cancel_refuses_a_value_not_from_the_list(self):
+        await adjust_user_quantity(self.db, ALICE, "steel", 10)
+        await self.list_item(ALICE, "steel", 0.60, 10)
+        row = await self.db.fetchone("SELECT listing_id FROM market_listings")
+        interaction = await self.cancel(ALICE, str(row["listing_id"]))
+        self.assertIn("Pick one", interaction.sent or "")
         self.assertEqual(len(await self.db.fetchall("SELECT * FROM market_listings")), 1)
 
     async def test_listing_more_than_you_hold_is_refused(self):
@@ -627,7 +675,7 @@ class ListedDrillTests(MarketTestCase):
     async def test_cancelling_returns_the_drill(self):
         await self.list_the_drill()
         row = await self.db.fetchone("SELECT listing_id FROM market_listings")
-        await self.cancel(ALICE, row["listing_id"])
+        await self.cancel(ALICE, f"listing:{row['listing_id']}")
         self.assertIsNone(await self.listed_id())
         self.assertEqual(await self.db.fetchall("SELECT * FROM market_listings"), [])
 

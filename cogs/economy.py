@@ -212,6 +212,12 @@ DRILL_VALUE_PREFIX = "drill:"
 # names an offer somebody else has already made.
 LISTING_VALUE_PREFIX = "listing:"
 
+# How /market cancel names one of the caller's own orders. A listing is named
+# with LISTING_VALUE_PREFIX, as on /market buy. The prefix is what says which
+# book an id belongs to: listing and order ids come from separate tables, so
+# a bare number could name one of each.
+ORDER_VALUE_PREFIX = "order:"
+
 # Matches utils/drills.py's own cap on how many autocomplete results Discord
 # will render at once.
 MAX_AUTOCOMPLETE_RESULTS = 25
@@ -1128,7 +1134,7 @@ class EconomyCog(commands.Cog):
         embed = make_embed("🏷️ Listed", MARKET_COLOR, description=(
             f"**{drill_label(row)}** is up for sale at "
             f"{format_currency(player_price_total(price_units, 1), currency_emoji)}.\n"
-            f"Take it back any time with `/market cancel {listing_id}`."
+            "Take it back any time with `/market cancel`."
         ))
         await respond(interaction, self.db, embed=embed)
 
@@ -1182,7 +1188,7 @@ class EconomyCog(commands.Cog):
             f"{format_currency(player_price_total(price_units, 1), currency_emoji)} each "
             f"({format_currency(player_price_total(price_units, quantity), currency_emoji)} the lot).\n"
             f"You have **{remaining:,}** left. Take the listing back any time with "
-            f"`/market cancel {listing_id}`."
+            "`/market cancel`."
         ))
         await respond(interaction, self.db, embed=embed)
 
@@ -1272,49 +1278,96 @@ class EconomyCog(commands.Cog):
             f"{info['emoji']} **{quantity:,}x {info['name']}**.\n"
             f"{format_currency(total, currency_emoji, True)} is held until it fills; "
             f"your balance is {format_currency(balance_after, currency_emoji)}.\n"
-            f"Withdraw it any time with `/market cancel {order_id}`."
+            "Withdraw it any time with `/market cancel`."
         ))
         await respond(interaction, self.db, embed=embed)
 
+    async def _cancellable_autocomplete(self, interaction: discord.Interaction, current: str):
+        """The caller's own listings and orders in this server - everything
+        /market cancel can withdraw, and nothing else.
+
+        Plain text, because an autocomplete choice cannot render a custom
+        emoji: the material is named where /market entries shows its emoji.
+        The #id is kept so a choice can be matched against /market entries.
+        """
+        search = current.strip().lower()
+        listings, orders = await own_entries(
+            self.db, interaction.guild_id, interaction.user.id
+        )
+        choices = []
+        for prefix, verb, rows in (
+            (LISTING_VALUE_PREFIX, "Selling", listings),
+            (ORDER_VALUE_PREFIX, "Buying", orders),
+        ):
+            for row in rows:
+                price = format_price(player_price_total(row["price_units"], 1))
+                if row["material_id"] is None:
+                    what = drill_short_label(row)
+                    if row["container_type"]:
+                        what += f" · {container_name(row['container_type'])}"
+                    label = f"{verb} {what} at {price} (#{row['id']})"
+                else:
+                    name = material_name(get_material_info(row["material_id"]), row["quantity"])
+                    label = f"{verb} {row['quantity']:,} {name} at {price} each (#{row['id']})"
+                if search and search not in label.lower():
+                    continue
+                choices.append(app_commands.Choice(name=label[:100], value=f"{prefix}{row['id']}"))
+                if len(choices) >= MAX_AUTOCOMPLETE_RESULTS:
+                    return choices
+        return choices
+
     @market_group.command(name="cancel", description="Withdraw one of your listings or orders")
-    @app_commands.describe(id="The listing or order number from its receipt")
-    async def market_cancel(self, interaction: discord.Interaction, id: int):
+    @app_commands.describe(entry="Which of your listings or orders to withdraw")
+    @app_commands.autocomplete(entry=_cancellable_autocomplete)
+    async def market_cancel(self, interaction: discord.Interaction, entry: str):
         """Withdraws a listing or an order and returns whatever it was holding.
 
         One command for both books rather than two, because a player thinks of
-        these as "the thing I put up" rather than as two kinds of row, and the
-        ids cannot collide in practice for the person typing one: they only
-        ever get an id from their own receipt, and this refuses anything that
-        isn't theirs either way.
+        these as "the thing I put up" rather than as two kinds of row. The
+        choice's prefix says which book it is on (_cancellable_autocomplete);
+        the lookup still requires the row to be the caller's, since a submitted
+        value need never have come from the list.
 
         Cancellation is not optional scope. Escrow means a listing holds real
         goods and an order holds real currency, so a book entry that could not
         be withdrawn would be a permanent hole in somebody's inventory.
         """
+        kind, _, raw_id = entry.partition(":")
+        if f"{kind}:" not in (LISTING_VALUE_PREFIX, ORDER_VALUE_PREFIX) or not raw_id.isdigit():
+            await interaction.response.send_message(
+                "Pick one of your listings or orders from the list.", ephemeral=True
+            )
+            return
+        row_id = int(raw_id)
+
         currency_emoji = await self._get_currency_emoji(interaction.guild_id)
         try:
             async with self.db.transaction() as tx:
-                listing = await tx.fetchone(
-                    "SELECT * FROM market_listings WHERE listing_id = ? AND seller_id = ? AND guild_id = ?",
-                    (id, interaction.user.id, interaction.guild_id),
-                )
-                if listing is not None:
-                    description = await self._cancel_listing(tx, listing, currency_emoji)
-                else:
-                    order = await tx.fetchone(
-                        "SELECT * FROM market_orders WHERE order_id = ? AND buyer_id = ? AND guild_id = ?",
-                        (id, interaction.user.id, interaction.guild_id),
+                if f"{kind}:" == LISTING_VALUE_PREFIX:
+                    row = await tx.fetchone(
+                        "SELECT * FROM market_listings WHERE listing_id = ? AND seller_id = ? AND guild_id = ?",
+                        (row_id, interaction.user.id, interaction.guild_id),
                     )
-                    if order is None:
-                        await interaction.response.send_message(
-                            f"You have no listing or order numbered {id} in this server.",
-                            ephemeral=True,
-                        )
-                        return
-                    description = await self._cancel_order(tx, order, currency_emoji)
+                    cancel = self._cancel_listing
+                else:
+                    row = await tx.fetchone(
+                        "SELECT * FROM market_orders WHERE order_id = ? AND buyer_id = ? AND guild_id = ?",
+                        (row_id, interaction.user.id, interaction.guild_id),
+                    )
+                    cancel = self._cancel_order
+                # The refusal is sent after the transaction closes, never
+                # inside it: a Discord call would hold the write lock.
+                description = await cancel(tx, row, currency_emoji) if row else None
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "That filled while this was going through - nothing was cancelled.",
+                ephemeral=True,
+            )
+            return
+        if description is None:
+            await interaction.response.send_message(
+                f"You have no {kind} numbered {row_id} in this server - it may "
+                "already have filled.",
                 ephemeral=True,
             )
             return
@@ -1444,8 +1497,8 @@ class EconomyCog(commands.Cog):
 
     @market_group.command(name="entries", description="Your own open listings and orders")
     async def market_entries(self, interaction: discord.Interaction):
-        """Everything this player has on the server's books, with the ids
-        /market cancel takes.
+        """Everything this player has on the server's books, each with its
+        id.
 
         Its own page rather than a field on /market status. The two answer
         different questions - "what is the market doing" against "what am I
@@ -1454,8 +1507,8 @@ class EconomyCog(commands.Cog):
         cap: a field sharing an embed with four others could name ten entries,
         where a page of its own can name ENTRIES_DISPLAY_LIMIT.
 
-        The id matters because it is what /market cancel takes, and the only
-        other place one appears is the receipt from when the entry was made.
+        The id is repeated in /market cancel's autocomplete labels, so a line
+        here can be matched to the choice that withdraws it.
         """
         await ensure_server_row(self.db, interaction.guild_id)
         currency_emoji = await self._get_currency_emoji(interaction.guild_id) or DEFAULT_CURRENCY_EMOJI
@@ -1569,7 +1622,7 @@ class EconomyCog(commands.Cog):
         return f"`#{row['id']}` {emoji} `{price}` · {count}{extra}"
 
     def _own_listing_lines(self, listings) -> list[str]:
-        """The caller's own asks, each led by the id /market cancel takes."""
+        """The caller's own asks, each led by its id."""
         lines = [
             self._own_entry_line(row, row["price_units"], row["quantity"])
             for row in listings[:ENTRIES_DISPLAY_LIMIT]
