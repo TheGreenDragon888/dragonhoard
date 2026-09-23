@@ -86,3 +86,71 @@ class InteractionCheckTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetOfficeTests(unittest.IsolatedAsyncioTestCase):
+    """/devtools set_office against a real database. Anyone may be appointed,
+    the caller included, but the two rules an election count keeps still
+    hold."""
+
+    ME = 7001
+    OTHER = 7002
+
+    async def asyncSetUp(self):
+        import tempfile
+        from pathlib import Path
+        from database.db import Database
+
+        self._dir = tempfile.TemporaryDirectory()
+        self.db = Database(str(Path(self._dir.name) / "test.db"))
+        await self.db.init_schema()
+        self.cog = DevToolsCog.__new__(DevToolsCog)
+        self.cog.db = self.db
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def appoint(self, office, member_id, caller=None):
+        from types import SimpleNamespace
+        from discord import app_commands
+
+        interaction = FakeInteraction(BETA_GUILD)
+        interaction.user = SimpleNamespace(id=caller or self.ME)
+        member = SimpleNamespace(id=member_id, mention=f"<@{member_id}>") if member_id else None
+        choice = app_commands.Choice(name=office.title(), value=office)
+        await DevToolsCog.set_office.callback(self.cog, interaction, choice, member)
+        return interaction.response.send_message.call_args
+
+    async def holders(self):
+        row = await self.db.fetchone(
+            "SELECT mayor_id, treasurer_id, bond_sale_cents FROM server_config WHERE guild_id = ?",
+            (BETA_GUILD,),
+        )
+        return row["mayor_id"], row["treasurer_id"], row["bond_sale_cents"]
+
+    async def test_you_can_appoint_yourself(self):
+        call = await self.appoint("mayor", self.ME)
+        self.assertEqual((await self.holders())[0], self.ME)
+        self.assertTrue(call.kwargs["ephemeral"])
+
+    async def test_a_blank_member_vacates_the_office(self):
+        await self.appoint("treasurer", self.OTHER)
+        await self.appoint("treasurer", None)
+        self.assertIsNone((await self.holders())[1])
+
+    async def test_nobody_ends_up_holding_both(self):
+        await self.appoint("treasurer", self.ME)
+        call = await self.appoint("mayor", self.ME)
+        self.assertEqual((await self.holders())[:2], (self.ME, None))
+        self.assertIn("vacated Treasurer", call.args[0])
+
+    async def test_a_new_mayor_ends_the_old_mayors_bond_sale(self):
+        await self.appoint("mayor", self.OTHER)
+        await self.db.execute(
+            "UPDATE server_config SET bond_sale_cents = 500 WHERE guild_id = ?", (BETA_GUILD,)
+        )
+        await self.appoint("mayor", self.OTHER)          # the same Mayor keeps it
+        self.assertEqual((await self.holders())[2], 500)
+        await self.appoint("mayor", self.ME)
+        self.assertEqual((await self.holders())[2], 0)

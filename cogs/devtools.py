@@ -6,6 +6,9 @@ game to get them. Implements:
   - /devtools give_item <member> <item> <quantity>   - materials/components/etc.
   - /devtools give_drill <member> <drill_type> [level] - an unplaced drill
   - /devtools give_currency <member> <amount>          - this server's currency
+  - /devtools set_office <office> [member]             - make anyone, yourself
+                                                         included, Mayor or
+                                                         Treasurer; blank vacates
 
 This is dangerous by construction - it mints anything, unconditionally - so
 it's gated by three independent layers, any one of which alone would be
@@ -40,6 +43,7 @@ from utils.db_helpers import (
     ensure_user_row,
 )
 from utils.formatting import format_currency
+from utils.government import MAYOR, OFFICE_LABELS, TREASURER, assign_office
 from data.materials import ALL_MATERIALS, DRILLS, get_material_info
 
 # Matches utils/drills.py's own cap on how many autocomplete results Discord
@@ -175,9 +179,36 @@ class DevToolsCog(commands.Cog):
             ephemeral=True,
         )
 
+    @devtools_group.command(name="set_office", description="Beta only: make anyone Mayor or Treasurer, skipping the election")
+    @app_commands.describe(
+        office="Which office",
+        member="Who gets it - you may pick yourself. Leave blank to vacate it",
+    )
+    @app_commands.choices(office=[
+        app_commands.Choice(name=OFFICE_LABELS[office], value=office) for office in (MAYOR, TREASURER)
+    ])
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def set_office(
+        self,
+        interaction: discord.Interaction,
+        office: app_commands.Choice[str],
+        member: discord.Member | None = None,
+    ):
+        # Skips the election and its eligibility rules - no drill, no
+        # has-played check, and appointing yourself is the point - but not the
+        # rules a count itself keeps (utils/government.py: assign_office).
+        async with self.db.transaction() as tx:
+            notes = await assign_office(
+                tx, interaction.guild_id, office.value, member.id if member else None
+            )
+        who = f"{member.mention} is now **{office.name}**" if member else f"**{office.name}** is now vacant"
+        extra = f" (also {'; '.join(notes)})" if notes else ""
+        await interaction.response.send_message(f"{who}{extra}.", ephemeral=True)
+
     @give_item.error
     @give_drill.error
     @give_currency.error
+    @set_office.error
     async def devtools_error_handler(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         # Fires when a non-admin (of the dev guild) tries to run one of these.
         if isinstance(error, app_commands.MissingPermissions):

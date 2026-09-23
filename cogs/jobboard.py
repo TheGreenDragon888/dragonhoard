@@ -24,7 +24,7 @@ from utils.guild_helpers import human_member_count
 from utils.db_helpers import ensure_server_row
 from utils.job_board import ensure_todays_job, get_progress, hours_until_reset
 
-from data.materials import get_material_info
+from data.materials import get_material_info, material_name
 
 
 class JobBoardCog(commands.Cog):
@@ -60,7 +60,7 @@ class JobBoardCog(commands.Cog):
         )
         embed.add_field(
             name="Today's Job",
-            value=f"Sell {info['emoji']} **{job['quantity']:,} {info['name']}** to the server with `/market sell`.",
+            value=f"Sell {info['emoji']} **{job['quantity']:,} {material_name(info, job['quantity'])}** to the server with `/market sell`.",
             inline=False,
         )
         embed.add_field(

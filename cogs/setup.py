@@ -4,12 +4,15 @@ cogs/setup.py
 Implements the /setup command group, restricted to members with "Manage
 Server" permission, matching the design doc:
   /setup currency <name> <emoji>       - configure this server's currency
-  /setup fee <machine> <amt>           - set infrastructure usage fee
   /setup max_queue <machine> <amt>     - set per-user production queue cap,
                                          per machine level
   /setup messages <public|private>     - toggle whether bot responses are public
   /setup channel [channel]             - restrict the bot to one channel, or
                                          leave blank to allow every channel
+
+There is no /setup fee. It was removed in 1.4, when machine fees became the
+elected Treasurer's to set (cogs/government.py) - the design is that admins
+have no hand in the government (docs/government.md).
 
 A "cog" is discord.py's term for a self-contained module of commands/events
 that gets loaded into the bot at startup (see bot.py's load_extension calls).
@@ -20,11 +23,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from utils.formatting import format_currency
 from utils.db_helpers import ensure_server_row, machine_label, MACHINES
 from utils.embeds import make_embed, DEFAULT_COLOR
 from utils.notifications import post_server_notification
-from data.materials import BLAST_FURNACE_BATCH_SIZE, effective_max_queue
+from data.materials import effective_max_queue
 
 log = logging.getLogger("dragonhoard")
 
@@ -34,15 +36,16 @@ def setup_guide_embed(guild_name: str) -> discord.Embed:
 
     Leads on the currency because it is the one setting that is genuinely
     missing rather than merely defaulted - until it is named, every price in
-    the server reads with a placeholder symbol. The other two are here because
-    they are the settings a server notices the absence of within a day: fees are
-    what level the machines up, and whether replies are public decides whether
-    the bot feels like a shared game or a private one.
+    the server reads with a placeholder symbol. Whether replies are public is
+    here because it decides whether the bot feels like a shared game or a
+    private one. Fees were the third until 1.4; they are elected now, and the
+    card says so because an admin looking for the dial will otherwise think it
+    is missing.
     """
     embed = make_embed(f"Welcome to Dragonhoard, {guild_name}", DEFAULT_COLOR)
     embed.description = (
         "Everyone can start mining right away - `/mine place` puts a drill in the ground "
-        "and `/help` explains the rest. There are three things an admin should set, though, "
+        "and `/help` explains the rest. There are two things an admin should set, though, "
         "and the first one matters most."
     )
     embed.add_field(
@@ -51,27 +54,27 @@ def setup_guide_embed(guild_name: str) -> discord.Embed:
             "```/setup currency <name> <emoji>```"
             "Every server has its own money with its own name and symbol, and until you pick "
             "one, prices show a placeholder. It's the only setting with no sensible default - "
-            "the other two below already work."
+            "the one below already works."
         ),
         inline=False,
     )
     embed.add_field(
-        name="2. Set your machine fees",
-        value=(
-            "```/setup fee <machine> <amount>```"
-            "Fees are what level your furnace, blast furnace, factory, press and scrapper "
-            "up - a server charging nothing has machines that never improve, and one "
-            "charging too much prices its players out. This is the main dial you have."
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="3. Decide how the bot talks",
+        name="2. Decide how the bot talks",
         value=(
             "```/setup messages <public|private>\n/setup channel [channel]```"
             "Replies are private by default so the bot stays out of the way. If you'd rather "
             "everyone saw each other's hauls, make them public - and `/setup channel` keeps "
             "all of it in one room."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Machine fees are elected",
+        value=(
+            "```/vote mayor <member>\n/vote treasurer <member>```"
+            "Every Thursday your players elect a Mayor and a Treasurer. The Treasurer sets "
+            "what the machines charge and the tax on it; the Mayor spends the tax on "
+            "projects. Admins don't set either - `/government status` shows who does."
         ),
         inline=False,
     )
@@ -139,13 +142,13 @@ class SetupCog(commands.Cog):
         await post_server_notification(
             self.db, guild.id, embed.title,
             "An admin needs to run `/setup currency <name> <emoji>` to name this server's "
-            "money - until then prices show a placeholder symbol. `/setup fee` sets what the "
-            "machines charge (which is what levels them up), and `/setup messages public` "
-            "makes the bot reply where everyone can see. All of them need Manage Server.",
+            "money - until then prices show a placeholder symbol, and `/setup messages public` "
+            "makes the bot reply where everyone can see. Both need Manage Server. Machine fees "
+            "are set by the Treasurer your players elect every Thursday (`/vote`).",
         )
 
     # A "group" bundles related slash commands under one parent, so users
-    # see them in Discord as /setup currency, /setup fee, /setup messages.
+    # see them in Discord as /setup currency, /setup max_queue, /setup messages.
     setup_group = app_commands.Group(
         name="setup", description="Server configuration (requires Manage Server permission)"
     )
@@ -223,50 +226,18 @@ class SetupCog(commands.Cog):
         )
 
     # Every machine's settings live in one column per machine, named the same
-    # way, so both commands below just prefix the choice value. Derived from
-    # MACHINES rather than written out, so a new machine appears in both
-    # commands the moment it's added there. The name shown is prose and the
+    # way, so the command below just prefixes the choice value. Derived from
+    # MACHINES rather than written out, so a new machine appears in the
+    # command the moment it's added there. The name shown is prose and the
     # value behind it is the column prefix, which is the only reason a machine
     # whose id has an underscore in it reads properly here.
     INFRASTRUCTURE_CHOICES = [
         app_commands.Choice(name=machine_label(machine), value=machine) for machine in MACHINES
     ]
 
-    # What one unit of a machine's fee actually buys, and what its queue cap
-    # counts in. Both are an item for most machines: the press charges per
-    # ruby-equivalent of press time instead, and the blast furnace charges and
-    # queues in batches of BLAST_FURNACE_BATCH_SIZE items. A confirmation that
-    # said "per item" for either would understate the real cost by a factor of
-    # nine or a hundred.
-    FEE_UNITS = {"press": "press-day", "blast_furnace": f"batch of {BLAST_FURNACE_BATCH_SIZE}"}
+    # What a machine's queue cap counts in: an item everywhere but the blast
+    # furnace, which queues in batches of BLAST_FURNACE_BATCH_SIZE items.
     QUEUE_UNITS = {"blast_furnace": "batch"}
-
-    @setup_group.command(name="fee", description="Set a fee (in server currency) to use a machine")
-    @app_commands.checks.has_permissions(manage_guild=True)
-    @app_commands.describe(infrastructure="Which infrastructure to set a fee for", amount="Fee per item produced (per press-day for the press, per batch for the blast furnace)")
-    @app_commands.choices(infrastructure=INFRASTRUCTURE_CHOICES)
-    async def setup_fee(self, interaction: discord.Interaction, infrastructure: app_commands.Choice[str], amount: float):
-        if amount < 0:
-            await interaction.response.send_message("Fee can't be negative.", ephemeral=True)
-            return
-        await ensure_server_row(self.db, interaction.guild_id)
-        await self.db.execute(
-            f"UPDATE server_config SET {infrastructure.value}_fee = ? WHERE guild_id = ?",
-            (amount, interaction.guild_id),
-        )
-        cfg = await self.db.fetchone(
-            "SELECT currency_emoji FROM server_config WHERE guild_id = ?", (interaction.guild_id,)
-        )
-        currency_emoji = cfg["currency_emoji"] if cfg else None
-        # The press charges per press-day rather than per item, so a diamond
-        # (nine press-days) costs nine times what this number says; the blast
-        # furnace charges per batch of a hundred items.
-        unit = self.FEE_UNITS.get(infrastructure.value, "item")
-        await interaction.response.send_message(
-            f"✅ {machine_label(infrastructure.value).title()} fee set to "
-            f"{format_currency(amount, currency_emoji)} per {unit}.",
-            ephemeral=True,
-        )
 
     @setup_group.command(name="max_queue", description="Set the maximum queued items per user, per level, for a machine")
     @app_commands.checks.has_permissions(manage_guild=True)
@@ -298,7 +269,6 @@ class SetupCog(commands.Cog):
     @setup_messages.error
     @setup_currency.error
     @setup_channel.error
-    @setup_fee.error
     @setup_max_queue.error
     async def setup_error_handler(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         # Fires when a non-admin tries to run a /setup command.

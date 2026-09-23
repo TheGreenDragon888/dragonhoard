@@ -20,7 +20,7 @@ than assumed:
   1. It runs BEFORE the tree resolves which command was invoked, so
      interaction.command is still None. The command name has to come out of the
      raw payload - interaction.data["name"], which for a subcommand like
-     /setup fee is the top-level "setup". That happens to be exactly the
+     /setup currency is the top-level "setup". That happens to be exactly the
      granularity the exemption list wants.
   2. It fires for AUTOCOMPLETE interactions too, not just command invocations.
      Blocking those is right - a drill list shouldn't populate in a channel the

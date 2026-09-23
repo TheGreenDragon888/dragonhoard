@@ -29,7 +29,9 @@ machines' PROCESS_TICK_MINUTES. A drill's rate comes from its type and is
 scaled by its level (see LEVEL_RATE_ANCHOR), so a tick's share of it is
 generally a fraction of an item rather than a whole number - drills carry the
 remainder in harvest_progress rather than rounding it away (see
-advance_harvest).
+advance_harvest). A tick pays for the time since drills.mined_until, never
+more than one tick, so a drill that only started mining since the last tick -
+placed, or freed by a /collect or a container - gets only what it has mined.
 
 Bumped from 24 (2.5 ticks/hour) as of the 1.2.1 drill speed buff: at 24
 minutes, a drill's own base 100-item capacity fills inside a single tick once
@@ -47,15 +49,20 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from utils.responses import respond
-from utils.embeds import make_embed, add_multi_field, FOOTER_TEXT, MINING_COLOR
+from utils.embeds import make_embed, add_multi_field, footer_with, MINING_COLOR
 from utils.formatting import format_currency
-from utils.job_board import job_board_today
-from utils.guild_helpers import human_member_count
+from utils.job_board import job_board_today, next_reset
+from utils.government import guilds_with_bonanza
 from database.db import InsufficientQuantity
 from utils.db_helpers import (
+    clock_now,
+    elapsed_work_hours,
+    bonanza_active,
+    sqlite_timestamp,
     ensure_user_row,
     ensure_server_row,
     get_user_quantity,
+    adjust_currency_balance,
     adjust_user_quantity,
     deduct_user_quantity,
     mining_slot_status,
@@ -63,6 +70,7 @@ from utils.db_helpers import (
 )
 from utils.drills import (
     DrillScope,
+    DRILL_AVAILABLE_SQL,
     add_drill_contents,
     take_drill_contents,
     capacity_of,
@@ -70,9 +78,9 @@ from utils.drills import (
     drill_cell,
     drill_choices,
     drill_label,
+    drill_unavailable_message,
     drill_short_label,
     fetch_drill,
-    guild_name_map,
     container_name,
     is_local_drill,
     material_breakdown_lines,
@@ -87,16 +95,33 @@ from utils.mining_efficiency import (
     get_efficiency,
     set_efficiency,
 )
+from utils.mining_affinity import (
+    convert_gems,
+    get_affinity,
+    affinity_label,
+    affinity_progress,
+    set_affinity,
+)
 from utils.mining_pool import pool_contents, pool_display_lines, take_from_pool
+from utils.production_ledger import record_mined, split_by_guild
 
 from data.materials import (
+    BONANZA_SPEED_MULTIPLIER,
+    player_price_total,
     DEFAULT_MINING_EFFICIENCY,
     DEFAULT_MINING_FOCUS,
+    DEFAULT_MINING_AFFINITY,
     DRILLS,
+    GEMSTONES,
+    ORES,
+    MARKET_PRICE_CENTS,
     MINING_EFFICIENCIES,
     MINING_EFFICIENCY_UNLOCK_COST,
     MINING_FOCUSES,
+    material_name,
     MINING_FOCUS_UNLOCK_COST,
+    MINING_AFFINITIES,
+    MINING_AFFINITY_UNLOCK_COST,
     STORAGE_CONTAINERS,
     BASE_STORAGE_CAPACITY,
     advance_harvest,
@@ -122,6 +147,19 @@ COLLECT_HERE_SQL = (
     "SELECT * FROM drills WHERE guild_id = ? AND owner_id = ? AND stored_amount > 0"
 )
 
+# Empties one drill /collect selected, guarded on the stored_amount it read so a
+# racing command can't pay the same haul out twice. A full drill has been
+# stopped and starts again now, so its clock restarts too - otherwise its next
+# harvest tick would pay for time it spent full (drills.mined_until). One that
+# wasn't full never stopped, and keeps its clock. SQLite evaluates every SET
+# against the row as it was, so is_full in the CASE is the old value. At module
+# level for the same reason as the two queries above.
+COLLECT_EMPTY_DRILL_SQL = (
+    "UPDATE drills SET stored_amount = 0, is_full = 0, "
+    "mined_until = CASE WHEN is_full = 1 THEN datetime('now') ELSE mined_until END "
+    "WHERE drill_id = ? AND stored_amount = ?"
+)
+
 # /mine status groups "Your Drills" by material, best first - the reverse of
 # DRILLS' own iron-to-diamond declaration order, which follows the crafting
 # ladder rather than what a player wants to see at the top of their list.
@@ -132,28 +170,29 @@ DRILL_STATUS_ORDER = {
 
 
 def unlock_footer(cost: dict[str, int]) -> str:
-    """The footer on a just-unlocked Mining Focus or Mining Efficiency embed,
-    saying what the unlock cost.
+    """The footer on a just-unlocked Mining Focus, Mining Efficiency or Mining
+    Affinity embed, saying what the unlock cost.
 
     The gemstone is NAMED here, unlike everywhere else in this cog, which shows
     it as its emoji: footer text does not render emoji. Naming it rather than
-    dropping it keeps the line worth having - both unlocks are gemstone-gated
-    and which gem it took is the whole point of saying anything.
+    dropping it keeps the line worth having - all three unlocks are
+    gemstone-gated and which gem it took is the whole point of saying anything.
 
-    Shared by both commands so that rule lives in one place rather than in two
-    branches that happened to be written the same way.
+    Shared by all three commands so that rule lives in one place rather than in
+    three branches that happened to be written the same way.
     """
     spent = ", ".join(
-        f"{quantity} {get_material_info(material_id)['name']}"
+        f"{quantity} {material_name(get_material_info(material_id), quantity)}"
         for material_id, quantity in cost.items()
     )
-    return f"{FOOTER_TEXT} · unlocked for {spent}"
+    return footer_with(f"unlocked for {spent}")
 
 
 class MiningCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
+        self._now = clock_now
         self.harvest_loop.start()
 
     def cog_unload(self):
@@ -189,6 +228,58 @@ class MiningCog(commands.Cog):
                     retracted += 1
         return retracted
 
+    async def _withdraw_guild_market(self, guild_id: int) -> int:
+        """Cancels every open listing and order in a server and returns what
+        they were holding. Called alongside _retract_guild_drills when the bot
+        is removed.
+
+        Same reasoning as the drills: escrow is real goods and real currency
+        held against a trade, and a server nobody can run a command in is a
+        server where that trade can never happen or be withdrawn. Leaving the
+        rows would strand a stack of ore and a pile of currency somewhere their
+        owner can no longer reach either.
+
+        Balances themselves are deliberately NOT returned or cleared - they are
+        kept exactly as they are so a re-invite restores them untouched
+        (see _set_guild_presence). Escrow is different because it is not a
+        balance: it is currency that has already left one, and a departed
+        server would leave it belonging to nobody.
+
+        Returns how many rows were withdrawn.
+        """
+        withdrawn = 0
+        async with self.db.transaction() as tx:
+            listings = await tx.fetchall(
+                "SELECT * FROM market_listings WHERE guild_id = ?", (guild_id,)
+            )
+            for row in listings:
+                if row["drill_id"] is not None:
+                    await tx.execute(
+                        "UPDATE drills SET listed_id = NULL WHERE drill_id = ? AND listed_id = ?",
+                        (row["drill_id"], row["listing_id"]),
+                    )
+                else:
+                    await adjust_user_quantity(
+                        tx, row["seller_id"], row["material_id"], row["quantity"]
+                    )
+                withdrawn += 1
+
+            orders = await tx.fetchall(
+                "SELECT * FROM market_orders WHERE guild_id = ?", (guild_id,)
+            )
+            for row in orders:
+                # Not a mint: this currency was escrowed, never burned, so
+                # returning it restores a balance rather than creating one.
+                await adjust_currency_balance(
+                    tx, guild_id, row["buyer_id"],
+                    player_price_total(row["price_units"], row["quantity"]),
+                )
+                withdrawn += 1
+
+            await tx.execute("DELETE FROM market_listings WHERE guild_id = ?", (guild_id,))
+            await tx.execute("DELETE FROM market_orders WHERE guild_id = ?", (guild_id,))
+        return withdrawn
+
     async def _set_guild_presence(self, guild_id: int, present: bool):
         await ensure_server_row(self.db, guild_id)
         await self.db.execute(
@@ -199,8 +290,12 @@ class MiningCog(commands.Cog):
     @commands.Cog.listener()
     async def on_guild_remove(self, guild: discord.Guild):
         retracted = await self._retract_guild_drills(guild.id)
+        withdrawn = await self._withdraw_guild_market(guild.id)
         await self._set_guild_presence(guild.id, False)
-        log.info("Removed from guild %s - retracted %d drill(s).", guild.id, retracted)
+        log.info(
+            "Removed from guild %s - retracted %d drill(s), withdrew %d market row(s).",
+            guild.id, retracted, withdrawn,
+        )
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
@@ -216,10 +311,26 @@ class MiningCog(commands.Cog):
         without this their drills would keep sitting in a server the bot left
         and their currency would keep showing up in /balance forever.
 
-        Idempotent, because on_ready fires again on every reconnect."""
+        Idempotent, because on_ready fires again on every reconnect - which is
+        why the present servers are marked in one transaction rather than two
+        statements each: a reconnect is routine, and this used to be the
+        largest burst of writes the bot ever made at once."""
         present_ids = {guild.id for guild in self.bot.guilds}
-        for guild_id in present_ids:
-            await self._set_guild_presence(guild_id, True)
+        known = {
+            row["guild_id"]
+            for row in await self.db.fetchall("SELECT guild_id FROM server_config")
+        }
+        async with self.db.transaction() as tx:
+            # A server joined while offline has no row yet, and the row has to
+            # exist before the UPDATE below can mark it.
+            for guild_id in present_ids - known:
+                await ensure_server_row(tx, guild_id)
+            if present_ids:
+                placeholders = ",".join("?" * len(present_ids))
+                await tx.execute(
+                    f"UPDATE server_config SET bot_present = 1 WHERE guild_id IN ({placeholders})",
+                    tuple(present_ids),
+                )
 
         stale = await self.db.fetchall(
             "SELECT guild_id FROM server_config WHERE bot_present = 1"
@@ -275,24 +386,18 @@ class MiningCog(commands.Cog):
         onto a machine, and a machine standing in another server isn't somewhere
         you can reach from this one - see is_local_drill, which is what actually
         enforces that."""
-        rows = await self.db.fetchall(
-            "SELECT * FROM drills WHERE owner_id = ?", (interaction.user.id,)
-        )
         return await drill_choices(
             self.db, interaction.user.id, current,
             scope=DrillScope.LOCAL, guild_id=interaction.guild_id,
-            guild_names=guild_name_map(self.bot, rows),
+            bot=self.bot,
         )
 
     async def _local_containered_drill_autocomplete(self, interaction: discord.Interaction, current: str):
-        rows = await self.db.fetchall(
-            "SELECT * FROM drills WHERE owner_id = ?", (interaction.user.id,)
-        )
         return await drill_choices(
             self.db, interaction.user.id, current,
             scope=DrillScope.LOCAL, guild_id=interaction.guild_id,
             require_container=True,
-            guild_names=guild_name_map(self.bot, rows),
+            bot=self.bot,
         )
 
     async def _owned_container_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -369,11 +474,9 @@ class MiningCog(commands.Cog):
                     f"**{drill_label(row)}** is already placed in a server.", ephemeral=True
                 )
                 return
-            if row["locked_job_id"] is not None:
-                await interaction.response.send_message(
-                    f"**{drill_label(row)}** is being upgraded in the factory - it can't be placed until that finishes.",
-                    ephemeral=True,
-                )
+            unavailable = drill_unavailable_message(row, "place it")
+            if unavailable is not None:
+                await interaction.response.send_message(unavailable, ephemeral=True)
                 return
 
             # Re-read inside the transaction rather than reusing the figure from
@@ -391,8 +494,13 @@ class MiningCog(commands.Cog):
                 )
                 return
 
+            # Mining starts now, so its first tick pays for the time since
+            # and not a whole tick (drills.mined_until). placed_at is what
+            # voting eligibility is measured against (utils/government.py:
+            # can_vote).
             await tx.execute(
-                "UPDATE drills SET guild_id = ? WHERE drill_id = ? AND guild_id IS NULL",
+                "UPDATE drills SET guild_id = ?, mined_until = datetime('now'), "
+                "placed_at = datetime('now') WHERE drill_id = ? AND guild_id IS NULL",
                 (interaction.guild_id, row["drill_id"]),
             )
 
@@ -433,7 +541,8 @@ class MiningCog(commands.Cog):
         drills: unambiguous if exactly one is free to place, otherwise they
         have to say which. Sends its own error and returns None if it can't."""
         candidates = await self.db.fetchall(
-            "SELECT * FROM drills WHERE owner_id = ? AND guild_id IS NULL AND locked_job_id IS NULL",
+            "SELECT * FROM drills WHERE owner_id = ? AND guild_id IS NULL "
+            f"AND {DRILL_AVAILABLE_SQL}",
             (interaction.user.id,),
         )
         if len(candidates) == 1:
@@ -456,21 +565,48 @@ class MiningCog(commands.Cog):
             (interaction.guild_id, interaction.user.id),
         )
         cfg = await self.db.fetchone(
-            "SELECT mining_pool_remaining, currency_emoji FROM server_config WHERE guild_id = ?",
+            "SELECT mining_pool_remaining, currency_emoji, bonanza_until FROM server_config "
+            "WHERE guild_id = ?",
             (interaction.guild_id,),
         )
         pool_remaining = cfg["mining_pool_remaining"] if cfg else 0
         currency_emoji = cfg["currency_emoji"] if cfg else None
+        # A running Server Bonanza doubles every drill here, so every rate
+        # below is quoted at the speed the harvest loop is actually paying.
+        boost = BONANZA_SPEED_MULTIPLIER if cfg and bonanza_active(cfg["bonanza_until"]) else 1
         slots = await mining_slot_status(self.db, interaction.guild_id)
-        member_count = await human_member_count(interaction.guild) if interaction.guild else 0
         contents = await pool_contents(self.db, interaction.guild_id)
 
         embed = make_embed("Mining Status", MINING_COLOR)
 
-        focus_id, _, _, unlocked = await get_focus(self.db, interaction.user.id)
-        if unlocked:
+        # The second of the three places an affinity is shown, and the only one
+        # that shows all three enhancements together - which is the point of
+        # the field. Each is listed only once its own gem has been paid, so a
+        # player who has bought none sees no field at all and a player who has
+        # bought one sees one line, rather than two rows of "None" advertising
+        # features they can't reach yet. The unlock embeds are where they are
+        # sold; this is where they are checked.
+        enhancements = []
+        focus_id, _, _, focus_unlocked = await get_focus(self.db, interaction.user.id)
+        if focus_unlocked:
+            enhancements.append(f"Focus · {focus_label(focus_id)}")
+        efficiency_id, _, efficiency_unlocked = await get_efficiency(
+            self.db, interaction.user.id
+        )
+        if efficiency_unlocked:
+            enhancements.append(f"Efficiency · {efficiency_label(efficiency_id)}")
+        affinity_id, affinity_carry, _, affinity_unlocked = await get_affinity(
+            self.db, interaction.user.id
+        )
+        if affinity_unlocked:
+            line = f"Affinity · {affinity_label(affinity_id)}"
+            progress = affinity_progress(affinity_id, affinity_carry)
+            if progress:
+                line += f"\n{progress}"
+            enhancements.append(line)
+        if enhancements:
             embed.add_field(
-                name="Your Mining Focus", value=focus_label(focus_id), inline=False
+                name="Mining Enhancements", value="\n".join(enhancements), inline=False
             )
 
         if not drills:
@@ -488,7 +624,7 @@ class MiningCog(commands.Cog):
             )
             lines = []
             for d in drills:
-                status = "FULL - awaiting /collect" if d["is_full"] else f"mining {rate_of(d):g}/hr"
+                status = "FULL - awaiting /collect" if d["is_full"] else f"mining {rate_of(d) * boost:g}/hr"
                 lines.append(
                     f"{drill_cell(d)} · {d['stored_amount']:,}/{capacity_of(d):,} · {status}"
                 )
@@ -496,13 +632,13 @@ class MiningCog(commands.Cog):
 
         # Directly under the drill list, because the number that list is
         # allowed to reach is the only reason a player looks for it. Both lines
-        # are facts like everything else in this embed - what the server has
-        # actually invested, against what the next slot actually costs.
+        # are facts like everything else in this embed - the server's actual
+        # mining slot progress, against what the next slot actually costs.
         embed.add_field(
             name="Mining Slots",
             value=(
                 f"**{len(drills):,} / {slots.slots:,}** used\n"
-                f"{format_currency(slots.invested, currency_emoji)} / "
+                f"{format_currency(slots.progress, currency_emoji)} / "
                 f"{format_currency(slots.next_threshold, currency_emoji)}"
             ),
             inline=False,
@@ -517,7 +653,7 @@ class MiningCog(commands.Cog):
             (interaction.guild_id,),
         )
         if active_drills:
-            total_rate = sum(rate_of(d) for d in active_drills)
+            total_rate = sum(rate_of(d) for d in active_drills) * boost
 
             counts: dict[str, int] = {}
             for d in active_drills:
@@ -533,7 +669,7 @@ class MiningCog(commands.Cog):
             ]
 
             embed.add_field(
-                name="Server Mining Speed",
+                name="Server Mining Speed" + (" · 🎉 Bonanza x2" if boost > 1 else ""),
                 value=f"{round(total_rate * 24):,}/day\n" + " ".join(cells),
                 inline=False,
             )
@@ -575,11 +711,9 @@ class MiningCog(commands.Cog):
                     "You don't have that drill placed in this server.", ephemeral=True
                 )
                 return
-            if row["locked_job_id"] is not None:
-                await interaction.response.send_message(
-                    f"**{drill_label(row)}** is busy in the factory - it can't be removed until that finishes.",
-                    ephemeral=True,
-                )
+            unavailable = drill_unavailable_message(row, "remove it")
+            if unavailable is not None:
+                await interaction.response.send_message(unavailable, ephemeral=True)
                 return
 
             # Back to the inventory as the same drill, keeping its level and
@@ -626,11 +760,9 @@ class MiningCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        if row["locked_job_id"] is not None:
-            await interaction.response.send_message(
-                f"**{drill_label(row)}** is busy in the factory - fit the container once that finishes.",
-                ephemeral=True,
-            )
+        unavailable = drill_unavailable_message(row, "fit the container")
+        if unavailable is not None:
+            await interaction.response.send_message(unavailable, ephemeral=True)
             return
         if container not in STORAGE_CONTAINERS:
             await interaction.response.send_message("That isn't a storage container.", ephemeral=True)
@@ -716,11 +848,9 @@ class MiningCog(commands.Cog):
                 f"**{drill_label(row)}** has no container fitted.", ephemeral=True
             )
             return
-        if row["locked_job_id"] is not None:
-            await interaction.response.send_message(
-                f"**{drill_label(row)}** is busy in the factory - pull the container once that finishes.",
-                ephemeral=True,
-            )
+        unavailable = drill_unavailable_message(row, "pull the container")
+        if unavailable is not None:
+            await interaction.response.send_message(unavailable, ephemeral=True)
             return
 
         removed = row["container_type"]
@@ -806,11 +936,15 @@ class MiningCog(commands.Cog):
             # One (guild_id, items) pair per drill actually emptied, so the
             # per-server summary below counts only what was really banked.
             hauls: list[tuple[int, int]] = []
+            # The same haul kept broken down by the guild whose pool it came
+            # out of, which the aggregate above deliberately loses. Nothing
+            # the player sees needs it - user_materials is global - but the
+            # production ledger does: mined value is credited to
+            # drills.guild_id, not to wherever /collect was typed.
+            per_guild_raw: dict[int, dict[str, int]] = {}
             for d in drills:
                 changed = await tx.execute_changes(
-                    "UPDATE drills SET stored_amount = 0, is_full = 0 "
-                    "WHERE drill_id = ? AND stored_amount = ?",
-                    (d["drill_id"], d["stored_amount"]),
+                    COLLECT_EMPTY_DRILL_SQL, (d["drill_id"], d["stored_amount"])
                 )
                 if not changed:
                     continue
@@ -818,14 +952,22 @@ class MiningCog(commands.Cog):
                 total_collected += d["stored_amount"]
                 # Real materials, drawn from the server's pool when they were
                 # mined, rather than rolled here at handover.
-                for material_id, qty in (await take_drill_contents(tx, d)).items():
+                drill_contents = await take_drill_contents(tx, d)
+                from_guild = per_guild_raw.setdefault(d["guild_id"], {})
+                for material_id, qty in drill_contents.items():
                     collected_breakdown[material_id] = collected_breakdown.get(material_id, 0) + qty
+                    from_guild[material_id] = from_guild.get(material_id, 0) + qty
 
             # The focus converts the WHOLE haul at once, not drill by drill.
             # Its rounding carry is per player, so converting each drill
             # separately would give a different answer depending on how many
             # drills someone happened to have going.
             focus_id, _, _, _ = await get_focus(tx, interaction.user.id)
+            # Read before anything rewrites it, for the ore-only comparison the
+            # receipt draws below.
+            raw_ore_total = sum(
+                qty for mid, qty in collected_breakdown.items() if mid in ORES
+            )
             collected_breakdown = await convert_haul(
                 tx, interaction.user.id, collected_breakdown
             )
@@ -839,8 +981,84 @@ class MiningCog(commands.Cog):
                 tx, interaction.user.id, collected_breakdown
             )
 
+            # The affinity runs last and is the only one of the three that
+            # touches gemstones - the other two convert and boost ore, and a
+            # affinity converts gems. Nothing they produce is an input to it,
+            # so the order between them is arbitrary; stating it keeps it
+            # arbitrary rather than accidental.
+            affinity_id, _, _, _ = await get_affinity(tx, interaction.user.id)
+            raw_gems = {
+                mid: qty for mid, qty in collected_breakdown.items() if mid in GEMSTONES
+            }
+            collected_breakdown = await convert_gems(
+                tx, interaction.user.id, collected_breakdown
+            )
+            # Re-read for the carry AFTER the conversion. The receipt promises
+            # progress the player can go and check against /mine affinity, so
+            # it has to be the figure that was committed rather than the one
+            # this haul started with.
+            _, affinity_carry, _, _ = await get_affinity(tx, interaction.user.id)
+
             for material_id, qty in collected_breakdown.items():
                 await adjust_user_quantity(tx, interaction.user.id, material_id, qty)
+
+            # The production ledger's mining rows, credited to the server each
+            # item was actually dug out of. THIS COMMAND SPANS SERVERS, so
+            # interaction.guild_id is the wrong guild here and would quietly
+            # hand whichever server the player happened to type /collect in
+            # every other server's ore. See docs/market.md section 5.
+            #
+            # What is recorded is what LANDED IN THE INVENTORY above, not what
+            # the drills banked - the focus and the efficiency change both the
+            # mix and the count, and the ledger has to agree with the receipt
+            # printed from the same numbers a few lines down.
+            #
+            # The ores were pooled - they have to be, since the focus's
+            # rounding carry is per player - so they are divided back out by
+            # each guild's share of the raw ore it contributed. That share is
+            # exact whenever the collect covered one server, which is all but
+            # the rarest of them.
+            ore_weights = {
+                guild_id: sum(qty for mid, qty in raw.items() if mid in ORES)
+                for guild_id, raw in per_guild_raw.items()
+            }
+            converted_ores = {
+                mid: qty for mid, qty in collected_breakdown.items() if mid in ORES
+            }
+            for guild_id, share in split_by_guild(converted_ores, ore_weights).items():
+                await record_mined(tx, guild_id, share)
+
+            # Gemstones were exactly attributable while nothing touched them,
+            # and for everyone without an affinity they still are: a gem is the
+            # one its own drill dug up, so it is credited to that drill's
+            # server and no reconstruction is needed or wanted.
+            #
+            # An affinity pools them exactly as the focus pools ore, and then
+            # they need the same treatment - weighted by what each guild's gems
+            # were WORTH rather than by how many there were, because one
+            # diamond and one ruby are not interchangeable the way two iron ore
+            # are. Comparing the gems before and after is what decides which
+            # case this is, so an affinity whose haul happened to contain only
+            # its own target keeps the exact attribution it is entitled to.
+            converted_gems = {
+                mid: qty for mid, qty in collected_breakdown.items() if mid in GEMSTONES
+            }
+            if converted_gems == raw_gems:
+                for guild_id, raw in per_guild_raw.items():
+                    gems = {mid: qty for mid, qty in raw.items() if mid in GEMSTONES}
+                    if gems:
+                        await record_mined(tx, guild_id, gems)
+            else:
+                gem_weights = {
+                    guild_id: sum(
+                        qty * MARKET_PRICE_CENTS[mid]
+                        for mid, qty in raw.items()
+                        if mid in GEMSTONES
+                    )
+                    for guild_id, raw in per_guild_raw.items()
+                }
+                for guild_id, share in split_by_guild(converted_gems, gem_weights).items():
+                    await record_mined(tx, guild_id, share)
 
             # What the player now holds of everything that just came in, read
             # after the credits and inside the same transaction so the numbers
@@ -870,24 +1088,75 @@ class MiningCog(commands.Cog):
         # returns fewer, denser items and an iron focus more - so the haul and
         # what landed in the inventory are two different numbers and the embed
         # has to say which is which rather than quietly contradicting itself.
-        # `applied` lists every unlockable that moved the count, so a third
-        # raw-material-output modifier joins this line the same way focus and
-        # efficiency do rather than needing its own.
-        received = sum(collected_breakdown.values())
-        if received != total_collected:
+        #
+        # COUNTED OVER ORE ONLY, on both sides. This line belongs to the two
+        # features that act on ore, and an affinity is deliberately absent from
+        # it: it converts gems and leaves every ore alone, so naming it here
+        # would credit it for a change it did not make. Counting the whole haul
+        # instead would be worse than merely untidy - 45 rubies becoming one
+        # diamond drops the total by 44, and the line would report that as
+        # something the focus did. Gems get their own field below.
+        ore_received = sum(qty for mid, qty in collected_breakdown.items() if mid in ORES)
+        if ore_received != raw_ore_total:
             applied = []
             if focus_id != DEFAULT_MINING_FOCUS:
                 applied.append(f"**{focus_label(focus_id)}** focus")
             if efficiency_id != DEFAULT_MINING_EFFICIENCY:
                 applied.append(f"**{efficiency_label(efficiency_id)}** efficiency")
-            description_lines.append(
-                f"\nWhich your {'\nand '.join(applied)}\nturned into **{received:,}** raw materials"
-            )
+            if applied:
+                description_lines.append(
+                    f"\nWhich your {'\nand '.join(applied)}"
+                    f"\nturned into **{ore_received:,}** raw materials"
+                )
         embed.description = "\n".join(description_lines)
 
         lines = material_breakdown_lines(collected_breakdown, totals)
         if lines:
             add_multi_field(embed, "Materials", lines)
+
+        # The first of the three places an affinity's progress is shown, and the
+        # one that matters most: a player aiming at a diamond who collects a
+        # ruby receives NOTHING in the materials list above, because 45 of them
+        # make one diamond. Without this the rarest event in the game would
+        # read as an empty haul. Shown whenever there is either a conversion to
+        # report or progress standing, so it never appears as a bare heading.
+        #
+        # The field ends with what the affinity MADE, separated by a blank
+        # line, because that is the one number the materials list above cannot
+        # answer. A diamond in that list is just a diamond; whether the pool
+        # handed it over or 45 rubies and 3 obsidian were melted into it is the
+        # question this field exists to settle, and it came up the first time
+        # anyone mined a mixed haul.
+        affinity_lines = []
+        target = MINING_AFFINITIES[affinity_id]["primary"]
+        if target is not None:
+            target_info = get_material_info(target)
+            # GEMSTONES order (commonest first) rather than whatever order the
+            # drill's rows came back in, so the same haul always renders the
+            # same way - the rule material_breakdown_lines follows for ore.
+            for material_id in GEMSTONES:
+                quantity = raw_gems.get(material_id, 0)
+                if material_id == target or not quantity:
+                    continue
+                info = get_material_info(material_id)
+                affinity_lines.append(
+                    f"{info['emoji']} **{quantity:,} {material_name(info, quantity)}** → "
+                    f"{target_info['emoji']} {target_info['name']}"
+                )
+            progress = affinity_progress(affinity_id, affinity_carry)
+            if progress:
+                affinity_lines.append(progress)
+            # What the conversion added, not what the haul holds: a diamond
+            # affinity that drew a diamond from the pool converted nothing, and
+            # counting the whole line would claim it.
+            created = collected_breakdown.get(target, 0) - raw_gems.get(target, 0)
+            if created > 0:
+                affinity_lines.append(
+                    f"\n{target_info['emoji']} **{created:,} {material_name(target_info, created)}** "
+                    f"{'was' if created == 1 else 'were'} created this collection"
+                )
+        if affinity_lines:
+            add_multi_field(embed, f"{affinity_label(affinity_id)} Affinity", affinity_lines)
 
         await respond(interaction, self.db, embed=embed)
 
@@ -956,8 +1225,8 @@ class MiningCog(commands.Cog):
             return
         if unlocked and last_changed == today:
             await interaction.response.send_message(
-                "You've already changed your mining focus today. It resets at "
-                "midnight Arizona time - changing is free, just not more than once a day.",
+                f"You've already changed your mining focus today. "
+                f"You can change it <t:{int(next_reset().timestamp())}:R>.",
                 ephemeral=True,
             )
             return
@@ -975,7 +1244,7 @@ class MiningCog(commands.Cog):
                             info = get_material_info(material_id)
                             await interaction.response.send_message(
                                 f"Choosing a mining focus costs {info['emoji']} "
-                                f"**{quantity} {info['name']}**, and you have {have}. "
+                                f"**{quantity} {material_name(info, quantity)}**, and you have {have}. "
                                 f"Mine one, or press one with `/press craft`.",
                                 ephemeral=True,
                             )
@@ -1009,7 +1278,7 @@ class MiningCog(commands.Cog):
             embed.description = f"You're mining **{focus_label(current)}**."
         else:
             costs = ", ".join(
-                f"{get_material_info(m)['emoji']} **{q} {get_material_info(m)['name']}**"
+                f"{get_material_info(m)['emoji']} **{q} {material_name(get_material_info(m), q)}**"
                 for m, q in MINING_FOCUS_UNLOCK_COST.items()
             )
             embed.description = (
@@ -1096,8 +1365,8 @@ class MiningCog(commands.Cog):
             return
         if unlocked and last_changed == today:
             await interaction.response.send_message(
-                "You've already changed your mining efficiency today. It resets at "
-                "midnight Arizona time - changing is free, just not more than once a day.",
+                f"You've already changed your mining efficiency today. "
+                f"You can change it <t:{int(next_reset().timestamp())}:R>.",
                 ephemeral=True,
             )
             return
@@ -1115,7 +1384,7 @@ class MiningCog(commands.Cog):
                             info = get_material_info(material_id)
                             await interaction.response.send_message(
                                 f"Choosing a mining efficiency costs {info['emoji']} "
-                                f"**{quantity} {info['name']}**, and you have {have}. "
+                                f"**{quantity} {material_name(info, quantity)}**, and you have {have}. "
                                 f"Mine one, or press one with `/press craft`.",
                                 ephemeral=True,
                             )
@@ -1153,7 +1422,7 @@ class MiningCog(commands.Cog):
             embed.description = f"Your mining efficiency is **{efficiency_label(current)}**."
         else:
             costs = ", ".join(
-                f"{get_material_info(m)['emoji']} **{q} {get_material_info(m)['name']}**"
+                f"{get_material_info(m)['emoji']} **{q} {material_name(get_material_info(m), q)}**"
                 for m, q in MINING_EFFICIENCY_UNLOCK_COST.items()
             )
             embed.description = (
@@ -1182,14 +1451,175 @@ class MiningCog(commands.Cog):
 
         return embed
 
+    @app_commands.command(
+        name="affinity",
+        description="Choose which gemstone every other gem you mine arrives as (costs one Diamond)",
+    )
+    @app_commands.describe(
+        affinity="Leave blank to see your current affinity and what the others do"
+    )
+    # Static choices, names only, for exactly the reasons /focus uses them -
+    # see the comment there.
+    @app_commands.choices(affinity=[
+        app_commands.Choice(name=info["name"], value=affinity_id)
+        for affinity_id, info in MINING_AFFINITIES.items()
+    ])
+    async def affinity(
+        self,
+        interaction: discord.Interaction,
+        affinity: app_commands.Choice[str] | None = None,
+    ):
+        """Sets, or shows, this player's mining affinity.
+
+        Global rather than per-server and applied at collection, for the same
+        reasons /focus and /efficiency are: /collect empties drills across
+        every server in one call, so a per-server setting would convert each
+        drill's gems differently inside a single receipt.
+
+        The diamond is charged ONCE, on the first call that actually chooses a
+        gem. Changes are free and limited to one a day, matching both siblings.
+
+        Unlike them, a change can hand the player materials: the accrued carry
+        is worth real gems, so set_affinity converts it to the new target and
+        pays out whatever whole ones fall out. That payout is reported here
+        rather than left to be discovered in /inventory.
+        """
+        current, carry, last_changed, unlocked = await get_affinity(
+            self.db, interaction.user.id
+        )
+        today = job_board_today()
+
+        if affinity is None:
+            await respond(
+                interaction, self.db, embed=self._affinity_embed(current, carry, unlocked)
+            )
+            return
+
+        chosen = affinity.value
+        # Deliberately NOT gated on `unlocked`, exactly as neither sibling is:
+        # someone who has never paid reads as None, so this also catches a
+        # player picking None as their first affinity and charging them a
+        # diamond for the mining they already had.
+        if chosen == current:
+            await interaction.response.send_message(
+                f"Your mining affinity is already **{affinity_label(current)}**."
+                + ("" if unlocked else " That's the default - choosing it wouldn't change "
+                   "anything, so it isn't worth a Diamond. Pick one of the others."),
+                ephemeral=True,
+            )
+            return
+        if unlocked and last_changed == today:
+            await interaction.response.send_message(
+                f"You've already changed your mining affinity today. "
+                f"You can change it <t:{int(next_reset().timestamp())}:R>.",
+                ephemeral=True,
+            )
+            return
+
+        # Taking the diamond, recording the choice, moving the carry and paying
+        # out whatever it came to all commit together: a failure between them
+        # either charges for nothing, hands the feature out free, or pays a
+        # player gems that were never deducted from their progress.
+        try:
+            async with self.db.transaction() as tx:
+                await ensure_user_row(tx, interaction.user.id)
+                if not unlocked:
+                    for material_id, quantity in MINING_AFFINITY_UNLOCK_COST.items():
+                        have = await get_user_quantity(tx, interaction.user.id, material_id)
+                        if have < quantity:
+                            info = get_material_info(material_id)
+                            await interaction.response.send_message(
+                                f"Choosing a mining affinity costs {info['emoji']} "
+                                f"**{quantity} {material_name(info, quantity)}**, and you have {have}. "
+                                f"Mine one, or press one with `/press craft`.",
+                                ephemeral=True,
+                            )
+                            return
+                        await deduct_user_quantity(tx, interaction.user.id, material_id, quantity)
+                paid = await set_affinity(tx, interaction.user.id, chosen, today)
+                _, carry, _, _ = await get_affinity(tx, interaction.user.id)
+        except InsufficientQuantity:
+            await interaction.response.send_message(
+                "Your inventory changed while that was going through - nothing was spent. Try again.",
+                ephemeral=True,
+            )
+            return
+
+        embed = self._affinity_embed(chosen, carry, True)
+        embed.title = "Mining Affinity Set" if unlocked else "Mining Affinity Unlocked"
+        if paid:
+            banked = ", ".join(
+                f"{get_material_info(m)['emoji']} **{q:,} {material_name(get_material_info(m), q)}**"
+                for m, q in paid.items()
+            )
+            embed.add_field(
+                name="Progress Carried Over",
+                value=f"What you had accrued came to {banked}, now in your inventory.",
+                inline=False,
+            )
+        if not unlocked:
+            embed.set_footer(text=unlock_footer(MINING_AFFINITY_UNLOCK_COST))
+        await respond(interaction, self.db, embed=embed)
+
+    def _affinity_embed(self, current: str, carry: float, unlocked: bool) -> discord.Embed:
+        """The affinity menu, laid out exactly as the focus and efficiency
+        menus are: one field per option, "(selected)" on the one you're on.
+
+        The text above the fields is deliberately shorter than theirs. Those
+        two need sentences - a focus that can't feed steel, an efficiency your
+        focus can't supply - but an affinity's options are exchange rates, and
+        the rates say what the feature does on their own.
+
+        The third of the three places progress is shown, and the only one a
+        player can reach without mining anything.
+        """
+        embed = make_embed("Mining Affinity", MINING_COLOR)
+        if unlocked:
+            embed.description = f"Your mining affinity is **{affinity_label(current)}**."
+            progress = affinity_progress(current, carry)
+            if progress:
+                embed.description += f"\n{progress}"
+        else:
+            costs = ", ".join(
+                f"{get_material_info(m)['emoji']} **{q} {material_name(get_material_info(m), q)}**"
+                for m, q in MINING_AFFINITY_UNLOCK_COST.items()
+            )
+            embed.description = (
+                f"Unlocking it costs {costs}, once. After that, changing is free, once a day."
+            )
+
+        # Same heading shape as /focus and /efficiency - see the comment in
+        # _focus_embed on why the marker belongs in the field name.
+        for affinity_id, info in MINING_AFFINITIES.items():
+            marker = " (selected)" if affinity_id == current else ""
+            embed.add_field(
+                name=f"{info['emoji']} {info['name']}{marker}",
+                value=info["blurb"],
+                inline=False,
+            )
+
+        return embed
+
     @tasks.loop(minutes=HARVEST_TICK_MINUTES)
     async def harvest_loop(self):
-        """Every tick, each placed non-full drill pulls a tick's share of its
-        hourly rate from its server's mining pool, filling up to its capacity
-        and then marking itself full."""
-        ticks_per_hour = 60 / HARVEST_TICK_MINUTES
+        """Every tick, each placed non-full drill pulls what the time since it
+        was last credited pays for from its server's mining pool, filling up
+        to its capacity and then marking itself full.
+
+        That is a whole tick for a drill that was mining all along, and less
+        for one that only started since the last tick - placed, or freed up by
+        a /collect or a container. drills.mined_until is what tells the two
+        apart, and it costs nothing extra: this loop already re-reads and
+        rewrites every drill it visits."""
+        now = self._now()
+        now_text = sqlite_timestamp(now)
+        # Read once per tick rather than per drill: a Bonanza is a handful of
+        # servers at most, and every drill in them mines at double rate.
+        bonanza = await guilds_with_bonanza(self.db, now)
+        # Only the ids: every drill is re-read inside its own transaction
+        # below, so nothing else from this select would be used.
         drills = await self.db.fetchall(
-            "SELECT * FROM drills WHERE is_full = 0 AND guild_id IS NOT NULL"
+            "SELECT drill_id FROM drills WHERE is_full = 0 AND guild_id IS NOT NULL"
         )
         for d in drills:
             # One transaction per drill: the pool is shared by every drill in
@@ -1224,8 +1654,13 @@ class MiningCog(commands.Cog):
                     )
                     continue
 
+                rate = rate_of(current)
+                if current["guild_id"] in bonanza:
+                    rate *= BONANZA_SPEED_MULTIPLIER
                 amount, carry = advance_harvest(
-                    current["harvest_progress"], rate_of(current), ticks_per_hour
+                    current["harvest_progress"],
+                    rate,
+                    elapsed_work_hours(current["mined_until"], now, HARVEST_TICK_MINUTES),
                 )
 
                 # What comes out is decided HERE rather than at /collect, which
@@ -1248,8 +1683,10 @@ class MiningCog(commands.Cog):
                 # drill that filled up mid-tick shouldn't pay out the rest of
                 # that tick the instant it's emptied.
                 await tx.execute(
-                    "UPDATE drills SET stored_amount = ?, is_full = ?, harvest_progress = ? WHERE drill_id = ?",
-                    (new_stored, 1 if new_stored >= capacity else 0, carry, current["drill_id"]),
+                    "UPDATE drills SET stored_amount = ?, is_full = ?, harvest_progress = ?, "
+                    "mined_until = ? WHERE drill_id = ?",
+                    (new_stored, 1 if new_stored >= capacity else 0, carry, now_text,
+                     current["drill_id"]),
                 )
                 await add_drill_contents(tx, current["drill_id"], drawn)
 

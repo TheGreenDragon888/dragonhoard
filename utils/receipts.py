@@ -14,22 +14,32 @@ costs no extra queries.
 """
 import discord
 
-from data.materials import get_material_info
+from data.materials import get_material_info, material_name
 from utils.embeds import make_embed, add_multi_field
-from utils.formatting import format_relative_timestamp, format_price, DEFAULT_CURRENCY_EMOJI
+from utils.formatting import (
+    format_currency,
+    format_relative_timestamp,
+    format_price,
+    DEFAULT_CURRENCY_EMOJI,
+)
 
 
-def _material_line(material_id: str, amount: int, remaining: int) -> str:
+def _material_line(material_id: str, amount: int, total_after: int, label: str = "remaining") -> str:
     """One consumed-material row: what came out of the inventory, and what
     that material is down to now.
+
+    label defaults to "remaining" for the queue receipts below, where the
+    material is always consumed. build_market_receipt_embed overrides it for
+    a /market buy's material line, which gains rather than loses stock, so
+    "remaining" would misdescribe a total that just went up.
 
     Thousands separators because the blast furnace consumes in the thousands
     (2,000 iron ore for one batch of steel), and an unseparated 540000 in a
     receipt is a number the reader has to count digits on."""
     info = get_material_info(material_id)
     emoji = info["emoji"] if info else "❓"
-    name = info["name"] if info else material_id
-    return f"{emoji} **{amount:,} {name}** ({remaining:,} remaining)"
+    name = material_name(info, amount) if info else material_id
+    return f"{emoji} **{amount:,} {name}** ({total_after:,} {label})"
 
 
 def build_receipt_embed(
@@ -76,7 +86,7 @@ def build_receipt_embed(
     else:
         product = get_material_info(product_id)
         product_emoji = product["emoji"] if product else "❓"
-        product_name = product["name"] if product else product_id
+        product_name = material_name(product, quantity) if product else product_id
 
     description = f"Queued {product_emoji} **{quantity:,} {product_name}** for {action}."
     if eta_hours is not None:
@@ -124,9 +134,11 @@ def build_market_receipt_embed(
     material_id: str,
     quantity: int,
     material_remaining: int,
+    material_gained: bool,
     currency_field: str,
     currency_amount: float,
     balance_after: float,
+    currency_gained: bool,
     currency_emoji: str | None,
     round_up_currency: bool,
 ) -> discord.Embed:
@@ -141,6 +153,13 @@ def build_market_receipt_embed(
     shape - emoji, bolded amount, remainder in parentheses - so a trade
     reads the same way a production job's receipt does.
 
+    Exactly one of material_gained/currency_gained is True per call - a trade
+    always gives up one side and gains the other. "remaining" only fits the
+    side given up (what's left after losing some); the side gained just went
+    up, so material_gained/currency_gained swap that line's word to one that
+    doesn't imply depletion ("held"/"balance") instead of mislabeling a
+    total that just grew.
+
     round_up_currency mirrors Fee Paid's round_up=True: round up when the
     amount is being taken from the user (a purchase must never look cheaper
     than it was) and down when it's being paid to them (a sale must never
@@ -150,7 +169,10 @@ def build_market_receipt_embed(
 
     embed.add_field(
         name=material_field,
-        value=_material_line(material_id, quantity, material_remaining),
+        value=_material_line(
+            material_id, quantity, material_remaining,
+            label="held" if material_gained else "remaining",
+        ),
         inline=False,
     )
     embed.add_field(
@@ -158,9 +180,40 @@ def build_market_receipt_embed(
         value=(
             f"{currency_emoji or DEFAULT_CURRENCY_EMOJI} "
             f"**{format_price(currency_amount, round_up=round_up_currency)}** "
-            f"({format_price(balance_after)} remaining)"
+            f"({format_price(balance_after)} {'balance' if currency_gained else 'remaining'})"
         ),
         inline=False,
     )
 
     return embed
+
+
+def fill_lines(fills, currency_emoji: str | None, preposition: str) -> list[str]:
+    """One line per counterparty on a trade that spanned more than the server,
+    for the receipt's description.
+
+    Returns EMPTY for a trade that cleared entirely against the server, which
+    is what keeps every pre-1.4 receipt looking exactly as it did: the
+    description sentence already says "to the server for X", and a single line
+    repeating it underneath would be noise on the overwhelming majority of
+    trades.
+
+    `preposition` is "from" on a purchase and "to" on a sale - the same list
+    describes both directions, and only this word differs.
+
+    Players are named by mention. Embeds never fire a notification, and the
+    client resolves a raw mention whether or not that member is cached - the
+    same reasoning utils/embeds.py: job_owner_label is built on.
+    """
+    from utils.market_book import SERVER
+
+    if all(fill.source is SERVER for fill in fills):
+        return []
+    lines = []
+    for fill in fills:
+        who = "the server" if fill.source is SERVER else f"<@{fill.counterparty}>"
+        lines.append(
+            f"· **{fill.quantity:,}** {preposition} {who} at "
+            f"{format_currency(fill.total / fill.quantity, currency_emoji)} each"
+        )
+    return lines

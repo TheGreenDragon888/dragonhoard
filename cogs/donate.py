@@ -173,13 +173,14 @@ class DonateCog(commands.Cog):
             ),
             inline=False,
         )
-        # Mining slots ride on the sum of EVERY machine's fees, so a donation to
-        # any one of them moves this - which is worth showing here, where a
-        # player is choosing how much to give and to what. Shown as one field
-        # rather than the machine's two, because the unlock and the progress
-        # toward the next one are the same sentence for slots.
+        # Mining slots ride on the fees every machine has collected together
+        # (utils/db_helpers.py: slot_progress), so a donation to any one of
+        # them moves this - which is worth
+        # showing here, where a player is choosing how much to give and to what.
+        # Shown as one field rather than the machine's two, because the unlock
+        # and the progress toward the next one are the same sentence for slots.
         slot_progress = (
-            f"{format_currency(min(slots.invested, slots.next_threshold), currency_emoji)} / "
+            f"{format_currency(min(slots.progress, slots.next_threshold), currency_emoji)} / "
             f"{format_currency(slots.next_threshold, currency_emoji)} "
             f"towards {slots.slots + 1:,} per player"
         )

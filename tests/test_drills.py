@@ -18,10 +18,11 @@ from data.materials import (
     effective_capacity,
     effective_rate,
     get_material_info,
+    material_name,
     raw_input_cost,
     upgrade_cost,
 )
-from utils.drills import drill_cell, drill_label
+from utils.drills import drill_cell, drill_label, material_breakdown_lines
 
 # Matches HARVEST_TICK_MINUTES = 5 in cogs/mining.py.
 TICKS_PER_HOUR = 12
@@ -198,7 +199,7 @@ class AdvanceHarvestTests(unittest.TestCase):
     def _mine(self, rate_per_hour, ticks):
         total, carry = 0, 0.0
         for _ in range(ticks):
-            amount, carry = advance_harvest(carry, rate_per_hour, TICKS_PER_HOUR)
+            amount, carry = advance_harvest(carry, rate_per_hour, 1 / TICKS_PER_HOUR)
             total += amount
         return total
 
@@ -239,7 +240,7 @@ class AdvanceHarvestTests(unittest.TestCase):
     def test_carry_stays_a_fraction(self):
         carry = 0.0
         for _ in range(50):
-            _, carry = advance_harvest(carry, 6, TICKS_PER_HOUR)
+            _, carry = advance_harvest(carry, 6, 1 / TICKS_PER_HOUR)
             self.assertGreaterEqual(carry, 0.0)
             self.assertLess(carry, 1.0)
 
@@ -257,7 +258,11 @@ class DrillDisplayTests(unittest.TestCase):
         base = {
             "drill_id": 7, "guild_id": None, "owner_id": 1, "drill_type": "iron_drill",
             "level": 1, "container_type": None, "stored_amount": 0,
-            "locked_job_id": None,
+            # Both columns drill_unavailable_reason reads. A fixture missing
+            # one would raise rather than read as "available", which is the
+            # right failure - see DRILL_AVAILABLE_SQL on why these travel
+            # together.
+            "locked_job_id": None, "listed_id": None,
         }
         base.update(columns)
         return base
@@ -331,6 +336,26 @@ class MaterialRegistryTests(unittest.TestCase):
         # would be read by nothing and drift out of sync.
         for drill_type, info in DRILLS.items():
             self.assertNotIn("storage_capacity", info, drill_type)
+
+
+class MaterialNameTests(unittest.TestCase):
+    def test_gemstones_take_their_plural_after_any_count_but_one(self):
+        ruby, diamond = get_material_info("ruby"), get_material_info("diamond")
+        self.assertEqual(material_name(ruby, 1), "Ruby")
+        self.assertEqual(material_name(ruby, 3), "Rubies")
+        self.assertEqual(material_name(ruby, 0), "Rubies")
+        self.assertEqual(material_name(diamond, 1), "Diamond")
+        self.assertEqual(material_name(diamond, 2), "Diamonds")
+
+    def test_a_material_without_a_plural_keeps_its_name(self):
+        for material_id in ("iron_ore", "obsidian", "ruby_drill"):
+            info = get_material_info(material_id)
+            self.assertEqual(material_name(info, 5), info["name"], material_id)
+
+    def test_the_collect_haul_pluralises_each_gem_by_its_own_count(self):
+        lines = material_breakdown_lines({"ruby": 3, "diamond": 1})
+        self.assertTrue(any("**3 Rubies**" in line for line in lines), lines)
+        self.assertTrue(any("**1 Diamond**" in line for line in lines), lines)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,13 @@ directly, and bolting an announcement onto "you only have 3 of that item" reads
 as though the two are related. It does mean a player whose every command fails
 never sees a notice, which is the right trade.
 
+A notice can also carry an ACTION - `notifications.action_key`, an opaque
+"<kind>:<id>" string naming something the reader can do about it. Delivery
+turns that into buttons on the very reply the notice rides in on; the registry
+that maps a kind to its buttons lives in utils/responses.py. Prediction bets
+(1.4) are the only thing raising one so far: a bet's two "back it"/"oppose it"
+buttons reach a server's players this way rather than through a channel post.
+
 Marking happens AFTER the send succeeds, so the delivery is at-least-once: if
 Discord rejects the message the notice is still pending and will ride along with
 the next command. Marking first would make it at-most-once, and silently losing
@@ -62,7 +69,7 @@ GLOBAL_FEED_ID = 0
 # `id IN (NULL, 7)` is true for 7 and merely unknown (never true) for anything
 # else, so a bot with no global notices at all simply matches nothing.
 _UNSEEN_SQL = """
-SELECT n.notification_id, n.scope, n.guild_id, n.title, n.body
+SELECT n.notification_id, n.scope, n.guild_id, n.title, n.body, n.action_key
 FROM notifications n
 LEFT JOIN notification_reads r
        ON r.user_id = ?
@@ -128,16 +135,24 @@ def notice_embed(row) -> discord.Embed:
     return embed
 
 
-async def post_server_notification(db: _Executor, guild_id: int, title: str, body: str) -> int:
+async def post_server_notification(
+    db: _Executor, guild_id: int, title: str, body: str, action_key: str | None = None
+) -> int:
     """Raises a notice for one server, shown once to each of its players. The
     entry point for features that need to tell a whole guild something.
 
     Returns the new notification_id. Nothing dedupes these - a caller that can
     fire twice for the same event has to guard that itself, because "the same
-    title" is not the same thing as "the same event"."""
+    title" is not the same thing as "the same event".
+
+    `action_key` attaches something the reader can DO about it - see the action
+    registry in utils/responses.py, which turns it into buttons on the same
+    reply this notice arrives in. Almost every notice leaves it None and is
+    text alone."""
     return await db.execute(
-        "INSERT INTO notifications (scope, guild_id, title, body) VALUES ('server', ?, ?, ?)",
-        (guild_id, title, body),
+        "INSERT INTO notifications (scope, guild_id, title, body, action_key) "
+        "VALUES ('server', ?, ?, ?, ?)",
+        (guild_id, title, body, action_key),
     )
 
 
@@ -174,8 +189,13 @@ async def fetch_unseen_personal(db: Database, user_id: int) -> list:
     rowid breaks a tie, since created_at has one-second resolution and both can
     be raised by the same /collect.
     """
+    # NULL AS action_key so a personal notice has the same row shape as a
+    # broadcast one and utils/responses.py can read the column off either
+    # without asking which it is holding. Nothing raises a personal notice with
+    # an action today; the column is on `notifications` alone.
     return await db.fetchall(
-        "SELECT notice_key, title, body, 'user' AS scope FROM user_notifications "
+        "SELECT notice_key, title, body, 'user' AS scope, NULL AS action_key "
+        "FROM user_notifications "
         "WHERE user_id = ? AND seen_at IS NULL ORDER BY created_at, rowid",
         (user_id,),
     )

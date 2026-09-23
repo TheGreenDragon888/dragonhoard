@@ -12,12 +12,13 @@ the drain loop for real; the loop body is then driven a tick at a time.
 """
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from cogs.scrapper import ScrapperCog
+from cogs.scrapper import PROCESS_TICK_MINUTES, ScrapperCog
 from database.db import Database
 from data.materials import drill_scrap_yield, scrap_yield
-from utils.db_helpers import ensure_server_row, ensure_user_row
+from utils.db_helpers import ProductionClock, ensure_server_row, ensure_user_row
 
 GUILD = 8484
 USER = 4242
@@ -33,7 +34,12 @@ class ScrapperDrainTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.cog = ScrapperCog.__new__(ScrapperCog)
         self.cog.db = self.db
-        self.cog._production_progress = {}
+        # A clock the test moves a tick at a time. It starts a minute ahead of
+        # real time so a job queued here (queued_at is SQLite's real clock)
+        # reads as having been waiting since before the first tick, which then
+        # earns a whole tick of work - see utils/db_helpers.py: ProductionClock.
+        self.now = datetime.now(timezone.utc) + timedelta(minutes=1)
+        self.cog._production = ProductionClock(PROCESS_TICK_MINUTES, now=lambda: self.now)
 
     async def asyncTearDown(self):
         self._dir.cleanup()
@@ -42,6 +48,7 @@ class ScrapperDrainTestCase(unittest.IsolatedAsyncioTestCase):
         """Runs the drain loop's body. A level 1 scrapper does 2 items/hour
         over 12 ticks an hour, so several ticks are needed per item."""
         for _ in range(times):
+            self.now += timedelta(minutes=PROCESS_TICK_MINUTES)
             await ScrapperCog.process_loop.coro(self.cog)
 
     async def set_level(self, level):

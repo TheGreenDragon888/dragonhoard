@@ -32,9 +32,13 @@ If a player places a drill without having one (nothing in inventory, nothing alr
 Every drill is tracked individually rather than as a stack, and keeps its level and its attached container for its whole life - including while it sits unplaced in your inventory. Commands that act on a drill (/mine place, /mine remove, /mine attach, /mine detach, /factory upgrade) take a specific drill picked from a list rather than a drill type.
 
 Mining Slots
-How many drills one player may have placed in a server is a SERVER-wide unlock, not a per-player one. Every server starts at 3 (BASE_MINING_SLOTS) and buys more with the fees its infrastructure collects. The ladder is 25 / 125 / 625 / 3,125 in cumulative fees, each rung five times the last (MINING_SLOT_THRESHOLD_BASE and UPGRADE_THRESHOLD_STEP in data/materials.py), and there is no maximum - the cost climbs out of reach on its own, exactly as machine levels do.
+How many drills one player may have placed in a server is a SERVER-wide unlock, not a per-player one. Every server starts at 3 (BASE_MINING_SLOTS) and buys more with its MINING SLOT PROGRESS, which /economy status shows under "Mining slot progress" (it was "Fees collected" until 1.4). The ladder is 25 / 125 / 625 / 3,125 in progress, each rung five times the last (MINING_SLOT_THRESHOLD_BASE and UPGRADE_THRESHOLD_STEP in data/materials.py), and there is no maximum - the cost climbs out of reach on its own, exactly as machine levels do.
 
-What counts toward it is the SUM of every machine's lifetime fees - furnace, blast furnace, factory, press and scrapper - plus anything given through /donate infrastructure, which lands in the same per-machine pots. That is the point of summing rather than picking one machine: a slot is the whole server's investment paying off, so a server that spread its spending across five machines is not punished against one that funnelled everything into a single ladder.
+That total is the SUM of every machine's lifetime fees - furnace, blast furnace, factory, press and scrapper - plus anything given through /donate infrastructure, which lands in the same per-machine pots. That is the point of summing rather than picking one machine: a slot is the whole server's investment paying off, so a server that spread its spending across five machines is not punished against one that funnelled everything into a single ladder.
+
+Since 1.4 the total also includes server_config.mining_slot_credit: what the elected Mayor has bought toward slots (docs/government.md). Every government project burn counts once, and a Mining Slot Enhancement counts five times over (MINING_SLOT_ENHANCEMENT_MULTIPLIER) because it buys the slot and nothing else - the same money paid as fees would also have levelled a machine. At five times, a slot rung costs exactly what the same machine rung does. Tax the Treasurer diverts from a fee does NOT count when it is collected, only when the Mayor spends it, so nothing is counted twice.
+
+The ladder reads that total through the one function that defines it (utils/db_helpers.py: slot_progress, over SLOT_PROGRESS_COLUMNS) rather than adding the columns up itself. /economy status displays the same function's output, so the progress a player is shown and the cap the game derives can never be two different numbers - and a sixth machine's fees join both by being added to MACHINES.
 
 The same money counts twice on purpose. Fees paid to the furnace still level the furnace; they also count toward slots. Nothing is spent or deducted - both levels are high-water marks read off totals that only ever grow, which is also why a slot can never be lost and why a server that had already paid its way past a threshold before 1.3 had the slot the moment the release shipped.
 
@@ -68,12 +72,21 @@ Focus is per user and global, not per server, matching how materials are stored.
 
 Conversion happens at COLLECTION, not while mining. A drill banks the real materials it drew from its server's pool - that is what keeps the pool's gemstone guarantee honest - and the focus is applied when they are handed over. So changing focus re-aims ore already sitting in a drill, which is harmless (the rule is fixed, so there is nothing to time) and spares a player emptying every drill before switching. Rounding leftovers are banked per player in a carry, so twenty single-item collections yield exactly what one twenty-item collection does; without that, a coal focus (1 iron ore -> 0.264 coal) would either destroy small hauls or mint 3.8x by collecting one item at a time.
 
-Gemstones are never affected by any focus. Rubies, obsidian and diamonds drop at exactly the same rate whatever a player chooses.
+Gemstones are never affected by any focus. Rubies, obsidian and diamonds drop at exactly the same rate whatever a player chooses. What a player finds them AS is a separate feature a tier further up - see Mining Affinity below.
 
 Three consequences worth stating plainly, because two of them are bad news that is easy to discover too late:
 - Copper & Coal and Coal focus make steel impossible to self-supply, because steel needs iron ore and neither produces any. That rules out every steel component, both steel drill bits, the Steel Container, and diamonds via the press.
 - Iron & Coal helps steel far less than doubling your iron ore sounds like it should. It takes the stream to 7.56 iron ore per coal, and steel wants 4:1 once the coal the furnace burns as fuel is counted alongside the recipe's own, so coal becomes the binding input instead - steel per item mined improves by 5.8%, not 100%. Mining Efficiency is what unlocks the rest of that doubling (docs/mining-efficiency.md).
 - It roughly halves the mining behind a pressed ruby or obsidian, since the press is priced at ~95% of what a player would have mined alongside finding that gem naturally. That is intended - accelerating the gem economy is the point - but it is the largest downstream effect of the feature.
+
+Mining Affinity
+A player who has reached the diamond stage can spend one Diamond, once, to unlock a mining affinity with /affinity. It is the focus's argument one tier up: every gemstone they mine that isn't the one they chose arrives as the one they chose, converted at the same rarity ratio a focus uses - 90 rubies or 9 obsidian to a diamond, because the drop chances are 90:9:1 - and then better than even, at MINING_AFFINITY_CONVERSION_BONUS. At the live bonus of 2.0 that is 45 rubies to a diamond.
+
+It exists because gem progression was otherwise all-or-nothing. A bag holds exactly one diamond, so a player either dug it up or didn't, and the 90 rubies they found on the way had no route toward it. The press turns ore into gems; nothing turned gems into gems.
+
+It changes which gem a player gets and never how many. The pool decides that alone, and an affinity that boosted the draw would be incoherent with a bag containing a single diamond - and would take that diamond from the other people sharing the bag. Ores are never touched, the exact mirror of the promise a focus makes about gems.
+
+What it costs the game is that the chosen gem comes out at 5x its natural rate per bag, whichever gem it is - the bag's gems being exactly thirds by value is what makes that figure the same for all three. In total gem value that is 1.67x. Both numbers are true and they answer different questions; the 5x is the one the endgame is priced against. See docs/mining-affinity.md for the derivation, the carry rules (which are NOT the focus's, because a fraction of a diamond is worth 89 rubies of mining) and the three places a player's progress is shown.
 
 Storage Containers
 Every drill holds 100 raw materials on its own regardless of type. Storage containers are crafted in the factory and fitted with /mine attach, adding their capacity on top of that 100. A drill holds at most one container at a time, and any container fits any drill - the tier names describe what the container costs and how much it adds, not which drill it belongs to.
@@ -128,6 +141,8 @@ Furnace menu embeds are purple-red, #FF0059; blast furnace menu embeds are pure 
 
 Infrastructure has no maximum level. Every machine's output scales linearly with its level, and every level costs five times the fees the last one did - 5 to reach level 2, 25 for level 3, 125 for level 4, and so on. The cost is what puts a ceiling on it, not a hard cap.
 
+Speed does not wait for the next level, either. A machine runs at its level plus however far its fees are through that level - from the fees that reached it to the fees that reach the next one - so a level 1 furnace with 2.50 of its 5.00 collected smelts 7.5 an hour. The per-level figures below are what a machine does on the day it reaches that level. Only speed moves this way; the queue cap and the level itself stay whole numbers (data/materials.py: effective_level).
+
 That step was ten until 1.2, and the resulting ladder (5, 50, 500, 5000) was unreachable in practice: fees are fractions of a currency unit and the market pays about 1.00 per hundred iron ore, so level 4 meant tens of thousands of items smelted. Because the cost compounds, halving the step is far more than a halving - the cumulative fee to reach level 6 drops from 55,555 to 3,905, and level 8 from 5.5 million to 97,655.
 
 Furnaces: (/furnace smelt <smelt material result> <quantity>)
@@ -172,7 +187,7 @@ A recipe's cost in press time is measured in press-days, against a ruby. A press
 <:Diamond:1523433355708858612> Diamond (27,000 Steel) [9 press-days]
 🌑 Ultra Dense Matter (10 Diamond) [27 press-days]
 
-Ultra dense matter is priced in diamonds rather than ore: at 27x a ruby's press time it sits a full tier beyond diamond, and costing it in ore would put it out of reach of any server that will ever exist. Nothing consumes it yet - it's reserved for a later feature, and like drills and components it can never be sold on the market (docs/market.md section 3).
+Ultra dense matter is priced in diamonds rather than ore: at 27x a ruby's press time it sits a full tier beyond diamond, and costing it in ore would put it out of reach of any server that will ever exist. Nothing consumes it yet - it's reserved for a later feature, and it can never be traded at all: not to the server, not to another player, not for any price. That used to be the same rule that covered drills and components, but as of 1.4 those CAN be sold to other players (docs/market.md section 3), so Exotic Matter is now a genuine exception rather than an instance of a general rule. It accrues and it stays yours - see PERMANENT_MATERIALS in data/materials.py, which is where the reason is written down.
 
 Players can queue jobs up for every one of their server's machines. If there's any jobs ahead of them they must wait until those complete before the server can process their items and send the result back to their inventory. Each player can have at most a set number of items queued at once per infrastructure type (default: 25 for the furnace, 5 for the blast furnace, 5 for the factory, 1 for the press, 5 for the scrapper), configurable per server via /setup max_queue <machine> <amount>. That number is per machine LEVEL - what is actually enforced is the setting multiplied by the machine's level. The blast furnace's is counted in batches, so its default 5 is 500 items.
 
@@ -190,15 +205,15 @@ Server currencies are earned by selling ores and smelted materials to the server
 
 Each server's currency is currently the only spendable currency in the game - a previously-planned universal "DragonCoin" currency remains a non-spendable, non-earnable unit reserved for a future cross-server exchange rate (docs/market.md).
 
-Server managers can set up a fee to use their server's infrastructure using their server's own currency. The default fee is 0.01 for the furnace, 1.00 per batch for the blast furnace (the same 0.01 an item), 0.25 for the factory, 5.00 per press-day for the press and 0.10 for the scrapper. The fee is charged up front when a job is queued, not when it completes.
+Using a server's infrastructure costs a fee in that server's own currency. The default fee is 0.01 for the furnace, 1.00 per batch for the blast furnace (the same 0.01 an item), 0.25 for the factory, 5.00 per press-day for the press and 0.10 for the scrapper. The fee is charged up front when a job is queued, not when it completes.
 
-/setup fee <furnace / blast furnace / factory / press / scrapper> <amount per item>
+Since 1.4 the fee is not an admin setting: each machine's fee is its default times a multiplier (x0.25, x0.5, x1, x2 or x4) that the server's elected Treasurer sets with /treasurer fee, and the Treasurer's tax diverts a share of every fee to the government instead of burning it. /setup fee was removed, and every server's custom fee was reset to the default. See docs/government.md.
 
-If a server collects 5.00 of the server's currency in fees, then the respective furnace / factory will upgrade from level 1 to level 2. The same thing will happen upon reaching 25.00 in fees, but instead from level 2 to level 3.
+If a server collects 5.00 of the server's currency in fees (the untaxed share of them - the taxed share levels a machine only if the Mayor spends it on one), then the respective furnace / factory will upgrade from level 1 to level 2. The same thing will happen upon reaching 25.00 in fees, but instead from level 2 to level 3.
 
-Every fee also counts a second time, toward mining slots (see Mining Slots above). That ladder reads the SUM of all five machines' fees rather than any one machine's, so the same 25.00 that takes one machine to level 3 is also what buys the server's first extra drill slot. Nothing is deducted twice - both are high-water marks on totals that only grow.
+Every fee also counts a second time, toward mining slots (see Mining Slots above). That ladder reads all five machines' fees added together rather than any one machine's, so the same 25.00 that takes one machine to level 3 is also what buys the server's first extra drill slot. Nothing is deducted twice - both are high-water marks on totals that only grow.
 
-Players can also pay into a machine directly with /donate infrastructure <machine> <amount>. It goes into the same fees_collected pot the machine's own fees do and levels it the same way - a machine's level is meant to say how much the server has put into it, and money is money, so splitting donations into a separate fund would only produce a server that had "donated 500" next to a level 1 furnace. Donated currency is burned exactly as a fee is (docs/market.md section 1).
+Players can also pay into a machine directly with /donate infrastructure <machine> <amount>. It goes into the same <machine>_fees_collected pot the machine's own fees do and levels it the same way - a machine's level is meant to say how much the server has put into it, and money is money, so splitting donations into a separate fund would only produce a server that had "donated 500" next to a level 1 furnace. Donated currency is burned exactly as a fee is (docs/market.md section 1).
 
 /donate player <member> <amount> moves currency between two members of the same server instead. No fee is taken, and it is neither minted nor burned - the supply is unchanged, just in different hands - so it deliberately does not touch the section 4 ledger.
 

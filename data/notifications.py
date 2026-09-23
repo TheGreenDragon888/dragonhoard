@@ -51,6 +51,22 @@ class GlobalNotice:
 
 GLOBAL_NOTICES: tuple[GlobalNotice, ...] = (
     GlobalNotice(
+        key="1.4-update",
+        title="Dragonhoard 1.4 — HUGE UPDATE",
+        body=(
+            "**SERVER ECONOMY AND GDP TRACKING** — `/economy status` and `/economy gdp` display the value of the items your server has produced over the last week & day. You can use this to evaluate how much more productive some of the servers you're in are compared to others!\n"
+            "**MINING AFFINITY** — Your first diamond can now be spent to unlock `/affinity`, which allows you to convert all gemstones you receive into the one that you want. Conversion rates double the value based on rarity drop chances.\n"
+            "**MACHINES SPEED UP BETWEEN LEVELS** — Now progress isn't bracketed by thresholds! All fees contributed towards machines immediately boost the production speed of that machine.\n"
+            "**BETTING AND THE PREDICTION MARKET** — GAMBLE YOUR FREAKING MONEY AWAY BRO. JUST DO `/bet open <prediction> <amount> <closes_in>` AND HAVE PEOPLE IN YOUR SERVER BET ON WHETHER OR NOT YOU CAN DO YOUR HOMEWORK TONIGHT. (Server admins resolve or cancel bets with `/bet resolve` or `/bet cancel`.)\n"
+            "**PLAYERS CAN NOW LIST ON THE SERVER MARKET** — List your items on the market using `/market list` and place orders to buy items from other members using `/market order`!\n\n"
+            "**AND FINALLY, THE BIGGEST CHANGE YET**\n\n"
+            "**INTRODUCING: THE GOVERNMENT** — Every Thursday your server votes for a **Mayor** and a **Treasurer** (`/vote`). The Treasurer sets the machine fees and a tax on them, and the Mayor spends that tax on projects: machine upgrades, doubling a machine's speed, extra mining slots, or a 48-hour Server Bonanza of double-speed everything. The Mayor can also sell bonds, which get paid back out of tax with interest. Admins can no longer set fees, so every server's fees are back to their defaults. Server members must have a drill placed within a server for at least 7 days before they can vote. Use `/help government` for more details.\n\n"
+            "Holy freak big update\n"
+            "Wow, that's crazy; I should totally be working on homework right now—\n"
+            "— Isaac"
+        ),
+    ),
+    GlobalNotice(
         key="1.3-update",
         title="Dragonhoard 1.3 Update",
         body=(
@@ -116,12 +132,13 @@ GLOBAL_NOTICES: tuple[GlobalNotice, ...] = (
 # first time they get one of these gemstones; nothing else in the codebase
 # writes any of it.
 #
-# Why these two and nothing else: a ruby and an obsidian are the only items in
-# the game that unlock a COMMAND. Everything else a player finds is an
-# ingredient they will meet again in /recipe, but /focus and /efficiency are
-# invisible until you own the gem that opens them - a player can hold a ruby
-# for weeks without discovering that it does anything but sit there. That is
-# what this notice is for, and it is the bar a third entry should clear.
+# Why these three and nothing else: a ruby, an obsidian and a diamond are the
+# only items in the game that unlock a COMMAND. Everything else a player finds
+# is an ingredient they will meet again in /recipe, but /focus, /efficiency and
+# /affinity are invisible until you own the gem that opens them - a player can
+# hold a ruby for weeks without discovering that it does anything but sit
+# there. That is what this notice is for, and it is the bar a fourth entry
+# should clear. The diamond cleared it as the third, with /affinity.
 #
 # The key is per-notice, not per-player: utils/db_helpers.py: announce_first_gem
 # writes one row per (player, key), and the primary key on user_notifications
@@ -130,10 +147,10 @@ GLOBAL_NOTICES: tuple[GlobalNotice, ...] = (
 # a reworded hint and a very unreasonable accident - so change it on purpose or
 # not at all.
 #
-# Both are unlocked by spending ONE gem, and the notice says so rather than
-# quoting MINING_FOCUS_UNLOCK_COST / MINING_EFFICIENCY_UNLOCK_COST, because a
-# player reading this is holding exactly one and the sentence is about what to
-# do with it. If those costs ever stop being 1, this text has to change with
+# All three are unlocked by spending ONE gem, and the notice says so rather
+# than quoting MINING_FOCUS_UNLOCK_COST / MINING_EFFICIENCY_UNLOCK_COST /
+# MINING_AFFINITY_UNLOCK_COST, because a player reading this is holding exactly
+# one and the sentence is about what to do with it. If those costs ever stop being 1, this text has to change with
 # them - tests/test_notifications.py pins that they still match.
 @dataclass(frozen=True)
 class PersonalNotice:
@@ -170,6 +187,21 @@ GEM_UNLOCK_NOTICES: dict[str, PersonalNotice] = {
             "It stacks with your `/focus`, and like a focus you only pay the gem "
             "once - changes afterwards are free, one a day.\n\n"
             "Run `/efficiency` to see what each one does before you spend it."
+        ),
+    ),
+    "diamond": PersonalNotice(
+        key="first-diamond",
+        title="Your First Diamond",
+        body=(
+            "You've found a **Diamond** - one in a million, and it unlocks the last "
+            "of the mining enhancements.\n\n"
+            "Spending one on `/affinity` commits your gemstones to a single kind: "
+            "every other gem you mine arrives as the one you chose, at better than "
+            "an even trade. Rubies you'd never have spent become real progress "
+            "toward the gem you actually want.\n\n"
+            "It stacks with your `/focus` and `/efficiency`, and like both you only "
+            "pay the gem once - changes afterwards are free, one a day.\n\n"
+            "Run `/affinity` to see every trade before you spend it."
         ),
     ),
 }

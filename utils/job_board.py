@@ -85,6 +85,14 @@ def job_board_today() -> str:
     return job_board_now().date().isoformat()
 
 
+def next_reset(now: datetime | None = None) -> datetime:
+    """The instant the job board's day next rolls over (the coming midnight on
+    its clock)."""
+    now = now or job_board_now()
+    now = now.astimezone(JOB_BOARD_TIMEZONE)
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 def hours_until_reset(now: datetime | None = None) -> float:
     """How long until the next job is posted, in hours - what the countdown on
     the /jobboard embed is built from.
@@ -92,9 +100,7 @@ def hours_until_reset(now: datetime | None = None) -> float:
     Takes `now` so it can be tested at a chosen instant rather than only at
     whatever time the suite happens to run."""
     now = now or job_board_now()
-    now = now.astimezone(JOB_BOARD_TIMEZONE)
-    tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return (tomorrow - now).total_seconds() / 3600
+    return (next_reset(now) - now).total_seconds() / 3600
 
 
 async def ensure_todays_job(tx, guild_id: int, member_count: int):

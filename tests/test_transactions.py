@@ -12,10 +12,10 @@ import unittest
 from pathlib import Path
 
 from database.db import Database, InsufficientQuantity
+from utils.government import charge_machine_fee
 from utils.db_helpers import (
     adjust_currency_balance,
     adjust_user_quantity,
-    charge_user_fee,
     deduct_currency_balance,
     deduct_server_stock,
     deduct_user_quantity,
@@ -123,7 +123,7 @@ class GuardedDeductionTests(TransactionTestCase):
         # balance burned less than it recorded and drifted the burn total.
         await adjust_currency_balance(self.db, GUILD, USER, 1.0)
         with self.assertRaises(InsufficientQuantity):
-            await charge_user_fee(self.db, GUILD, USER, 10.0)
+            await charge_machine_fee(self.db, GUILD, USER, "furnace", 10.0)
         self.assertEqual(await get_currency_balance(self.db, GUILD, USER), 1.0)
         cfg = await self.db.fetchone(
             "SELECT currency_burned_total FROM server_config WHERE guild_id = ?", (GUILD,)
@@ -132,7 +132,7 @@ class GuardedDeductionTests(TransactionTestCase):
 
     async def test_an_affordable_fee_burns_exactly_what_it_records(self):
         await adjust_currency_balance(self.db, GUILD, USER, 10.0)
-        await charge_user_fee(self.db, GUILD, USER, 2.5)
+        await charge_machine_fee(self.db, GUILD, USER, "furnace", 2.5)
         self.assertEqual(await get_currency_balance(self.db, GUILD, USER), 7.5)
         cfg = await self.db.fetchone(
             "SELECT currency_burned_total FROM server_config WHERE guild_id = ?", (GUILD,)

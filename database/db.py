@@ -13,15 +13,30 @@ bot keeps responding to other events while a query is in flight.
 You won't need to touch this file often - cogs import `Database` and call
 `fetchone`, `fetchall`, or `execute`.
 
-Those three each open their own connection and commit on their own, which is
-fine for a single standalone statement but NOT for an operation made of
-several. Anything that reads a value, decides something from it, and then
-writes - selling materials, paying a fee, swapping a container - has to run
-inside `async with db.transaction()` instead. See Database.transaction for
-what goes wrong otherwise.
+Those three each run as a standalone statement that commits on its own, which
+is fine for a single statement but NOT for an operation made of several.
+Anything that reads a value, decides something from it, and then writes -
+selling materials, paying a fee, swapping a container - has to run inside
+`async with db.transaction()` instead. See Database.transaction for what goes
+wrong otherwise.
+
+CONNECTIONS ARE REUSED, NOT OPENED PER STATEMENT. Standalone statements borrow
+one from a small pool (POOL_SIZE) and transactions share one long-lived
+connection of their own. Until 1.4 every statement - and every transaction -
+opened a fresh connection, ran two PRAGMAs on it and closed it again, each step
+a separate thread hop. A single slash command paid for at least five of those
+before running its own queries (the channel guard, ensure_server_row and the
+three reads in utils/responses.py), and the harvest loop paid for one per
+drill per tick. Opening a connection is the expensive part of a statement this
+small, so on modest hardware that overhead WAS the database cost.
+
+Two connections' worth of separation is kept on purpose: readers on the pool
+carry on while a transaction holds the write lock, which is what WAL mode buys
+and the reason it is enabled.
 """
 import asyncio
 import sqlite3
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -33,6 +48,12 @@ import config
 # write lock for the length of a whole operation rather than one statement.
 BUSY_TIMEOUT_SECONDS = 30.0
 
+# How many idle standalone connections the pool keeps open. asyncio.to_thread
+# runs statements on the default executor, so this is the number that can be
+# in flight at once without opening a new connection; a burst beyond it still
+# works, the extra connection is simply closed on release rather than kept.
+POOL_SIZE = 4
+
 
 class InsufficientQuantity(Exception):
     """Raised when a deduction would take an inventory below zero. Raised
@@ -42,8 +63,9 @@ class InsufficientQuantity(Exception):
 
 class _Executor:
     """The query surface shared by Database and Transaction, so the helpers in
-    utils/db_helpers.py work identically whether they're handed a Database (one
-    connection per statement) or a Transaction (one shared connection)."""
+    utils/db_helpers.py work identically whether they're handed a Database (each
+    statement standing alone) or a Transaction (all of them committing
+    together)."""
 
     async def execute(self, query: str, params: tuple = ()) -> int:
         raise NotImplementedError
@@ -101,29 +123,69 @@ class Database(_Executor):
         # transaction's reads and writes safe to interleave with the rest of
         # the bot: another command can't slip a write in partway through.
         self._write_lock = asyncio.Lock()
+        # Idle standalone connections, and the lock that guards the list: the
+        # sync functions below run on executor threads, so this cannot be an
+        # asyncio primitive.
+        self._pool: list[sqlite3.Connection] = []
+        self._pool_lock = threading.Lock()
+        # The one connection every transaction runs on, opened on first use.
+        # _write_lock serialises transactions, so it is never shared.
+        self._tx_conn: sqlite3.Connection | None = None
 
     def _connect(self) -> sqlite3.Connection:
-        # check_same_thread=False because a transaction's connection outlives
-        # a single asyncio.to_thread call, and the thread pool hands successive
-        # statements to different workers. Safe here: the statements within a
-        # transaction are awaited one at a time, and _write_lock stops two
-        # transactions from sharing a connection.
+        # check_same_thread=False because every connection here outlives a
+        # single asyncio.to_thread call, and the thread pool hands successive
+        # statements to different workers. Safe here: a pooled connection is
+        # held by one thread from _acquire to _release, and _write_lock stops
+        # two transactions from sharing the transaction connection.
         conn = sqlite3.connect(
             self.path, timeout=BUSY_TIMEOUT_SECONDS, check_same_thread=False
         )
         # row_factory makes query results behave like dicts (row["column"])
         # instead of plain tuples (row[0], row[1]...) - much easier to read.
         conn.row_factory = sqlite3.Row
-        # Enforces foreign key constraints (off by default in SQLite).
+        # Enforces foreign key constraints (off by default in SQLite). Per
+        # connection, so it has to be here rather than applied once.
         conn.execute("PRAGMA foreign_keys = ON")
         # WAL lets readers carry on while a write is in flight. Under the
         # default journal mode a writer blocks every reader, and with four
         # background loops plus user commands all querying constantly, that
         # contention is the likeliest way a statement fails partway through an
         # operation. The setting is a property of the database file, so it
-        # persists once set; re-applying it per connection is harmless.
+        # persists once set; re-applying it is harmless, and since connections
+        # are now pooled this runs a handful of times per process rather than
+        # once per statement.
         conn.execute("PRAGMA journal_mode = WAL")
         return conn
+
+    def _acquire(self) -> sqlite3.Connection:
+        """A connection for one standalone statement: an idle one from the
+        pool, or a fresh one if the pool is empty. Runs on an executor thread."""
+        with self._pool_lock:
+            if self._pool:
+                return self._pool.pop()
+        return self._connect()
+
+    def _release(self, conn: sqlite3.Connection) -> None:
+        """Hands a connection back once its statement is done. Kept if the pool
+        has room, closed otherwise."""
+        with self._pool_lock:
+            if len(self._pool) < POOL_SIZE:
+                self._pool.append(conn)
+                return
+        conn.close()
+
+    def close(self) -> None:
+        """Closes every connection this Database holds. Nothing in the bot
+        needs to call it - the process exits with the connections - but a test
+        that wants a clean handle count can."""
+        with self._pool_lock:
+            pooled, self._pool = self._pool, []
+        for conn in pooled:
+            conn.close()
+        if self._tx_conn is not None:
+            self._tx_conn.close()
+            self._tx_conn = None
 
     @asynccontextmanager
     async def transaction(self):
@@ -151,7 +213,9 @@ class Database(_Executor):
         transaction.
         """
         async with self._write_lock:
-            conn = await asyncio.to_thread(self._connect)
+            if self._tx_conn is None:
+                self._tx_conn = await asyncio.to_thread(self._connect)
+            conn = self._tx_conn
             try:
                 # IMMEDIATE takes the write lock up front rather than on the
                 # first write, so a transaction that reads and later writes
@@ -160,15 +224,25 @@ class Database(_Executor):
                 yield Transaction(conn)
                 await asyncio.to_thread(conn.commit)
             except BaseException:
-                await asyncio.to_thread(conn.rollback)
+                # The connection is kept after a rollback - it is clean again.
+                # Only a rollback that itself fails means the connection can't
+                # be trusted, and then the next transaction opens a new one.
+                try:
+                    await asyncio.to_thread(conn.rollback)
+                except sqlite3.Error:
+                    conn.close()
+                    self._tx_conn = None
                 raise
-            finally:
-                await asyncio.to_thread(conn.close)
 
     # The drills table as schema.sql declares it, for the rebuild below.
     # SQLite can add a nullable column in place but cannot relax a NOT NULL,
     # so turning guild_id nullable means building a new table and swapping it.
     # Keep this in sync with schema.sql - it's the same DDL minus IF NOT EXISTS.
+    # utils/db_helpers.py: MACHINES, which can't be imported from here - that
+    # module imports this one. Used only to spell out the per-machine columns
+    # the migrations below add and drop.
+    _MACHINES = ("furnace", "blast_furnace", "factory", "press", "scrapper")
+
     _DRILLS_REBUILD_DDL = """
         CREATE TABLE drills_new (
             drill_id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,7 +254,10 @@ class Database(_Executor):
             stored_amount    INTEGER NOT NULL DEFAULT 0,
             harvest_progress REAL NOT NULL DEFAULT 0.0,
             is_full          INTEGER NOT NULL DEFAULT 0,
+            mined_until      TEXT,
             locked_job_id    INTEGER,
+            listed_id        INTEGER,
+            placed_at        TEXT,
             CHECK (level >= 1),
             CHECK (guild_id IS NOT NULL OR (stored_amount = 0 AND is_full = 0))
         )
@@ -207,7 +284,18 @@ class Database(_Executor):
 
     def _init_schema_sync(self):
         schema_path = Path(__file__).parent / "schema.sql"
-        with self._connect() as conn:
+        conn = self._connect()
+        try:
+            self._apply_schema_and_migrations(conn, schema_path)
+        finally:
+            conn.close()
+
+    def _apply_schema_and_migrations(self, conn: sqlite3.Connection, schema_path: Path):
+        """The body of init_schema, split out so _init_schema_sync can close
+        the connection in a finally - a `with conn:` block commits or rolls
+        back but does not close, and this used to be one leaked connection
+        per boot."""
+        with conn:
             conn.executescript(schema_path.read_text())
 
             # Migrations for databases created before a schema change go here,
@@ -229,11 +317,62 @@ class Database(_Executor):
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             drill_columns = {row[1] for row in conn.execute("PRAGMA table_info(drills)")}
             job_columns = {row[1] for row in conn.execute("PRAGMA table_info(production_jobs)")}
+            notification_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(notifications)")
+            }
+            # Read before anything below touches server_config, for the two
+            # fee-default migrations: 1.4 dropped the per-server fee columns
+            # they update, so on a database created since then there is
+            # nothing for them to do but record that they have run.
+            initial_config_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(server_config)")
+            }
 
             if "last_harvest_at" in drill_columns:
                 # Was never read or written anywhere - harvesting is driven
                 # entirely by the tick loop, not per-drill timestamps.
                 conn.execute("ALTER TABLE drills DROP COLUMN last_harvest_at")
+
+            # 1.4's player market escrows a listed drill in drills.listed_id.
+            # Nullable, so SQLite adds it in place and no rebuild is needed -
+            # unlike the guild_id relaxation below, which is why that one gets
+            # _DRILLS_REBUILD_DDL and this gets one line.
+            #
+            # Introspection-gated, not user_version: adding a column IS visible
+            # in the schema, and a brand-new database already has it from
+            # schema.sql. Every existing drill gets NULL, which is exactly
+            # right - none of them is listed, because nothing could list one
+            # before this shipped. Nothing to backfill.
+            #
+            # market_listings and market_orders need no migration at all: they
+            # are new tables, and schema.sql's CREATE TABLE IF NOT EXISTS runs
+            # on every start. user_version is not bumped for them.
+            if "listed_id" not in drill_columns:
+                conn.execute("ALTER TABLE drills ADD COLUMN listed_id INTEGER")
+
+            # drills.mined_until (schema.sql says what it is). Nullable, added
+            # in place, introspection-gated for the reasons listed_id above is.
+            # Every existing drill gets NULL, which its next harvest tick reads
+            # as a whole tick - exactly what every tick credited before this
+            # column existed - and then overwrites. Nothing to backfill.
+            # Deliberately not named last_harvest_at: that name is DROPPED at
+            # the top of this block, from a column that was never used.
+            if "mined_until" not in drill_columns:
+                conn.execute("ALTER TABLE drills ADD COLUMN mined_until TEXT")
+
+            # 1.4 lets a notice carry an action its reader can take, which is
+            # how a new prediction bet gets its two buttons onto the next reply
+            # each player sees (utils/responses.py). Nullable and
+            # introspection-gated for exactly the reasons listed_id above is,
+            # and with the same empty backfill: every notice that already
+            # exists is text and nothing else, because nothing could attach an
+            # action to one before this shipped.
+            #
+            # prediction_bets and prediction_wagers need no migration at all -
+            # new tables, created by schema.sql's CREATE TABLE IF NOT EXISTS on
+            # every start, exactly as the two market tables are.
+            if "action_key" not in notification_columns:
+                conn.execute("ALTER TABLE notifications ADD COLUMN action_key TEXT")
 
             # Fee defaults changed from 0.0 to the config.DEFAULT_*_FEE values.
             # Bump servers still sitting on the old default; guarded by
@@ -241,14 +380,15 @@ class Database(_Executor):
             if version < 1:
                 conn.execute("BEGIN")
                 try:
-                    conn.execute(
-                        "UPDATE server_config SET furnace_fee = ? WHERE furnace_fee = 0.0",
-                        (config.DEFAULT_FURNACE_FEE,),
-                    )
-                    conn.execute(
-                        "UPDATE server_config SET factory_fee = ? WHERE factory_fee = 0.0",
-                        (config.DEFAULT_FACTORY_FEE,),
-                    )
+                    if "furnace_fee" in initial_config_columns:
+                        conn.execute(
+                            "UPDATE server_config SET furnace_fee = ? WHERE furnace_fee = 0.0",
+                            (config.DEFAULT_FURNACE_FEE,),
+                        )
+                        conn.execute(
+                            "UPDATE server_config SET factory_fee = ? WHERE factory_fee = 0.0",
+                            (config.DEFAULT_FACTORY_FEE,),
+                        )
                     conn.execute("PRAGMA user_version = 1")
                     conn.execute("COMMIT")
                 except Exception:
@@ -294,6 +434,19 @@ class Database(_Executor):
             if version < 2:
                 self._migrate_drill_stacks_to_instances(conn)
 
+            # drills.placed_at (1.4), what voting eligibility is measured
+            # against. Read after the rebuild above rather than off the
+            # drill_columns taken at the top, because that rebuild writes a
+            # new table that already has it.
+            #
+            # Deliberately NOT backfilled. A drill already placed when this
+            # runs keeps NULL, which can_vote reads as "placed before the
+            # update" and so as placed long enough - backfilling the migration
+            # time would have left every existing player a week short of the
+            # first election (see schema.sql on the column).
+            if "placed_at" not in {row[1] for row in conn.execute("PRAGMA table_info(drills)")}:
+                conn.execute("ALTER TABLE drills ADD COLUMN placed_at TEXT")
+
             # Per-server settings added to server_config after it first
             # shipped - the hydraulic press, then the scrapper and the
             # designated bot channel. All plain columns with defaults (or
@@ -306,21 +459,19 @@ class Database(_Executor):
                 # of data.materials.BLAST_FURNACE_BATCH_SIZE items, which is
                 # why its default dwarfs the furnace's - see config.py.
                 ("blast_furnace_level", "INTEGER NOT NULL DEFAULT 1"),
-                ("blast_furnace_fee", f"REAL NOT NULL DEFAULT {config.DEFAULT_BLAST_FURNACE_FEE}"),
                 ("blast_furnace_fees_collected", "REAL NOT NULL DEFAULT 0.0"),
                 ("blast_furnace_max_queue", "INTEGER NOT NULL DEFAULT 5"),
-                ("press_fee", f"REAL NOT NULL DEFAULT {config.DEFAULT_PRESS_FEE}"),
                 ("press_fees_collected", "REAL NOT NULL DEFAULT 0.0"),
                 ("press_max_queue", "INTEGER NOT NULL DEFAULT 1"),
                 ("press_progress", "REAL NOT NULL DEFAULT 0.0"),
                 ("scrapper_level", "INTEGER NOT NULL DEFAULT 1"),
-                ("scrapper_fee", f"REAL NOT NULL DEFAULT {config.DEFAULT_SCRAPPER_FEE}"),
                 ("scrapper_fees_collected", "REAL NOT NULL DEFAULT 0.0"),
                 ("scrapper_max_queue", "INTEGER NOT NULL DEFAULT 5"),
                 # Mining slots, added in 1.3. Deliberately NOT a level column:
-                # the cap is summed on read from the <machine>_fees_collected
-                # columns already here, which is what makes an existing server's
-                # slots reflect fees it paid long before this shipped. All this
+                # the cap is summed on read from the columns already here
+                # (utils/db_helpers.py: slot_progress), which is what makes an
+                # existing server's slots reflect fees it paid long before this
+                # shipped. All this
                 # stores is how much of that has been announced (see
                 # utils/db_helpers.py: announce_mining_slot_unlocks), so 1 - the
                 # level every server starts at - is the right value for a row
@@ -340,6 +491,48 @@ class Database(_Executor):
             for column, definition in added_config_columns:
                 if column not in config_columns:
                     conn.execute(f"ALTER TABLE server_config ADD COLUMN {column} {definition}")
+
+            # The server government (1.4, docs/government.md). Every column is
+            # a plain add with a default or nullable, so each is gated on
+            # simply not being there yet, like the list above - and every
+            # default is the ungoverned server: fees at x1, no tax, no bond
+            # premium, nobody in office, nothing in the treasury.
+            government_columns = []
+            for machine in self._MACHINES:
+                government_columns += [
+                    (f"{machine}_fee_multiplier", "REAL NOT NULL DEFAULT 1.0"),
+                    (f"{machine}_fee_changed", "TEXT"),
+                    (f"{machine}_enhancement_level", "INTEGER NOT NULL DEFAULT 0"),
+                ]
+            government_columns += [
+                ("tax_percent", "INTEGER NOT NULL DEFAULT 0"),
+                ("tax_changed", "TEXT"),
+                ("bond_rate_percent", "INTEGER NOT NULL DEFAULT 0"),
+                ("bond_rate_changed", "TEXT"),
+                ("treasury", "REAL NOT NULL DEFAULT 0.0"),
+                ("repayment_pool", "REAL NOT NULL DEFAULT 0.0"),
+                ("mayor_id", "INTEGER"),
+                ("treasurer_id", "INTEGER"),
+                ("bond_sale_cents", "INTEGER NOT NULL DEFAULT 0"),
+                ("mining_slot_credit", "REAL NOT NULL DEFAULT 0.0"),
+                ("bonanza_until", "TEXT"),
+                ("election_counted", "TEXT"),
+                ("election_announced", "TEXT"),
+            ]
+            for column, definition in government_columns:
+                if column not in config_columns:
+                    conn.execute(f"ALTER TABLE server_config ADD COLUMN {column} {definition}")
+
+            # The per-server fee columns, which 1.4 replaced with a multiplier
+            # on the config.py default. Dropped rather than left unread: the
+            # decision was that every server's custom fee is discarded and
+            # starts again at the default x1 (docs/government.md, Q11), and a
+            # column nothing reads would only invite somebody to read it.
+            # Gated on introspection because dropping a column IS visible in
+            # the schema.
+            for machine in self._MACHINES:
+                if f"{machine}_fee" in config_columns:
+                    conn.execute(f"ALTER TABLE server_config DROP COLUMN {machine}_fee")
 
             # Tracks whether the bot is still in a server, so a removal can hide
             # that server's currency without deleting anyone's balance. Also an
@@ -381,6 +574,13 @@ class Database(_Executor):
                     )
                     conn.execute("DROP TABLE production_jobs")
                     conn.execute("ALTER TABLE production_jobs_new RENAME TO production_jobs")
+                    # Dropped with the old table, so it has to come back here
+                    # rather than wait for the next boot's executescript.
+                    # Same DDL as schema.sql, which explains the index.
+                    conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_production_jobs_live "
+                        "ON production_jobs (job_type, guild_id) WHERE status != 'complete'"
+                    )
                     conn.execute("COMMIT")
                 except Exception:
                     conn.execute("ROLLBACK")
@@ -393,10 +593,11 @@ class Database(_Executor):
             if version < 3:
                 conn.execute("BEGIN")
                 try:
-                    conn.execute(
-                        "UPDATE server_config SET press_fee = ? WHERE press_fee = 1.0",
-                        (config.DEFAULT_PRESS_FEE,),
-                    )
+                    if "press_fee" in initial_config_columns:
+                        conn.execute(
+                            "UPDATE server_config SET press_fee = ? WHERE press_fee = 1.0",
+                            (config.DEFAULT_PRESS_FEE,),
+                        )
                     conn.execute("PRAGMA user_version = 3")
                     conn.execute("COMMIT")
                 except Exception:
@@ -470,6 +671,18 @@ class Database(_Executor):
             # a ruby has simply not been told yet and gets the notice on their
             # next one. There is nothing to backfill and no way to work out
             # retroactively who would have wanted it.
+            #
+            # The production ledger (1.4) adds nothing here either, for the
+            # strongest version of the same reason: production_ledger is a NEW
+            # table that CREATE TABLE IF NOT EXISTS handles on its own, and
+            # there is nothing to migrate because there is nothing to migrate
+            # FROM. Goods produced were never recorded anywhere - not in
+            # server_config, not in production_jobs, which zeroes a job's
+            # quantity as it completes - so no amount of querying an old
+            # database recovers a single historical row. It starts empty on
+            # every deployment, which is why the Ops dashboard quotes a
+            # "tracked since" date instead of implying a lifetime total
+            # (docs/market.md section 4).
             #
             # Mining slots add nothing here either, and notably no data
             # migration: a server's slot cap is summed on read from fee columns
@@ -664,14 +877,23 @@ class Database(_Executor):
         await asyncio.to_thread(self._init_schema_sync)
 
     def _execute_sync(self, query: str, params: tuple):
-        with self._connect() as conn:
+        conn = self._acquire()
+        try:
             cur = conn.execute(query, params)
             conn.commit()
-            return cur.lastrowid, cur.rowcount
+            result = cur.lastrowid, cur.rowcount
+        except BaseException:
+            # A statement that raised may have left an implicit transaction
+            # open on this connection, and the next borrower would inherit
+            # it. Discarding the connection is simpler than proving it clean.
+            conn.close()
+            raise
+        self._release(conn)
+        return result
 
     async def execute(self, query: str, params: tuple = ()) -> int:
         """Run a single standalone INSERT/UPDATE/DELETE, committing it on its
-        own connection. Returns the last inserted row id.
+        own. Returns the last inserted row id.
 
         If this statement is one of several that have to succeed or fail
         together, use `async with db.transaction()` instead."""
@@ -684,18 +906,33 @@ class Database(_Executor):
         return rowcount
 
     def _fetchone_sync(self, query: str, params: tuple):
-        with self._connect() as conn:
+        conn = self._acquire()
+        try:
             cur = conn.execute(query, params)
-            return cur.fetchone()
+            row = cur.fetchone()
+            # Closed explicitly so the statement is reset before the connection
+            # goes back in the pool - a half-stepped SELECT would otherwise
+            # hold a read snapshot open on a connection somebody else borrows.
+            cur.close()
+        except BaseException:
+            conn.close()
+            raise
+        self._release(conn)
+        return row
 
     async def fetchone(self, query: str, params: tuple = ()):
         """Run a SELECT and return the first matching row (or None)."""
         return await asyncio.to_thread(self._fetchone_sync, query, params)
 
     def _fetchall_sync(self, query: str, params: tuple):
-        with self._connect() as conn:
-            cur = conn.execute(query, params)
-            return cur.fetchall()
+        conn = self._acquire()
+        try:
+            rows = conn.execute(query, params).fetchall()
+        except BaseException:
+            conn.close()
+            raise
+        self._release(conn)
+        return rows
 
     async def fetchall(self, query: str, params: tuple = ()):
         """Run a SELECT and return all matching rows as a list."""

@@ -12,9 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from discord import app_commands
-
-from cogs.economy import EconomyCog, TRADEABLE_MATERIALS
+from cogs.economy import EconomyCog
 from database.db import Database
 from utils.db_helpers import ensure_server_row, ensure_user_row, adjust_user_quantity, get_currency_balance
 from utils.formatting import format_price
@@ -33,14 +31,14 @@ class FakeUser:
 
 
 class FakeGuild:
-    """Just enough of discord.Guild for human_member_count: already chunked,
-    no members, so the member count used to size the job board is 0 - fine,
-    since the job is posted ahead of time in these tests regardless."""
-    chunked = True
-    members = []
+    """Just enough of discord.Guild for human_member_count: a chunk request
+    that returns no members, so the member count used to size the job board
+    is 0 - fine, since the job is posted ahead of time in these tests
+    regardless."""
+    id = GUILD
 
-    async def chunk(self):
-        pass
+    async def chunk(self, *, cache=True):
+        return []
 
 
 class FakeInteraction:
@@ -76,14 +74,11 @@ class MarketSellJobBoardReceiptTests(unittest.IsolatedAsyncioTestCase):
 
         balance_before = await get_currency_balance(self.db, GUILD, USER)
 
-        material = app_commands.Choice(
-            name=TRADEABLE_MATERIALS[job["material_id"]]["name"], value=job["material_id"]
-        )
         interaction = FakeInteraction(GUILD, USER)
         # market_sell is wrapped in an app_commands.Command by the decorator,
         # so the cog instance has to be passed to the raw callback by hand
         # rather than called as a bound method.
-        await EconomyCog.market_sell.callback(self.cog, interaction, material, quantity)
+        await EconomyCog.market_sell.callback(self.cog, interaction, job["material_id"], quantity)
 
         credited = await get_currency_balance(self.db, GUILD, USER) - balance_before
         kwargs = interaction.response.send_message.call_args.kwargs

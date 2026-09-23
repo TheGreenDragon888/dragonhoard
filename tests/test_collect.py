@@ -3,8 +3,9 @@ Tests for /collect reaching every server a player has drills in.
 
 Two halves: the two SELECTs the command picks between, run against a
 throwaway database so a change to either one has to be deliberate, and the
-pure rendering of a haul into lines. The rest of /collect needs a live
-Interaction, so the guarded UPDATE it does per drill is covered by hand in
+pure rendering of a haul into lines. The guarded UPDATE it does per drill is
+COLLECT_EMPTY_DRILL_SQL, whose clock reset tests/test_harvest_clock.py covers;
+the rest of /collect needs a live Interaction and is covered by hand in
 Discord.
 """
 import tempfile

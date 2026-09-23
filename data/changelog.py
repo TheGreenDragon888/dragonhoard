@@ -25,6 +25,7 @@ from utils.embeds import (
     JOBBOARD_COLOR,
     SCRAPPER_COLOR,
     BLAST_FURNACE_COLOR,
+    GOVERNMENT_COLOR,
 )
 
 
@@ -53,6 +54,100 @@ VERSIONS: dict[str, ChangelogVersion] = {}
 def _add(version: ChangelogVersion):
     VERSIONS[version.version] = version
 
+
+_add(ChangelogVersion(
+    version="1.4",
+    released="2026-09-22",
+    emoji="\U0001F3DB️",
+    color=GOVERNMENT_COLOR,
+    summary="An elected government, the player market, prediction bets, /economy and Mining Affinity",
+    headline=(
+        "Your server runs itself now. Every Thursday it elects a **Mayor** and a **Treasurer** "
+        "who set its fees and spend its tax. Players can trade with each other instead of only "
+        "with the server, bet on what happens next, and see what their server actually "
+        "produces - and a diamond finally unlocks something."
+    ),
+    entries=(
+        ChangelogEntry(
+            "\U0001F3DB️ Mayors and Treasurers",
+            "Every Thursday your server votes (`/vote mayor`, `/vote treasurer`), counted at "
+            "midnight. The Treasurer sets each machine's fee - its default times x0.25 to x4 - "
+            "and a tax on every fee; the Mayor spends the tax. To vote you need a drill that "
+            "has been placed here for 7 days.\n\nAdmins no longer set fees: `/setup fee` is "
+            "gone, and every server's fees are back at their defaults.",
+        ),
+        ChangelogEntry(
+            "\U0001F3D7️ The Mayor's Projects",
+            "Fund a machine's level, buy an **Infrastructure Enhancement** that doubles a "
+            "machine's speed on top of its level, spend on a **Mining Slot Enhancement** "
+            "(every 1 counts 5 toward the next slot), or throw a **Server Bonanza** - 48 hours "
+            "of double-speed drills and machines. `/government status` has the prices.",
+        ),
+        ChangelogEntry(
+            "\U0001F4DC Bonds",
+            "The Mayor can sell bonds to fund a project early. Buy one with `/bonds buy` and "
+            "the server repays you out of its tax every hour, with the Treasurer's premium on "
+            "top. Leave the server and your bonds wait for you to come back.",
+        ),
+        ChangelogEntry(
+            "\U0001F3F7️ The Player Market",
+            "`/market list` puts anything you own up for sale at your price - ore, gemstones, "
+            "components, containers, even a specific drill. `/market order` is a standing bid "
+            "to buy. Whatever a listing or bid holds is set aside until it fills or you "
+            "`/market cancel` it; `/market entries` shows everything you have up.\n\n"
+            "Gemstones still can't be sold to the server, but other players can buy them. "
+            "Exotic Matter can't be traded at all.",
+        ),
+        ChangelogEntry(
+            "\U0001F6D2 The Better Deal, Automatically",
+            "`/market buy` fills from the cheapest player listings before the server, and "
+            "`/market sell` fills the highest player bids first. On anything the server trades, "
+            "a player's price has to beat the server's; prices go down to 0.0001. Both "
+            "commands only offer what you can actually buy or sell right now.",
+        ),
+        ChangelogEntry(
+            "\U0001F3B2 Prediction Bets",
+            "`/bet open` stakes your currency on something happening; everyone else backs you "
+            "or takes the other side, straight from the buttons on their next command. The "
+            "winning side splits the whole pot - no house cut, nothing created or destroyed. "
+            "An admin resolves it, and if nobody backed the winning side, everyone gets their "
+            "stake back.",
+        ),
+        ChangelogEntry(
+            "\U0001F4CA /economy",
+            "`/economy status` is the whole server on one page: its wealth, mining slot "
+            "progress, what's queued and today's job. `/economy gdp` is what the server "
+            "actually **produced** over the last day and week, by stage of production. "
+            "Gemstones are counted but left out of GDP, and every server starts from zero "
+            "with this update.",
+        ),
+        ChangelogEntry(
+            "\U0001F48E Mining Affinity",
+            "The diamond's unlock. `/affinity` commits your gemstones to one kind, and every "
+            "other gem you mine arrives as that one at better than an even trade - 45 rubies "
+            "make a diamond. It stacks with `/focus` and `/efficiency`, and changes are free "
+            "once a day after the first.",
+        ),
+        ChangelogEntry(
+            "⚡ Every Fee Speeds a Machine Up",
+            "Machines no longer wait to level up to get faster. Halfway to its next level, a "
+            "machine runs halfway between the two levels' speeds.",
+        ),
+        ChangelogEntry(
+            "\U0001F9F9 Smaller Changes and Fixes",
+            "- \"Fees collected\" is now **Mining slot progress**, since the Mayor's spending "
+            "counts toward it too.\n"
+            "- `/mine status` shows all your mining enhancements together, and when a Bonanza "
+            "is on.\n"
+            "- A freshly queued job no longer finishes early on the machine's next tick, and a "
+            "drill that just started mining is no longer paid for time it wasn't.\n"
+            "- `/mine remove` now applies your Mining Efficiency, like `/collect` does.\n"
+            "- Your first Diamond comes with a note on what it unlocks.\n"
+            "- The blast furnace says \"batches\", not \"batchs\".\n"
+            "- Commands are quicker on the database side.",
+        ),
+    ),
+))
 
 _add(ChangelogVersion(
     version="1.3.1",

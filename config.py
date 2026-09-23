@@ -19,12 +19,12 @@ DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/dragonhoard.db")
 
 # Shown in every embed's footer (see utils/embeds.py and docs/stylization.md).
-VERSION = "1.3.1"
+VERSION = "1.4"
 
-# Per-item infrastructure fees a server starts with (docs/mining.txt).
-# Server managers can change them with /setup fee. Also mirrored in the
-# server_config column DEFAULTs in database/schema.sql, which SQL can't
-# read from here - keep the two in sync.
+# Per-item infrastructure fees at a fee multiplier of x1 (docs/mining.txt).
+# Every server's fee is one of these times the multiplier its elected
+# Treasurer sets (utils/db_helpers.py: MACHINE_DEFAULT_FEES) - there is no
+# per-server fee, so changing one here changes it on every server at once.
 DEFAULT_FURNACE_FEE = 0.01
 # The blast furnace charges per BATCH, and a batch is
 # data.materials.BLAST_FURNACE_BATCH_SIZE items, so this is the furnace's fee

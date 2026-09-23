@@ -30,10 +30,6 @@ CREATE TABLE IF NOT EXISTS server_config (
     currency_emoji      TEXT,
     furnace_level       INTEGER NOT NULL DEFAULT 1,
     factory_level       INTEGER NOT NULL DEFAULT 1,
-    -- Keep these DEFAULTs in sync with DEFAULT_FURNACE_FEE / DEFAULT_FACTORY_FEE
-    -- in config.py (used for databases created before a default changed).
-    furnace_fee         REAL NOT NULL DEFAULT 0.01,
-    factory_fee         REAL NOT NULL DEFAULT 0.25,
     furnace_fees_collected REAL NOT NULL DEFAULT 0.0,
     factory_fees_collected REAL NOT NULL DEFAULT 0.0,
     furnace_max_queue   INTEGER NOT NULL DEFAULT 25,
@@ -41,19 +37,14 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- The blast furnace: an auxiliary furnace that smelts in batches of 100
     -- (data/materials.py: BLAST_FURNACE_BATCH_SIZE). Everything here is
     -- counted in BATCHES, not items - the fee is charged per batch and the
-    -- queue cap is measured in them - so blast_furnace_fee's DEFAULT is the
-    -- furnace's fee times that batch size. Keep it in sync with
-    -- DEFAULT_BLAST_FURNACE_FEE in config.py.
+    -- queue cap is measured in them (config.py: DEFAULT_BLAST_FURNACE_FEE).
     blast_furnace_level          INTEGER NOT NULL DEFAULT 1,
-    blast_furnace_fee            REAL NOT NULL DEFAULT 1.0,
     blast_furnace_fees_collected REAL NOT NULL DEFAULT 0.0,
     blast_furnace_max_queue      INTEGER NOT NULL DEFAULT 5,
-    -- The hydraulic press. press_fee is the fee for ONE ruby-equivalent of
-    -- press time; a recipe pays it multiplied by its press_days, so a diamond
-    -- costs nine times a ruby. Keep the DEFAULT in sync with
-    -- DEFAULT_PRESS_FEE in config.py.
+    -- The hydraulic press. Its fee is charged per ruby-equivalent of press
+    -- time; a recipe pays it multiplied by its press_days, so a diamond costs
+    -- nine times a ruby (config.py: DEFAULT_PRESS_FEE).
     press_level         INTEGER NOT NULL DEFAULT 1,
-    press_fee           REAL NOT NULL DEFAULT 5.0,
     press_fees_collected REAL NOT NULL DEFAULT 0.0,
     press_max_queue     INTEGER NOT NULL DEFAULT 1,
     -- Fractional press-days carried between ticks. Unlike the furnace and
@@ -62,10 +53,8 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- would mean a diamond never finishes on a bot that restarts weekly.
     press_progress      REAL NOT NULL DEFAULT 0.0,
     -- The scrapper: recycles components, containers and drills back into the
-    -- materials they were made from. Keep scrapper_fee's DEFAULT in sync with
-    -- DEFAULT_SCRAPPER_FEE in config.py.
+    -- materials they were made from.
     scrapper_level          INTEGER NOT NULL DEFAULT 1,
-    scrapper_fee            REAL NOT NULL DEFAULT 0.10,
     scrapper_fees_collected REAL NOT NULL DEFAULT 0.0,
     scrapper_max_queue      INTEGER NOT NULL DEFAULT 5,
     -- The one channel Dragonhoard answers in. NULL (the default) means it
@@ -94,8 +83,9 @@ CREATE TABLE IF NOT EXISTS server_config (
     mining_pool_remaining    INTEGER NOT NULL DEFAULT 0,
     -- The highest mining slot level this server has been TOLD about (see
     -- utils/db_helpers.py: announce_mining_slot_unlocks). Not the level itself:
-    -- the cap is derived on read from the sum of every machine's
-    -- <machine>_fees_collected, so it is always current and needs no column.
+    -- the cap is derived on read from the fees this server has collected
+    -- (utils/db_helpers.py: fees_collected, the <machine>_fees_collected
+    -- columns added together), so it is always current and needs no column.
     -- This one exists purely so a server notice fires once per unlock rather
     -- than on every fee paid afterwards. 1 is the level every server starts at,
     -- so a fresh row has nothing outstanding to announce.
@@ -106,7 +96,63 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- fees, by /donate infrastructure, and by the market selling materials
     -- back to users.
     currency_minted_total    REAL NOT NULL DEFAULT 0.0,
-    currency_burned_total    REAL NOT NULL DEFAULT 0.0
+    currency_burned_total    REAL NOT NULL DEFAULT 0.0,
+    -- The server government (1.4, docs/government.md). Everything from here
+    -- down is set by the elected Mayor and Treasurer, never by an admin.
+    --
+    -- A machine's fee is its config.py default times its multiplier, one of
+    -- utils/government.py: FEE_MULTIPLIERS. There is no stored fee: the base
+    -- is the codebase default, so retuning a default moves every server at
+    -- once. Each <machine>_fee_changed is the game date (the job board's
+    -- America/Phoenix day) that multiplier last changed, because each setting
+    -- may change once per game day.
+    furnace_fee_multiplier       REAL NOT NULL DEFAULT 1.0,
+    blast_furnace_fee_multiplier REAL NOT NULL DEFAULT 1.0,
+    factory_fee_multiplier       REAL NOT NULL DEFAULT 1.0,
+    press_fee_multiplier         REAL NOT NULL DEFAULT 1.0,
+    scrapper_fee_multiplier      REAL NOT NULL DEFAULT 1.0,
+    furnace_fee_changed          TEXT,
+    blast_furnace_fee_changed    TEXT,
+    factory_fee_changed          TEXT,
+    press_fee_changed            TEXT,
+    scrapper_fee_changed         TEXT,
+    -- Infrastructure Enhancements bought for each machine; each doubles its
+    -- speed (data/materials.py: enhancement_speed).
+    furnace_enhancement_level       INTEGER NOT NULL DEFAULT 0,
+    blast_furnace_enhancement_level INTEGER NOT NULL DEFAULT 0,
+    factory_enhancement_level       INTEGER NOT NULL DEFAULT 0,
+    press_enhancement_level         INTEGER NOT NULL DEFAULT 0,
+    scrapper_enhancement_level      INTEGER NOT NULL DEFAULT 0,
+    -- The share of every machine fee that goes to the government instead of
+    -- being burned, in whole percent, and the bond premium in whole percent.
+    tax_percent          INTEGER NOT NULL DEFAULT 0,
+    tax_changed          TEXT,
+    bond_rate_percent    INTEGER NOT NULL DEFAULT 0,
+    bond_rate_changed    TEXT,
+    -- Currency the government holds. NOT burned: utils/db_helpers.py:
+    -- circulating_currency adds both back, as it does order and bet escrow.
+    -- The treasury is what the Mayor spends; the repayment pool is tax
+    -- collected while the server owes bondholders, paid out hourly.
+    treasury             REAL NOT NULL DEFAULT 0.0,
+    repayment_pool       REAL NOT NULL DEFAULT 0.0,
+    -- NULL = vacant.
+    mayor_id             INTEGER,
+    treasurer_id         INTEGER,
+    -- How much of the Mayor's current bond sale is still unsold, in cents.
+    bond_sale_cents      INTEGER NOT NULL DEFAULT 0,
+    -- Mining slot progress bought by the government rather than paid as a
+    -- machine fee: every government burn once, Mining Slot Enhancement
+    -- MINING_SLOT_ENHANCEMENT_MULTIPLIER times over. Added into the slot
+    -- total by utils/db_helpers.py: slot_progress.
+    mining_slot_credit   REAL NOT NULL DEFAULT 0.0,
+    -- When the running Server Bonanza ends, UTC in datetime('now')'s layout.
+    -- NULL, or in the past, means none is running.
+    bonanza_until        TEXT,
+    -- The last voting day (a Thursday, as a game date) whose votes have been
+    -- counted, and the last one whose opening was announced. Each is what
+    -- makes its step run once per week however many times it is reached.
+    election_counted     TEXT,
+    election_announced   TEXT
 );
 
 -- A user's balance of ONE specific server's custom currency. Unlike
@@ -120,7 +166,12 @@ CREATE TABLE IF NOT EXISTS server_currency_balances (
 
 -- The server's own material storage - the market's inventory, acquired from
 -- and sold back to users (docs/market.md section 3). Only raw and smelted
--- materials are ever stored here; components/drills are not tradeable.
+-- materials are ever stored here.
+--
+-- That is a rule about what the SERVER trades, not about what is tradeable.
+-- Since 1.4 players trade components, containers, gemstones and drills with
+-- each other through market_listings and market_orders below; none of it ever
+-- passes through here, because the server is not a party to those trades.
 CREATE TABLE IF NOT EXISTS server_material_storage (
     guild_id        INTEGER NOT NULL,
     material_id     TEXT NOT NULL,
@@ -197,6 +248,19 @@ CREATE TABLE IF NOT EXISTS notifications (
     -- every time - can't repost the same announcement to everyone. NULL for
     -- notices raised at runtime by a feature.
     notice_key      TEXT UNIQUE,
+    -- What a reader can DO about this notice, as an opaque "<kind>:<id>"
+    -- string, or NULL for the overwhelming majority that are just text.
+    -- utils/responses.py hands it to whichever feature registered that kind and
+    -- puts the buttons it builds on the same reply the notice rides in on; see
+    -- the action registry there.
+    --
+    -- It lives on the notice rather than being looked up per command because
+    -- respond() has already fetched this row - a notice's delivery is the one
+    -- query that runs on every successful command in the bot, and asking a
+    -- second question there ("does this server have an open bet?") would charge
+    -- every command in every server for a feature most of them never use. A
+    -- column on a row already in hand costs nothing.
+    action_key      TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     -- A global notice belongs to no guild and a server notice must name one.
     -- Without this a 'global' row carrying a guild_id would be invisible to
@@ -275,16 +339,49 @@ CREATE TABLE IF NOT EXISTS drills (
     level            INTEGER NOT NULL DEFAULT 1,
     container_type   TEXT,                          -- NULL = no container attached
     stored_amount    INTEGER NOT NULL DEFAULT 0,    -- raw materials waiting for /collect
-    -- Fractional carry between harvest ticks. A tick is 24 minutes (2.5
-    -- ticks/hour), so a tick's share of a drill's hourly rate is generally a
-    -- fraction of an item - banking the remainder here is what stops a level's
-    -- bonus being rounded away.
+    -- Fractional carry between harvest ticks. A tick is 5 minutes
+    -- (cogs/mining.py: HARVEST_TICK_MINUTES), so a tick's share of a drill's
+    -- hourly rate is generally a fraction of an item - banking the remainder
+    -- here is what stops a level's bonus being rounded away.
     harvest_progress REAL NOT NULL DEFAULT 0.0,
     is_full          INTEGER NOT NULL DEFAULT 0,    -- 0/1 boolean: stopped until /collect
+    -- The moment this drill's mining has been credited up to, as
+    -- datetime('now') text: written by every harvest tick, and reset to "now"
+    -- by anything that STARTS the drill mining - /mine place, or a /collect or
+    -- a container that frees up a full one - so that time it wasn't mining is
+    -- never paid for. Before it existed every tick credited a whole tick to
+    -- every drill, including one placed or emptied a second earlier. NULL on
+    -- a drill no tick has reached yet, which reads as one whole tick
+    -- (utils/db_helpers.py: elapsed_work_hours) - what it always got.
+    mined_until      TEXT,
     -- production_jobs.job_id of the queued job acting on this drill - a
     -- /factory upgrade or a /scrapper drill - else NULL. A locked drill can't
     -- be placed, removed, attached to, or queued a second time.
     locked_job_id    INTEGER,
+    -- When this drill was last placed, as datetime('now') text. What voting
+    -- eligibility is measured against (utils/government.py: can_vote): the
+    -- free starter drill means any account can have A drill placed within one
+    -- command, so the rule is a drill that has been placed for a week.
+    -- Not cleared when the drill is pulled out - only read together with a
+    -- guild_id match, and rewritten by the next placement.
+    --
+    -- NULL on a PLACED drill means it was placed before this column existed,
+    -- and counts as placed long enough. Nobody could have placed a drill to
+    -- win an election that did not exist yet, and backfilling "now" instead
+    -- would have shut every existing player out of the first election. So
+    -- anything that places a drill must write this, or it hands out that
+    -- same grandfathering (cogs/mining.py: /mine place is the one place).
+    placed_at        TEXT,
+    -- market_listings.listing_id of the listing offering this drill for sale,
+    -- else NULL. A listed drill can't be placed, removed, attached to, or
+    -- queued, exactly as a locked one can't.
+    --
+    -- DELIBERATELY NOT locked_job_id, which would have been the obvious reuse.
+    -- utils/drills.py: release_stale_drill_locks frees any locked_job_id that
+    -- doesn't name a live production_jobs row, and a listing is not a job - so
+    -- a drill escrowed there would be handed back to its owner, still listed,
+    -- the next time that sweep ran.
+    listed_id        INTEGER,
     CHECK (level >= 1),
     -- Buys back what dropping "guild_id NOT NULL" gave up: an unplaced drill
     -- can't be holding materials or be flagged full.
@@ -392,6 +489,29 @@ CREATE TABLE IF NOT EXISTS user_mining_efficiency_carry (
     FOREIGN KEY (user_id) REFERENCES users(user_id)
 );
 
+-- A player's mining affinity: which GEMSTONE every other gem they mine arrives
+-- as (data/materials.py: apply_mining_affinity). The focus's mirror one tier
+-- up, and the third independent member of that set - a player may have any of
+-- the three, all of them or none. See docs/mining-affinity.md.
+--
+-- THE ROW IS THE UNLOCK, as with both siblings: no row means the diamond has
+-- never been paid and the player is on DEFAULT_MINING_AFFINITY.
+CREATE TABLE IF NOT EXISTS user_mining_affinity (
+    user_id         INTEGER PRIMARY KEY,
+    affinity_id     TEXT NOT NULL,
+    -- Fractional units of affinity_id still owed from rounding. Unlike the two
+    -- carries above this one is worth real money - up to 89 rubies of mining
+    -- sits here when the target is a diamond - which is why it is CONVERTED to
+    -- the new target on a change rather than reset the way
+    -- user_mining_focus.carry is, and why every whole unit it holds is paid out
+    -- at that moment (utils/mining_affinity.py: set_affinity).
+    carry           REAL NOT NULL DEFAULT 0.0,
+    -- ISO date of the last change, on the job board's Arizona clock, the same
+    -- once-a-day rule the focus and the efficiency have.
+    last_changed    TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (user_id) REFERENCES users(user_id)
+);
+
 -- A queued furnace (smelting), blast furnace (bulk smelting), factory
 -- (crafting), press or scrapper job for a user in a guild. target_id is the
 -- material_id being produced or broken down (e.g. "iron", "wiring", "ruby"),
@@ -415,4 +535,273 @@ CREATE TABLE IF NOT EXISTS production_jobs (
     -- is DRILL_SCRAP_JOB_TARGET. Points at the drills row being upgraded or
     -- broken down, which is locked (drills.locked_job_id) until the job ends.
     target_drill_id INTEGER
+);
+-- Every hot read of this table asks for LIVE jobs - the five processing loops
+-- each tick, queue_room on every queue command, the status embeds - and a
+-- finished job is kept as a row with status 'complete' (for
+-- utils/db_helpers.py: COMPLETED_JOB_HISTORY_DAYS) rather than deleted on the
+-- spot. Without this the live-job lookups scanned every finished job the server
+-- had ever run, which is the one table here that grows with play. PARTIAL, so
+-- it holds only the live rows and stays a few entries long however long the
+-- history behind it gets; SQLite uses it only for queries whose WHERE clause
+-- carries the same `status != 'complete'` term, which is why every live-job
+-- query spells the condition exactly that way. Keep in step with the copy in
+-- database/db.py's production_jobs rebuild, which recreates it.
+CREATE INDEX IF NOT EXISTS idx_production_jobs_live
+    ON production_jobs (job_type, guild_id) WHERE status != 'complete';
+
+-- What was PRODUCED, as opposed to what currency changed hands. server_config
+-- has held the faucet/sink totals (currency_minted_total, currency_burned_total
+-- and the five <machine>_fees_collected columns) since 1.1, but nothing has ever
+-- recorded goods, which is what /economy's GDP figure is summed from. See
+-- docs/market.md section 5 for the value-added model this table serves.
+--
+-- THERE IS NOTHING TO BACKFILL. The events this records were never written down
+-- anywhere, so the table starts empty on every existing database and GDP is only
+-- meaningful from the moment 1.4 ships - which is why /economy shows a "tracked
+-- since" date rather than implying a lifetime total.
+--
+-- One row per production event, appended and never updated. Value added is
+-- output_value - input_value, DERIVED on read rather than stored, so a balance
+-- retune can't leave two disagreeing numbers in one row.
+CREATE TABLE IF NOT EXISTS production_ledger (
+    entry_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Where the work physically happened, which for mining is drills.guild_id -
+    -- the pool the ore came out of - and NOT interaction.guild_id. /collect
+    -- empties a player's drills in every server at once (cogs/mining.py), so one
+    -- invocation writes rows for several guilds; attributing them to the server
+    -- the command was typed in would credit it with every other server's ore.
+    guild_id     INTEGER NOT NULL,
+    occurred_at  TEXT NOT NULL DEFAULT (datetime('now')),   -- UTC, like every other timestamp here
+    source       TEXT NOT NULL CHECK (source IN
+                     ('mining', 'furnace', 'blast_furnace', 'factory', 'press', 'scrapper')),
+    material_id  TEXT NOT NULL,      -- what came out
+    quantity     INTEGER NOT NULL,   -- in ITEMS, even for the blast furnace, which queues in batches
+    -- Both valued at data/materials.py market prices, which are global constants
+    -- and identical on every server - so GDP is denominated in the server's own
+    -- currency and is still comparable between two servers, unlike a balance
+    -- total. A material the market does not price (components, drills,
+    -- containers, ultra dense matter) contributes 0 rather than an invented
+    -- figure; see docs/market.md section 5.
+    output_value REAL NOT NULL,
+    input_value  REAL NOT NULL,      -- 0 for mining, which consumes nothing
+    is_gemstone  INTEGER NOT NULL DEFAULT 0
+);
+-- Every read is one guild's rows over a recent window, which is exactly this.
+CREATE INDEX IF NOT EXISTS idx_ledger_guild_time ON production_ledger (guild_id, occurred_at);
+
+-- The player market's sell side: goods a player has offered to the server's
+-- other members at a price of their own (1.4). Per-guild, because the currency
+-- they are priced in is.
+--
+-- THE GOODS ARE ESCROWED HERE. Listing deducts them from user_materials (or
+-- claims the drill via drills.listed_id) and the listing row is where they live
+-- until it fills or is cancelled. Without that a player could list a stack and
+-- sell the same stack to the server before anyone filled it, and the listing
+-- would promise goods that had already gone.
+--
+-- A row holds EITHER a material stack or one drill, never both. A drill is not
+-- a stack - it carries a level and a container that are most of its value - so
+-- it is named by drill_id and its quantity is always 1.
+CREATE TABLE IF NOT EXISTS market_listings (
+    listing_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    seller_id   INTEGER NOT NULL,
+    material_id TEXT,                 -- NULL on a drill listing
+    drill_id    INTEGER,              -- NULL on a material listing
+    -- Decremented as the listing fills; the row is deleted when it reaches 0.
+    quantity    INTEGER NOT NULL,
+    -- Per unit, in ten-thousandths of a currency unit (data/materials.py:
+    -- PLAYER_PRICE_SCALE). An integer for the same reason MARKET_PRICE_CENTS
+    -- is: a price is multiplied by a quantity up to a million, and a float
+    -- would drift off its own sub-cent before it got there.
+    price_units INTEGER NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK ((material_id IS NULL) != (drill_id IS NULL)),
+    CHECK (drill_id IS NULL OR quantity = 1),
+    CHECK (quantity > 0 AND price_units > 0)
+);
+-- Every read is one guild's book for one material, cheapest first.
+CREATE INDEX IF NOT EXISTS idx_listings_book
+    ON market_listings (guild_id, material_id, price_units);
+CREATE INDEX IF NOT EXISTS idx_listings_seller ON market_listings (seller_id);
+
+-- The player market's buy side: standing bids for a material at a price the
+-- buyer has already paid for.
+--
+-- THE CURRENCY IS ESCROWED HERE, deducted from the buyer's balance when the
+-- order is placed, for the same reason the goods are above: an order that
+-- promises payment the buyer has since spent is an order that cannot be filled.
+--
+-- That escrow is NOT a burn. It has left server_currency_balances but not the
+-- economy, so utils/db_helpers.py: circulating_currency adds it back - see
+-- docs/market.md section 4.
+--
+-- No drill orders. An order names a KIND of thing, and a drill is never just
+-- its kind, so "I bid 250 for a Steel Drill" is not a well-formed offer.
+-- Drills are listing-side only.
+CREATE TABLE IF NOT EXISTS market_orders (
+    order_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    buyer_id    INTEGER NOT NULL,
+    material_id TEXT NOT NULL,
+    quantity    INTEGER NOT NULL,
+    price_units INTEGER NOT NULL,     -- per unit, PLAYER_PRICE_SCALE
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK (quantity > 0 AND price_units > 0)
+);
+-- Every read is one guild's book for one material, dearest first.
+CREATE INDEX IF NOT EXISTS idx_orders_book
+    ON market_orders (guild_id, material_id, price_units);
+CREATE INDEX IF NOT EXISTS idx_orders_buyer ON market_orders (buyer_id);
+
+-- A server prediction bet (1.4): somebody proposes an outcome, players back it
+-- or oppose it, and an admin decides which way it went. See docs/betting.md.
+--
+-- NO CURRENCY IS CREATED OR DESTROYED BY ANY OF THIS, which is the constraint
+-- the whole feature is built around. The pot is exactly what was staked, the
+-- winners split exactly the pot, and a cancelled bet hands back exactly what it
+-- took. A house cut would have made this a sink in the sense docs/market.md
+-- section 1 likes, and was ruled out for that reason - see docs/betting.md.
+--
+-- STAKES ARE ESCROWED on the wager row below, the same arrangement
+-- market_orders has and for the same reason: a bet that promises currency the
+-- better has since spent at /market buy is a bet that cannot pay out. As there,
+-- the escrow is NOT a burn - utils/db_helpers.py: circulating_currency adds it
+-- back.
+CREATE TABLE IF NOT EXISTS prediction_bets (
+    bet_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    creator_id  INTEGER NOT NULL,
+    prediction  TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    -- Absolute UTC in datetime('now')'s layout, frozen when the bet is opened
+    -- rather than stored as a duration, for the reason daily_jobs freezes its
+    -- quantity and reward: a restart or a retune must not move a deadline
+    -- somebody has already bet against. Compared as text, so the layout is
+    -- load-bearing.
+    closes_at   TEXT NOT NULL,
+    -- open      - taking wagers
+    -- closed    - past closes_at, waiting on an admin to call it
+    -- resolved  - called, and the pot has been paid out
+    -- cancelled - voided, and every stake has been handed back
+    --
+    -- Nothing moves the row to 'closed' on a timer. Every path that touches a
+    -- bet checks closes_at and flips it there, which is the same lazy approach
+    -- the job board takes to posting the day's task: a bet nobody is looking at
+    -- has nothing to accrue, so a loop would only be one more thing to keep
+    -- running. See utils/betting.py: settle_status.
+    status      TEXT NOT NULL DEFAULT 'open'
+                CHECK (status IN ('open', 'closed', 'resolved', 'cancelled')),
+    outcome     TEXT CHECK (outcome IN ('for', 'against')),  -- NULL until resolved
+    resolved_by INTEGER,
+    resolved_at TEXT,
+    -- A resolved bet names the side that won, and nothing else may. A cancelled
+    -- bet has no outcome by definition: it was voided precisely because no
+    -- outcome could be paid.
+    CHECK ((status = 'resolved') = (outcome IS NOT NULL))
+);
+-- Every hot read asks for one guild's LIVE bets - the autocompletes, /bet
+-- status, the open-bet cap - and a settled bet is kept as a row rather than
+-- deleted, because the row is the record that the bet happened and what it
+-- paid. PARTIAL for the same reason idx_production_jobs_live is: it holds only
+-- the live rows however long the history behind it gets. SQLite uses it only
+-- for queries whose WHERE carries the same `status IN ('open', 'closed')`
+-- term, which is why every live-bet query spells the condition exactly that
+-- way.
+CREATE INDEX IF NOT EXISTS idx_prediction_bets_live
+    ON prediction_bets (guild_id) WHERE status IN ('open', 'closed');
+
+-- One player's position on one bet. THE STAKE LIVES HERE until the bet settles
+-- (see above).
+--
+-- UNIQUE (bet_id, user_id) - not (bet_id, user_id, side) - is what enforces
+-- "one side, locked in": a player picks a side with their first wager and
+-- every later one tops up that same row. Letting somebody hold both sides
+-- would be harmless to the pot arithmetic (it is their own money either way)
+-- but it makes "who won" unanswerable for that player, and hedging a
+-- prediction you yourself proposed is not what this is for.
+--
+-- stake_cents is an INTEGER for the reason market_listings.price_units is: the
+-- payout apportions a pot between arbitrarily many winners and must come out
+-- to exactly the pot, and a float cannot be relied on to add back up to
+-- itself. Cents rather than PLAYER_PRICE_SCALE because a stake is a sum of
+-- money a player typed, not a unit price that has to fit inside a band one
+-- cent wide - see MARKET_PRICE_CENTS and PLAYER_PRICE_SCALE in
+-- data/materials.py for the two scales and what each is for.
+CREATE TABLE IF NOT EXISTS prediction_wagers (
+    wager_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    bet_id       INTEGER NOT NULL,
+    user_id      INTEGER NOT NULL,
+    side         TEXT NOT NULL CHECK (side IN ('for', 'against')),
+    stake_cents  INTEGER NOT NULL CHECK (stake_cents > 0),
+    placed_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    -- What this wager was actually paid when the bet settled, in cents: the
+    -- winner's share of the pot, the full stake back on a cancellation, 0 for a
+    -- loser. NULL while the bet is live. Kept as the record of the payout
+    -- rather than derived on read, because the pot it was a share of is gone
+    -- the moment the bet settles - unlike production_ledger's value figures,
+    -- which can be recomputed from prices that still exist.
+    payout_cents INTEGER,
+    UNIQUE (bet_id, user_id),
+    FOREIGN KEY (bet_id) REFERENCES prediction_bets(bet_id)
+);
+-- Every read of this table is one bet's wagers: the pools on /bet status, the
+-- apportionment at resolve time, the refunds at cancel time.
+CREATE INDEX IF NOT EXISTS idx_prediction_wagers_bet ON prediction_wagers (bet_id);
+
+-- The server government's elections (docs/government.md). One row per voter
+-- per office per voting day; voting again replaces the row, which is how
+-- "the latest vote counts" is enforced. Rows for a voting day are deleted once
+-- it has been counted, so votes never carry into the next week.
+--
+-- cast_at breaks ties: of two candidates on the same count, the one whose
+-- last vote arrived first reached that count first.
+CREATE TABLE IF NOT EXISTS government_votes (
+    guild_id      INTEGER NOT NULL,
+    voting_day    TEXT NOT NULL,     -- the Thursday, as a game date
+    office        TEXT NOT NULL CHECK (office IN ('mayor', 'treasurer')),
+    voter_id      INTEGER NOT NULL,
+    candidate_id  INTEGER NOT NULL,
+    cast_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, voting_day, office, voter_id)
+);
+
+-- A bond: currency a player lent the server, repaid out of tax.
+--
+-- Integer cents for the reason prediction_wagers.stake_cents is: repayment
+-- divides one pool between every creditor (utils/betting.py: apportion) and
+-- has to add back up to exactly the pool.
+--
+-- owed_cents is principal plus the premium, fixed at sale; remaining_cents is
+-- what is still to be paid. frozen marks a holder who has left the server:
+-- payouts skip them and the debt cap ignores them until they are back.
+-- tax_percent_at_sale is what stops the Treasurer cutting taxes below the
+-- rate the latest bond was sold under while debt is owed.
+CREATE TABLE IF NOT EXISTS government_bonds (
+    bond_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id            INTEGER NOT NULL,
+    holder_id           INTEGER NOT NULL,
+    principal_cents     INTEGER NOT NULL CHECK (principal_cents > 0),
+    rate_percent        INTEGER NOT NULL,
+    owed_cents          INTEGER NOT NULL,
+    remaining_cents     INTEGER NOT NULL CHECK (remaining_cents >= 0),
+    tax_percent_at_sale INTEGER NOT NULL,
+    frozen              INTEGER NOT NULL DEFAULT 0,
+    sold_at             TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- Every hot read is one guild's bonds still owed. A repaid bond is kept as the
+-- record of what it paid, so the index is partial on the live ones, and every
+-- query that should use it spells `remaining_cents > 0` literally.
+CREATE INDEX IF NOT EXISTS idx_government_bonds_owed
+    ON government_bonds (guild_id) WHERE remaining_cents > 0;
+
+-- Tax collected per server per game day. What the bond debt cap is measured
+-- against: debt may not exceed the previous 7 days' tax. Pruned past
+-- utils/government.py: TAX_HISTORY_DAYS.
+CREATE TABLE IF NOT EXISTS government_tax_daily (
+    guild_id  INTEGER NOT NULL,
+    day       TEXT NOT NULL,         -- game date
+    amount    REAL NOT NULL DEFAULT 0.0,
+    PRIMARY KEY (guild_id, day)
 );

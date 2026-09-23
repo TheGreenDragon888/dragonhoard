@@ -166,6 +166,12 @@ Implementation notes
   being uniform across a recipe's inputs.
 - **Efficiency applies AFTER focus**, on the combined haul, for the same reason
   the focus applies at collection rather than at harvest.
+- **Every path that empties a drill applies it** - /collect, /mine remove and
+  the retraction that runs when the bot leaves a server. A focus and an affinity
+  are applied everywhere so neither can be dodged by picking a different way to
+  empty a drill; an efficiency is applied everywhere so it cannot be forfeited
+  by one. /mine remove did not apply it until the affinity was added and the
+  three were compared.
 - **Carries are per material.** The correction produces fractions on both
   sides, and which material each lands on depends on the player's focus, so a
   single carry column of the kind user_mining_focus has would pay a fraction of

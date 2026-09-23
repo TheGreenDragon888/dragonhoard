@@ -22,6 +22,8 @@ from cogs.factory import FactoryCog
 from cogs.press import PressCog
 from cogs.scrapper import ScrapperCog
 from cogs.jobboard import JobBoardCog
+from cogs.betting import BettingCog
+from cogs.government import GovernmentCog
 from cogs.donate import DonateCog
 from cogs.recipe import RecipeCog
 from cogs.manual import ManualCog
@@ -42,6 +44,8 @@ COGS = (
     PressCog,
     ScrapperCog,
     JobBoardCog,
+    BettingCog,
+    GovernmentCog,
     DonateCog,
     RecipeCog,
     ManualCog,

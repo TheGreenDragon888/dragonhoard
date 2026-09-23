@@ -7,7 +7,7 @@ color palette and standard footer (see docs/stylization.md).
 import discord
 
 import config
-from utils.formatting import format_currency, format_duration
+from utils.formatting import format_currency, format_duration, plural
 from data.materials import effective_max_queue
 
 # Fully saturated brand colors - one per feature area (docs/stylization.md).
@@ -22,6 +22,8 @@ RECIPE_COLOR = discord.Color(0x00FFEA)     # cyan
 PRESS_COLOR = discord.Color(0x0066FF)       # blue
 SCRAPPER_COLOR = discord.Color(0x9EFF00)   # chartreuse
 JOBBOARD_COLOR = discord.Color(0xFF00AA)   # magenta
+BET_COLOR = discord.Color(0xC800FF)         # violet
+GOVERNMENT_COLOR = discord.Color(0x00AAFF)  # sky blue
 # The three kinds of notice (utils/notifications.py). They get separate colors
 # because they carry different authority - the bot announcing something about
 # itself to everybody, one server's own business, or something that happened to
@@ -32,6 +34,22 @@ SERVER_NOTICE_COLOR = discord.Color(0xFFFF00)    # yellow
 PERSONAL_NOTICE_COLOR = discord.Color(0x2200FF)  # indigo
 
 FOOTER_TEXT = f"Dragonhoard by Isaac Day · Version {config.VERSION}"
+
+
+def footer_with(note: str) -> str:
+    """The standard footer with one short note appended.
+
+    The one place the footer is extended, which is the rule docs/stylization.md
+    states: the alternative is every caller pasting FOOTER_TEXT into an f-string
+    of its own, and a release that changes the footer then has to find all of
+    them. Two commands used to share cogs/mining.py: unlock_footer for this
+    because they were the only callers; /bet made a third with nothing to do
+    with unlocks.
+
+    NO EMOJI - footer text renders none, custom or unicode. A note that needs to
+    refer to something has to name it.
+    """
+    return f"{FOOTER_TEXT} · {note}"
 
 
 def make_embed(title: str, color: discord.Color = DEFAULT_COLOR, **kwargs) -> discord.Embed:
@@ -94,8 +112,8 @@ def queue_field_name(items: int, jobs: int, wait_hours: float, unit: str = "item
     single items."""
     if not jobs:
         return "Queue • empty"
-    item_word = unit if items == 1 else f"{unit}s"
-    job_word = "job" if jobs == 1 else "jobs"
+    item_word = plural(unit, items)
+    job_word = plural("job", jobs)
     return f"Queue • {items:,} {item_word} / {jobs:,} {job_word} ({format_duration(wait_hours)} wait)"
 
 
@@ -109,8 +127,8 @@ def queue_limit_field_value(base: int, level: int, unit: str = "item") -> str:
     buys queue room as well as speed."""
     effective = effective_max_queue(base, level)
     if level <= 1:
-        return f"**{effective:,}** {unit}s per user"
-    return f"**{effective:,}** {unit}s per user\n({base:,} × level {level:,})"
+        return f"**{effective:,}** {plural(unit)} per user"
+    return f"**{effective:,}** {plural(unit)} per user\n({base:,} × level {level:,})"
 
 
 def job_owner_label(user_id: int) -> str:

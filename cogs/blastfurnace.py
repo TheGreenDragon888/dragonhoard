@@ -16,7 +16,7 @@ its own machine is also what stops one player's ten-thousand-ore job filling
 the shared furnace queue for everyone else.
 
 Structurally it follows cogs/furnace.py - same shared production_jobs queue,
-same up-front fee, same FIFO drain, same in-memory progress accumulator - with
+same up-front fee, same FIFO drain, same ProductionClock accumulator - with
 two differences worth knowing:
 
   * EVERYTHING HERE IS COUNTED IN BATCHES. production_jobs.quantity, the fee,
@@ -48,17 +48,24 @@ from utils.embeds import (
     BLAST_FURNACE_COLOR,
 )
 from utils.responses import respond
-from utils.formatting import format_currency
+from utils.formatting import format_currency, format_rate
 from utils.receipts import build_receipt_embed
+from utils.production_ledger import record_output, smelting_inputs
 from database.db import InsufficientQuantity
+from utils.government import charge_machine_fee
 from utils.db_helpers import (
-    bank_infrastructure_fee,
+    advance_job,
+    complete_job,
     ensure_server_row,
+    guilds_with_queued_work,
+    machine_speed_level,
+    ProductionClock,
     get_user_quantity,
     adjust_user_quantity,
     deduct_user_quantity,
     get_currency_balance,
-    charge_user_fee,
+    machine_fee,
+    run_level,
     queue_room,
     queue_full_message,
 )
@@ -91,7 +98,7 @@ class BlastFurnaceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
-        self._production_progress: dict[int, float] = {}
+        self._production = ProductionClock(PROCESS_TICK_MINUTES)
         self.process_loop.start()
 
     def cog_unload(self):
@@ -151,10 +158,10 @@ class BlastFurnaceCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT blast_furnace_fee, currency_emoji FROM server_config WHERE guild_id = ?",
+                    "SELECT blast_furnace_fee_multiplier, currency_emoji FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
-                fee_rate = cfg["blast_furnace_fee"]
+                fee_rate = machine_fee("blast_furnace", cfg["blast_furnace_fee_multiplier"])
                 currency_emoji = cfg["currency_emoji"]
 
                 room = await queue_room(
@@ -184,10 +191,7 @@ class BlastFurnaceCog(commands.Cog):
                     await deduct_user_quantity(tx, interaction.user.id, input_id, needed)
 
                 if fee_total > 0:
-                    await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await bank_infrastructure_fee(
-                        tx, interaction.guild_id, "blast_furnace", fee_total
-                    )
+                    await charge_machine_fee(tx, interaction.guild_id, interaction.user.id, "blast_furnace", fee_total)
 
                 # Everything already waiting that will be smelted before this
                 # job, in batches - the unit the wait below is computed in.
@@ -203,14 +207,12 @@ class BlastFurnaceCog(commands.Cog):
                     (interaction.guild_id, interaction.user.id, material.value, quantity),
                 )
 
-                # Re-read rather than reuse the level from cfg above: this
-                # job's own fee may have just upgraded the machine, and the
-                # quoted wait should use the speed it will actually run at.
-                level_row = await tx.fetchone(
-                    "SELECT blast_furnace_level FROM server_config WHERE guild_id = ?",
-                    (interaction.guild_id,),
+                # Read after the fee is banked rather than before: this job's
+                # own fee has just made the machine faster, and the quoted wait
+                # should use the speed it will actually run at.
+                speed_level = await machine_speed_level(
+                    tx, interaction.guild_id, "blast_furnace"
                 )
-                level = level_row["blast_furnace_level"]
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -239,24 +241,24 @@ class BlastFurnaceCog(commands.Cog):
             fee_total=fee_total,
             balance_after=balance_after,
             currency_emoji=currency_emoji,
-            eta_hours=(batches_ahead + quantity) / blast_furnace_rate(level),
+            eta_hours=(batches_ahead + quantity) / blast_furnace_rate(speed_level),
         )
         await respond(interaction, self.db, embed=embed)
 
     async def _blast_status_impl(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
         cfg = await self.db.fetchone(
-            "SELECT blast_furnace_level, blast_furnace_fee, blast_furnace_fees_collected, "
+            "SELECT blast_furnace_level, blast_furnace_fee_multiplier, blast_furnace_fees_collected, "
             "blast_furnace_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
         level = cfg["blast_furnace_level"]
-        fee_rate = cfg["blast_furnace_fee"]
+        fee_rate = machine_fee("blast_furnace", cfg["blast_furnace_fee_multiplier"])
         max_queue = cfg["blast_furnace_max_queue"]
         fees_collected = cfg["blast_furnace_fees_collected"]
         currency_emoji = cfg["currency_emoji"]
 
-        rate = blast_furnace_rate(level)
+        rate = blast_furnace_rate(await machine_speed_level(self.db, interaction.guild_id, "blast_furnace"))
         upgrade_cost = upgrade_threshold(level + 1)
 
         jobs = await self.db.fetchall(
@@ -275,8 +277,8 @@ class BlastFurnaceCog(commands.Cog):
             color=BLAST_FURNACE_COLOR,
             level=level,
             speed_text=(
-                f"{rate:,} batch{'es' if rate != 1 else ''}/hour "
-                f"({rate * BLAST_FURNACE_BATCH_SIZE:,} items/hour)"
+                f"{format_rate(rate, 'batch')}/hour "
+                f"({format_rate(rate * BLAST_FURNACE_BATCH_SIZE)} items/hour)"
             ),
             fees_collected=fees_collected,
             upgrade_cost=upgrade_cost,
@@ -324,27 +326,23 @@ class BlastFurnaceCog(commands.Cog):
 
     @tasks.loop(minutes=PROCESS_TICK_MINUTES)
     async def process_loop(self):
-        """Each tick, every guild's blast furnace processes its hourly rate
-        spread over time. The loop keeps a fractional accumulator per guild so
-        rates that don't divide evenly into whole batches per tick never over-
-        or under-produce.
+        """Each tick, every guild's blast furnace that has work queued works
+        through as many batches as the time since it last worked pays for -
+        see utils/db_helpers.py: ProductionClock, which the furnace shares.
 
         In memory rather than persisted, exactly as the furnace's is. A restart
         can cost at most one unfinished batch's progress, which at a level 1
         machine is under an hour - proportionally the same as the furnace
         losing part of a twelve-minute item, because both are a fraction of one
-        unit of work. The press persists its own accumulator instead
-        (server_config.press_progress) because one unit of ITS work is days.
+        unit of work - and never anything already produced or paid for.
         """
-        ticks_per_hour = 60 / PROCESS_TICK_MINUTES
-        configs = await self.db.fetchall(
-            "SELECT guild_id, blast_furnace_level FROM server_config"
-        )
-        for cfg in configs:
-            rate = blast_furnace_rate(cfg["blast_furnace_level"])
-            progress = self._production_progress.get(cfg["guild_id"], 0.0) + (rate / ticks_per_hour)
-            produced_batches = int(progress)
-            self._production_progress[cfg["guild_id"]] = progress - produced_batches
+        now = self._production.now()
+        # Only servers with a live blast furnace job; an idle one costs nothing.
+        for cfg in await guilds_with_queued_work(self.db, "blast_furnace"):
+            rate = blast_furnace_rate(run_level(cfg, now))
+            produced_batches = self._production.earn(
+                cfg["guild_id"], rate, cfg["work_started"], now
+            )
 
             remaining_capacity = produced_batches
             while remaining_capacity > 0:
@@ -371,21 +369,29 @@ class BlastFurnaceCog(commands.Cog):
                     # The one place batches become items. Everything above this
                     # line - the fee, the queue cap, this loop's own capacity -
                     # is counted in batches.
+                    items = produced * BLAST_FURNACE_BATCH_SIZE
                     await adjust_user_quantity(
-                        tx, job["user_id"], job["target_id"],
-                        produced * BLAST_FURNACE_BATCH_SIZE,
+                        tx, job["user_id"], job["target_id"], items,
+                    )
+
+                    # So the ledger goes on the ITEM side of that line, like
+                    # every other row in the table: what a machine queues in and
+                    # what it produced are different questions, and a bulk job
+                    # recorded in batches would understate this server's output
+                    # by a factor of BLAST_FURNACE_BATCH_SIZE. smelting_inputs
+                    # needs no batch handling for the same reason - a batch is
+                    # the furnace's recipe and its fuel coal alike multiplied by
+                    # exactly that (data/materials.py), so the per-item cost is
+                    # identical at both machines.
+                    await record_output(
+                        tx, job["guild_id"], "blast_furnace", job["target_id"], items,
+                        smelting_inputs(job["target_id"], items),
                     )
 
                     if new_quantity <= 0:
-                        await tx.execute(
-                            "UPDATE production_jobs SET status = 'complete', quantity = 0 WHERE job_id = ?",
-                            (job["job_id"],),
-                        )
+                        await complete_job(tx, job["job_id"])
                     else:
-                        await tx.execute(
-                            "UPDATE production_jobs SET quantity = ?, status = 'in_progress' WHERE job_id = ?",
-                            (new_quantity, job["job_id"]),
-                        )
+                        await advance_job(tx, job["job_id"], new_quantity)
 
     @process_loop.before_loop
     async def before_process_loop(self):

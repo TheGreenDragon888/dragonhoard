@@ -28,13 +28,26 @@ log = logging.getLogger("dragonhoard")
 # to receive. members is privileged - it must ALSO be enabled in the Discord
 # Developer Portal under your bot's "Privileged Gateway Intents".
 intents = discord.Intents.default()
-intents.members = True  # needed for guild.members (utils/guild_helpers.py: human_member_count)
+intents.members = True  # needed for guild.chunk() (utils/guild_helpers.py: human_member_count)
 
 # tree_cls is what installs the designated-bot-channel check. It has to be
 # passed here rather than set later: Bot builds its CommandTree in __init__,
 # and every command registered by a cog goes into whichever tree already
 # exists. See utils/channel_guard.py for why the check lives on the tree.
-bot = commands.Bot(command_prefix="!", intents=intents, tree_cls=DragonhoardTree)
+#
+# The members intent is enabled to COUNT a server's humans, not to hold them.
+# discord.py's default with that intent is to fetch every member of every
+# server at startup and keep them all in memory, and nothing here ever read
+# that cache except the one count - so the cache is switched off and the
+# startup fetch with it. human_member_count asks the gateway for a guild's
+# members when it needs a count and keeps only the number.
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    tree_cls=DragonhoardTree,
+    member_cache_flags=discord.MemberCacheFlags.none(),
+    chunk_guilds_at_startup=False,
+)
 
 # Every cog accesses this via `bot.db`, so it's created once here and shared,
 # rather than each cog opening its own separate connection pool.
@@ -57,6 +70,8 @@ def build_initial_extensions(is_beta: bool) -> list[str]:
         "cogs.press",
         "cogs.scrapper",
         "cogs.jobboard",
+        "cogs.betting",
+        "cogs.government",
         "cogs.donate",
         "cogs.recipe",
         "cogs.manual",

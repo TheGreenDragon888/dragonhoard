@@ -34,7 +34,21 @@ from data.materials import (
     target_stock,
     upgrade_threshold,
 )
+from utils.db_helpers import (
+    BET_ESCROW_CENTS_BY_GUILD_SQL,
+    ESCROWED_UNITS_BY_GUILD_SQL,
+    circulating_currency,
+    government_held,
+    machine_fee,
+    slot_progress,
+)
 from utils.job_board import job_board_today
+from utils.production_ledger import (
+    GDP_DAY_HOURS,
+    GDP_SOURCES,
+    GDP_WEEK_HOURS,
+    window_cutoff,
+)
 
 from web import directory
 
@@ -69,6 +83,7 @@ _SCHEMA_TABLES = (
     "notifications", "notification_reads", "user_notifications",
     "drills", "drill_contents", "server_mining_pool", "user_mining_focus",
     "user_mining_efficiency", "user_mining_efficiency_carry", "production_jobs",
+    "production_ledger",
 )
 
 
@@ -109,20 +124,18 @@ def _material_label(material_id: str) -> str:
     return info["name"] if info else material_id
 
 
-def _job_target_label(conn: sqlite3.Connection, job: sqlite3.Row) -> str:
+def _job_target_label(job: sqlite3.Row, drills_by_id: dict[int, sqlite3.Row]) -> str:
     """A production job's target column, for display. Most jobs name a
     material; the two drill-sentinel target_ids (DRILL_UPGRADE_JOB_TARGET,
     DRILL_SCRAP_JOB_TARGET) instead point at target_drill_id, so those are
     resolved to the drill's own type/level rather than shown as the raw
     sentinel string - used both for a server's production queue and for a
     player's own outstanding-jobs list, so a mid-upgrade drill reads the
-    same way in either place."""
+    same way in either place. The drill comes from the rows build_payload
+    has already loaded rather than a query per job."""
     if job["target_id"] in (DRILL_UPGRADE_JOB_TARGET, DRILL_SCRAP_JOB_TARGET):
         verb = "Upgrade" if job["target_id"] == DRILL_UPGRADE_JOB_TARGET else "Scrap"
-        drow = conn.execute(
-            "SELECT drill_type, level FROM drills WHERE drill_id = ?",
-            (job["target_drill_id"],),
-        ).fetchone()
+        drow = drills_by_id.get(job["target_drill_id"])
         if drow:
             dinfo = get_material_info(drow["drill_type"])
             dname = dinfo["name"] if dinfo else drow["drill_type"]
@@ -130,6 +143,15 @@ def _job_target_label(conn: sqlite3.Connection, job: sqlite3.Row) -> str:
         return f"{verb} drill #{job['target_drill_id']}"
     unit = " batches" if job["job_type"] == "blast_furnace" else ""
     return f"{job['quantity']}× {_material_label(job['target_id'])}{unit}"
+
+
+def _group(rows, key: str) -> dict:
+    """Rows bucketed by one column, in the order they arrived - the shape
+    every per-server and per-player lookup below reads from."""
+    grouped: dict = {}
+    for row in rows:
+        grouped.setdefault(row[key], []).append(row)
+    return grouped
 
 
 def build_payload(
@@ -149,9 +171,10 @@ def build_payload(
             return "user_" + str(user_id)[-4:]
         return directory.user_name(user_id)
 
-    row_total = 0
-    for table in _SCHEMA_TABLES:
-        row_total += conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    # One statement for the row total rather than one COUNT per table.
+    row_total = conn.execute(
+        "SELECT " + " + ".join(f"(SELECT COUNT(*) FROM {table})" for table in _SCHEMA_TABLES)
+    ).fetchone()[0]
 
     # ---- base rows ---------------------------------------------------
     server_configs = conn.execute("SELECT * FROM server_config").fetchall()
@@ -172,46 +195,197 @@ def build_payload(
         channel_ids=[cfg["bot_channel_id"] for cfg in server_configs if cfg["bot_channel_id"]],
     )
 
-    def guild_balances(guild_id: int) -> list[sqlite3.Row]:
-        return conn.execute(
-            "SELECT user_id, balance FROM server_currency_balances "
-            "WHERE guild_id = ? ORDER BY balance DESC",
-            (guild_id,),
-        ).fetchall()
+    # ---- everything else, read once and grouped ----------------------
+    # The per-server and per-player loops below make NO queries of their
+    # own. Until 1.4 they did - a dozen per server, and per player one
+    # balance lookup against EVERY server plus four more - so a request cost
+    # servers-times-players statements and grew with both. Each table is
+    # read once here instead and bucketed by the key the loops need.
+    drills_by_guild = _group([d for d in all_drills if d["guild_id"] is not None], "guild_id")
+    drills_by_owner = _group(all_drills, "owner_id")
+    drills_by_id = {d["drill_id"]: d for d in all_drills}
+    jobs_by_guild = _group(all_jobs, "guild_id")
+    jobs_by_user = _group(all_jobs, "user_id")
+    jobs_by_type = _group(all_jobs, "job_type")
+    job_labels = {j["job_id"]: _job_target_label(j, drills_by_id) for j in all_jobs}
 
-    def guild_last_activity(guild_id: int) -> datetime | None:
-        """The most recent timestamped thing that happened in this server.
-        server_config and drills carry no timestamp of their own (see
-        web/README.md), so this is the best a DB-only reader can do: the
-        newest of a queued production job, a posted daily job, or a paid
-        job-board completion. A server with none of those ever recorded
-        returns None rather than a fabricated "quiet forever"."""
-        rows = conn.execute(
-            "SELECT MAX(queued_at) AS ts FROM production_jobs WHERE guild_id = ? "
-            "UNION ALL "
-            "SELECT MAX(posted_at) FROM daily_jobs WHERE guild_id = ? "
-            "UNION ALL "
-            "SELECT MAX(claimed_at) FROM daily_job_progress WHERE guild_id = ? AND claimed_at IS NOT NULL",
-            (guild_id, guild_id, guild_id),
-        ).fetchall()
-        stamps = [_parse_ts(r["ts"]) for r in rows if r["ts"]]
-        stamps = [s for s in stamps if s]
-        return max(stamps) if stamps else None
+    balance_rows = conn.execute(
+        "SELECT guild_id, user_id, balance FROM server_currency_balances "
+        "ORDER BY guild_id, balance DESC"
+    ).fetchall()
+    balances_by_guild = _group(balance_rows, "guild_id")
+    balances_by_user: dict[int, dict[int, float]] = {}
+    for b in balance_rows:
+        balances_by_user.setdefault(b["user_id"], {})[b["guild_id"]] = b["balance"]
+
+    stock_by_guild: dict[int, dict[str, int]] = {}
+    for r in conn.execute("SELECT guild_id, material_id, quantity FROM server_material_storage"):
+        stock_by_guild.setdefault(r["guild_id"], {})[r["material_id"]] = r["quantity"]
+
+    pool_by_guild = _group(
+        conn.execute(
+            "SELECT guild_id, material_id, quantity FROM server_mining_pool "
+            "ORDER BY guild_id, quantity DESC"
+        ).fetchall(),
+        "guild_id",
+    )
+
+    # This server's production over the same two windows /economy shows,
+    # read with the bot's own definitions rather than a second set: the
+    # windows come from utils/production_ledger.py and so does GDP_SOURCES,
+    # which is what keeps the dashboard's figure the same figure a player
+    # sees rather than a lookalike computed here. Both windows come out of
+    # one grouped statement - the day is the part of the week's rows that
+    # falls inside the shorter cutoff.
+    placeholders = ",".join("?" * len(GDP_SOURCES))
+    gdp_by_guild: dict[int, tuple[float, float]] = {}
+    for r in conn.execute(
+        f"SELECT guild_id, "
+        f"COALESCE(SUM(CASE WHEN occurred_at >= ? THEN output_value - input_value END), 0) AS day, "
+        f"COALESCE(SUM(output_value - input_value), 0) AS week "
+        f"FROM production_ledger "
+        f"WHERE is_gemstone = 0 AND occurred_at >= ? AND source IN ({placeholders}) "
+        f"GROUP BY guild_id",
+        (window_cutoff(GDP_DAY_HOURS), window_cutoff(GDP_WEEK_HOURS), *GDP_SOURCES),
+    ):
+        gdp_by_guild[r["guild_id"]] = (r["day"], r["week"])
+    first_seen_by_guild = {
+        r["guild_id"]: r["first_seen"]
+        for r in conn.execute(
+            "SELECT guild_id, MIN(occurred_at) AS first_seen FROM production_ledger GROUP BY guild_id"
+        )
+    }
+
+    # The most recent timestamped thing that happened in each server.
+    # server_config and drills carry no timestamp of their own (see
+    # web/README.md), so this is the best a DB-only reader can do: the
+    # newest of a queued production job, a posted daily job, or a paid
+    # job-board completion. A server with none of those recorded is absent
+    # here and reads as None rather than a fabricated "quiet forever".
+    # Finished jobs are kept for COMPLETED_JOB_HISTORY_DAYS
+    # (utils/db_helpers.py) and daily jobs for JOB_HISTORY_DAYS
+    # (utils/job_board.py), so a server quiet for longer than both reads as
+    # having no recorded activity rather than as quiet for exactly that long.
+    last_activity_by_guild: dict[int, datetime] = {}
+    for sql in (
+        "SELECT guild_id, MAX(queued_at) AS ts FROM production_jobs GROUP BY guild_id",
+        "SELECT guild_id, MAX(posted_at) AS ts FROM daily_jobs GROUP BY guild_id",
+        "SELECT guild_id, MAX(claimed_at) AS ts FROM daily_job_progress "
+        "WHERE claimed_at IS NOT NULL GROUP BY guild_id",
+    ):
+        for r in conn.execute(sql):
+            ts = _parse_ts(r["ts"])
+            if ts and ts > last_activity_by_guild.get(r["guild_id"], ts):
+                last_activity_by_guild[r["guild_id"]] = ts
+            elif ts and r["guild_id"] not in last_activity_by_guild:
+                last_activity_by_guild[r["guild_id"]] = ts
+
+    boards_by_guild = {
+        r["guild_id"]: r
+        for r in conn.execute("SELECT * FROM daily_jobs WHERE job_date = ?", (today,))
+    }
+    board_agg_by_guild = {
+        r["guild_id"]: r
+        for r in conn.execute(
+            "SELECT guild_id, COALESCE(SUM(claims_paid),0) AS completions, "
+            "COUNT(DISTINCT CASE WHEN sold > 0 OR claims_paid > 0 THEN user_id END) AS participants "
+            "FROM daily_job_progress WHERE job_date = ? GROUP BY guild_id",
+            (today,),
+        )
+    }
+
+    # One row per guild that has any open bid; guilds with none are absent and
+    # read as 0 escrowed rather than needing a row.
+    escrowed_units_by_guild = {
+        r["guild_id"]: r["units"]
+        for r in conn.execute(ESCROWED_UNITS_BY_GUILD_SQL)
+    }
+
+    # The same for currency staked on a bet that has not settled (1.4). A
+    # separate map because it is counted in cents rather than in
+    # PLAYER_PRICE_SCALE units - circulating_currency takes the two apart for
+    # that reason.
+    bet_escrow_by_guild = {
+        r["guild_id"]: r["cents"]
+        for r in conn.execute(BET_ESCROW_CENTS_BY_GUILD_SQL)
+    }
+
+    focus_by_user = {
+        r["user_id"]: r["focus_id"]
+        for r in conn.execute("SELECT user_id, focus_id FROM user_mining_focus")
+    }
+    efficiency_by_user = {
+        r["user_id"]: r["efficiency_id"]
+        for r in conn.execute("SELECT user_id, efficiency_id FROM user_mining_efficiency")
+    }
+    gems_by_user = _group(
+        conn.execute(
+            "SELECT user_id, material_id, quantity FROM user_materials "
+            "WHERE material_id IN (?,?,?) AND quantity > 0 ORDER BY user_id, material_id",
+            GEM_MATERIAL_IDS,
+        ).fetchall(),
+        "user_id",
+    )
+    # Every player's inventory, largest stacks first; each player's card shows
+    # the top six of their own.
+    inventory_by_user = _group(
+        conn.execute(
+            "SELECT user_id, material_id, quantity FROM user_materials "
+            "WHERE quantity > 0 ORDER BY user_id, quantity DESC"
+        ).fetchall(),
+        "user_id",
+    )
+
+    def guild_gdp(guild_id: int) -> dict:
+        """Every server reads zero until it produces something under 1.4 -
+        the ledger has no history to backfill (docs/market.md section 5) -
+        so `tracked_since` is reported alongside the numbers rather than left
+        for somebody to infer from a suspicious run of noughts."""
+        day, week = gdp_by_guild.get(guild_id, (0, 0))
+        first_seen = first_seen_by_guild.get(guild_id)
+        tracked = first_seen[:10] if first_seen else None
+        return {
+            "day": _m(day),
+            "week": _m(week),
+            "day_raw": day,
+            "week_raw": week,
+            "tracked_since": tracked,
+            "note": (
+                f"Tracked since {tracked}"
+                if tracked
+                else "Nothing recorded yet - the ledger starts empty"
+            ),
+        }
 
     servers = {}
     for cfg in server_configs:
         gid = cfg["guild_id"]
-        drills = [d for d in all_drills if d["guild_id"] == gid]
-        jobs = [j for j in all_jobs if j["guild_id"] == gid]
-        balances = guild_balances(gid)
+        drills = drills_by_guild.get(gid, [])
+        jobs = jobs_by_guild.get(gid, [])
+        balances = balances_by_guild.get(gid, [])
         approx_members = len(balances)
-        circulating = sum(b["balance"] for b in balances)
+        # circulating_currency rather than sum(balances), for the same reason
+        # fees is slot_progress below: /economy status reports this figure too
+        # and the two have to agree. The difference is the currency escrowed in
+        # open /market order bids and in running prediction bets, and what the
+        # server government holds, all of which has left its owners' balances
+        # but not the economy (docs/market.md section 4).
+        circulating = circulating_currency(
+            sum(b["balance"] for b in balances),
+            escrowed_units_by_guild.get(gid, 0),
+            bet_escrow_by_guild.get(gid, 0),
+            government_held(cfg),
+        )
         minted = cfg["currency_minted_total"]
         burned = cfg["currency_burned_total"]
         burn_ratio = (burned / minted) if minted > 0 else 0.0
-        invested = sum(cfg[f"{m}_fees_collected"] for m in MACHINES)
-        slot_level = mining_slot_level(invested)
-        last_activity = guild_last_activity(gid)
+        # slot_progress rather than a sum written out here, for the same
+        # reason every other derived figure on this page is imported: mining
+        # slots are bought with this total, so the dashboard reads it through
+        # the same function the bot prices that ladder with.
+        fees = slot_progress(cfg)
+        slot_level = mining_slot_level(fees)
+        last_activity = last_activity_by_guild.get(gid)
         # Clamped at 0: a timestamp written by the bot process a moment ago
         # can read as "in the future" relative to this process's own clock by
         # a few seconds without the two machines' clocks actually disagreeing.
@@ -243,28 +417,20 @@ def build_payload(
                 "banked": _m(banked),
                 "pct": min(100, round(banked / nxt * 100)) if nxt else 100,
                 "next": f"{_m(min(banked, nxt))} / {_m(nxt)}",
-                "fee": _m(cfg[f"{m}_fee"]),
+                "fee": _m(machine_fee(m, cfg[f"{m}_fee_multiplier"])),
             })
 
-        pool_comp = conn.execute(
-            "SELECT material_id, quantity FROM server_mining_pool "
-            "WHERE guild_id = ? ORDER BY quantity DESC",
-            (gid,),
-        ).fetchall()
         pool_comp_rows = [
             {"name": _material_label(r["material_id"]), "qty": _n(r["quantity"])}
-            for r in pool_comp
+            for r in pool_by_guild.get(gid, [])
         ]
 
+        stock = stock_by_guild.get(gid, {})
         stock_rows = []
         for material_id in TRADEABLE_ORDER:
             if material_id in GEM_MATERIAL_IDS:
                 continue
-            have = conn.execute(
-                "SELECT quantity FROM server_material_storage WHERE guild_id = ? AND material_id = ?",
-                (gid, material_id),
-            ).fetchone()
-            have_qty = have["quantity"] if have else 0
+            have_qty = stock.get(material_id, 0)
             target = target_stock(approx_members, material_id)
             stock_rows.append({
                 "name": _material_label(material_id),
@@ -272,42 +438,34 @@ def build_payload(
                 "label": f"{_n(have_qty)} / {_n(target)}",
             })
 
-        board_row = conn.execute(
-            "SELECT * FROM daily_jobs WHERE guild_id = ? AND job_date = ?",
-            (gid, today),
-        ).fetchone()
+        board_row = boards_by_guild.get(gid)
         board = None
         if board_row:
-            agg = conn.execute(
-                "SELECT COALESCE(SUM(claims_paid),0) AS completions, "
-                "COUNT(DISTINCT CASE WHEN sold > 0 OR claims_paid > 0 THEN user_id END) AS participants "
-                "FROM daily_job_progress WHERE guild_id = ? AND job_date = ?",
-                (gid, today),
-            ).fetchone()
+            agg = board_agg_by_guild.get(gid)
             board = {
                 "material": _material_label(board_row["material_id"]),
                 "quantity": board_row["quantity"],
                 "reward": board_row["reward"],
-                "completions": agg["completions"],
-                "participants": agg["participants"],
+                "completions": agg["completions"] if agg else 0,
+                "participants": agg["participants"] if agg else 0,
             }
 
         job_rows = []
         for j in jobs:
-            target_label = _job_target_label(conn, j)
             ts = _parse_ts(j["queued_at"])
             age_hours = (now - ts).total_seconds() / 3600 if ts else 0
             job_rows.append({
                 "machine": MACHINE_LABEL[j["job_type"]],
-                "target": target_label,
+                "target": job_labels[j["job_id"]],
                 "owner": name_for_user(j["user_id"]),
                 "age": f"{int(age_hours // 24)}d old" if age_hours >= 24 else f"{int(age_hours)}h old",
                 "ageColor": "var(--accent-blue)" if age_hours >= stalled_days * 24 else "var(--text-subtle)",
             })
 
+        drills_here_by_owner = _group(drills, "owner_id")
         members2 = []
         for i, b in enumerate(balances):
-            own = [d for d in drills if d["owner_id"] == b["user_id"]]
+            own = drills_here_by_owner.get(b["user_id"], [])
             members2.append({
                 "rank": i + 1,
                 "user_id": str(b["user_id"]),
@@ -340,12 +498,12 @@ def build_payload(
             "reconcile": f"minted − burned = {_m(minted - burned)}",
             "burnPct": _pct(burn_ratio), "burn_ratio": burn_ratio,
             "burnNote": f"Below your {burn_floor:.0f}% floor" if burn_ratio * 100 < burn_floor else "Inside the healthy band",
-            "invested": _m(invested), "invested_raw": invested,
+            "fees": _m(fees), "fees_raw": fees,
             "slots": mining_slots(slot_level), "slotLevel": slot_level,
             "nextSlotThreshold": mining_slot_threshold(slot_level + 1),
-            "slotPct": min(100, round(invested / mining_slot_threshold(slot_level + 1) * 100)),
-            "slotNote": f"{_m(min(invested, mining_slot_threshold(slot_level + 1)))} / "
-                        f"{_m(mining_slot_threshold(slot_level + 1))} lifetime fees toward slot {mining_slots(slot_level) + 1}",
+            "slotPct": min(100, round(fees / mining_slot_threshold(slot_level + 1) * 100)),
+            "slotNote": f"{_m(min(fees, mining_slot_threshold(slot_level + 1)))} / "
+                        f"{_m(mining_slot_threshold(slot_level + 1))} of progress toward slot {mining_slots(slot_level) + 1}",
             "machines": machines,
             "poolLabel": _n(pool_remaining),
             "poolPct": pool_pct,
@@ -363,6 +521,7 @@ def build_payload(
             "oldest_hours": oldest_hours,
             "pool_remaining_raw": pool_remaining,
             "fees_collected": {m: cfg[f"{m}_fees_collected"] for m in MACHINES},
+            "gdp": guild_gdp(gid),
         }
 
     active_ids = [gid for gid, s in servers.items() if s["present"]]
@@ -407,7 +566,7 @@ def build_payload(
     machine_rows = []
     for m in MACHINES:
         levels = sorted(_level_for(servers[gid]["fees_collected"][m]) for gid in active_ids)
-        js = [j for j in all_jobs if j["job_type"] == m]
+        js = jobs_by_type.get(m, [])
         median_level = levels[len(levels) // 2] if levels else 0
         machine_rows.append({
             "label": MACHINE_LABEL[m],
@@ -467,7 +626,7 @@ def build_payload(
                 "players": servers[gid]["players"], "drills": servers[gid]["drills_placed"],
                 "pool": _n(servers[gid]["pool_remaining_raw"]),
                 "poolColor": "var(--text-muted)",
-                "invested": servers[gid]["invested"], "slots": servers[gid]["slots"],
+                "fees": servers[gid]["fees"], "slots": servers[gid]["slots"],
                 "minted": servers[gid]["minted"], "burned": servers[gid]["burned"],
                 "circulating": servers[gid]["circulating"], "burnPct": servers[gid]["burnPct"],
                 "burnColor": "var(--accent-blue)" if servers[gid]["burn_ratio"] * 100 < burn_floor else "var(--text-muted)",
@@ -501,53 +660,41 @@ def build_payload(
     player_rail = []
     for u in all_users:
         uid = u["user_id"]
-        focus_row = conn.execute(
-            "SELECT focus_id FROM user_mining_focus WHERE user_id = ?", (uid,)
-        ).fetchone()
-        eff_row = conn.execute(
-            "SELECT efficiency_id FROM user_mining_efficiency WHERE user_id = ?", (uid,)
-        ).fetchone()
-        focus = MINING_FOCUSES.get(focus_row["focus_id"], {}).get("name", focus_row["focus_id"]) if focus_row else None
-        efficiency = MINING_EFFICIENCIES.get(eff_row["efficiency_id"], {}).get("name", eff_row["efficiency_id"]) if eff_row else None
-        gem_rows = conn.execute(
-            "SELECT material_id, quantity FROM user_materials WHERE user_id = ? AND material_id IN (?,?,?) AND quantity > 0",
-            (uid, *GEM_MATERIAL_IDS),
-        ).fetchall()
-        gems = ", ".join(f"{_material_label(r['material_id'])} ×{r['quantity']}" for r in gem_rows) or "—"
+        focus_id = focus_by_user.get(uid)
+        efficiency_id = efficiency_by_user.get(uid)
+        focus = MINING_FOCUSES.get(focus_id, {}).get("name", focus_id) if focus_id else None
+        efficiency = MINING_EFFICIENCIES.get(efficiency_id, {}).get("name", efficiency_id) if efficiency_id else None
+        gems = ", ".join(
+            f"{_material_label(r['material_id'])} ×{r['quantity']}" for r in gems_by_user.get(uid, [])
+        ) or "—"
 
-        my_drills = [d for d in all_drills if d["owner_id"] == uid]
+        my_drills = drills_by_owner.get(uid, [])
+        held = balances_by_user.get(uid, {})
         my_balances = []
         for gid, s in servers.items():
             gid_int = int(gid)
-            row = conn.execute(
-                "SELECT balance FROM server_currency_balances WHERE guild_id = ? AND user_id = ?",
-                (gid_int, uid),
-            ).fetchone()
-            if row is None:
+            if gid_int not in held:
                 continue
+            balance = held[gid_int]
             circ = s["circulating_raw"]
             my_balances.append({
                 "server": s["name"], "guild_id": gid,
-                "amount": _m(row["balance"]) + (f" {s['currency_name']}" if s["currency_name"] else ""),
-                "share": _pct(row["balance"] / circ) if circ else "—",
+                "amount": _m(balance) + (f" {s['currency_name']}" if s["currency_name"] else ""),
+                "share": _pct(balance / circ) if circ else "—",
             })
 
-        inv_rows = conn.execute(
-            "SELECT material_id, quantity FROM user_materials WHERE user_id = ? AND quantity > 0 "
-            "ORDER BY quantity DESC LIMIT 6",
-            (uid,),
-        ).fetchall()
-        inventory = [{"name": _material_label(r["material_id"]), "qty": _n(r["quantity"])} for r in inv_rows]
+        inventory = [
+            {"name": _material_label(r["material_id"]), "qty": _n(r["quantity"])}
+            for r in inventory_by_user.get(uid, [])[:6]
+        ]
 
         my_jobs = []
-        for j in all_jobs:
-            if j["user_id"] != uid:
-                continue
+        for j in jobs_by_user.get(uid, []):
             ts = _parse_ts(j["queued_at"])
             age_hours = (now - ts).total_seconds() / 3600 if ts else 0
             my_jobs.append({
                 "machine": MACHINE_LABEL[j["job_type"]],
-                "target": _job_target_label(conn, j),
+                "target": job_labels[j["job_id"]],
                 "server": directory.guild_name(j["guild_id"]) if str(j["guild_id"]) not in servers else servers[str(j["guild_id"])]["name"],
                 "age": f"{int(age_hours // 24)}d" if age_hours >= 24 else f"{int(age_hours)}h",
                 "ageColor": "var(--accent-blue)" if age_hours >= stalled_days * 24 else "var(--text-subtle)",

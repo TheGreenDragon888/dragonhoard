@@ -15,11 +15,16 @@ releasing a new version.
 
 **Footer text renders no emoji** — not custom `<:Name:ID>` ones and not
 unicode ones either. A footer that needs to refer to a material has to NAME
-it. Two commands extend the footer, and they are the only ones that do: a
-just-unlocked `/focus` or `/efficiency` appends what the unlock cost, as
-"· unlocked for 1 Ruby" rather than as the gem's icon. Both go through
-`cogs/mining.py: unlock_footer`, so the rule lives in one place; a third
-caller should use it rather than build its own string.
+it. A just-unlocked `/focus` or `/efficiency` appends what the unlock cost, as
+"· unlocked for 1 Ruby" rather than as the gem's icon; an open `/bet` appends
+"· odds move as people bet", and drops it once the bet is settled and they
+cannot.
+
+Every one of those goes through `utils/embeds.py: footer_with()`, which is the
+only place the footer is extended. Build the string anywhere else and a release
+that changes the footer has to find each copy. (It lived in `cogs/mining.py:
+unlock_footer` until 1.4, which was fine while the two unlock commands were its
+only callers.)
 
 ## Infrastructure status embeds
 
@@ -43,9 +48,13 @@ Queue • 12 items / 3 jobs (2h 24m wait)
   1x 🔧 ⛏ Iron Drill Lv.1 → 2 • @bob
 ```
 
-The author line identifies the machine and its level, the title is what that
-level buys you, and the description is the one number a server is working
-towards. Fields are left for the two settings a manager can actually change,
+The author line identifies the machine and its level, the title is what the
+machine actually runs at, and the description is the one number a server is
+working towards. The title is not always that level's speed - fees part way to
+the next level speed the machine up in proportion (`data/materials.py:
+effective_level`) - so it goes through `utils/formatting.py: format_rate`: one
+decimal place below ten, whole numbers from ten, truncated so it never shows a
+speed the machine hasn't reached. Fields are left for the two settings a manager can actually change,
 and for the queue — whose heading carries the counts and the total wait rather
 than spending two more fields on them.
 
@@ -68,6 +77,41 @@ Two constraints the layout depends on:
   `format_relative_timestamp` is for descriptions and field values — which is
   where the queue receipts use it.
 
+## Market book lines
+
+`/market status` and `/market entries` render a book row the same way, so a
+player reads one page having learned the other:
+
+```
+`#3` <:Steel:…> `0.7200` · 100 · `72.000` held     (entries: id first)
+      <:Steel:…> `0.7200` · 100 · 1 seller          (status: no id to lead with)
+```
+
+An id column where there is one, then the item's **emoji**, then a
+fixed-width price from `format_compact_price`, then the counts.
+
+The item's NAME is deliberately absent from both. It is proportional-width
+text, so including it shifts every column after it by a different amount on
+each line and defeats the alignment the compact price exists to provide;
+custom emoji all render at one fixed size, which is why they can lead a
+column and a name cannot. A listed drill is the exception and carries its
+level and container instead of a count, because those are most of what one is
+worth and a bare "1" would not say which drill was on offer.
+
+## Currency emoji in a repeated column
+
+A field whose every line carries a price names the currency **once in the
+field's own name**, not on each line - `Item · Sell · Buy · {emoji} each`
+rather than the emoji beside each of the six prices.
+
+This is a budget rule, not an aesthetic one. A server's currency emoji can be
+a custom or animated one, which is 38 to 53 characters of markup rather than a
+single glyph, and `/market status` has four price columns whose length grows
+with the number of materials and the size of the player books. Repeating it
+per line took the busiest book past Discord's 6,000-character embed ceiling -
+which fails the whole message rather than truncating it.
+`tests/test_player_market.py: EmbedBudgetTests` pins the worst case.
+
 ## Embed colors
 
 All colors are **fully saturated**. The default is green `#00FF3C`; each
@@ -79,7 +123,7 @@ feature's own design doc where one exists.
 | Bot settings (`/setup`) and manual (`/help`, `/manual`, `/man`) | green (default) | `#00FF3C` | `DEFAULT_COLOR` |
 | Mining menus (`/mine`, `/collect`)  | purple      | `#8C00FF` | `MINING_COLOR`   |
 | Inventory and balance (`/inventory`, `/balance`) | orange | `#FF8C00` | `INVENTORY_COLOR` |
-| Market menus (`/market`)            | yellow      | `#FFE600` | `MARKET_COLOR`   |
+| Market menus and reporting (`/market`, `/economy`) | yellow | `#FFE600` | `MARKET_COLOR`   |
 | Furnace menus (`/furnace`)          | purple-red  | `#FF0059` | `FURNACE_COLOR`  |
 | Blast furnace menus (`/blast`)      | pure red    | `#FF0000` | `BLAST_FURNACE_COLOR` |
 | Factory menus (`/factory`)          | red-orange  | `#FF4000` | `FACTORY_COLOR`  |
@@ -87,6 +131,8 @@ feature's own design doc where one exists.
 | Hydraulic press menus (`/press`)    | blue        | `#0066FF` | `PRESS_COLOR`    |
 | Scrapper menus (`/scrapper`)        | chartreuse  | `#9EFF00` | `SCRAPPER_COLOR` |
 | Job board (`/jobboard`)             | magenta     | `#FF00AA` | `JOBBOARD_COLOR` |
+| Prediction bets (`/bet`)            | violet      | `#C800FF` | `BET_COLOR`      |
+| Government (`/government`, `/vote`, `/treasurer`, `/mayor`, `/bonds`) | sky blue | `#00AAFF` | `GOVERNMENT_COLOR` |
 | Global notifications                | pure green  | `#00FF00` | `GLOBAL_NOTICE_COLOR` |
 | Server notifications                | pure yellow | `#FFFF00` | `SERVER_NOTICE_COLOR` |
 | Personal notifications              | indigo      | `#2200FF` | `PERSONAL_NOTICE_COLOR` |
@@ -128,6 +174,24 @@ in their design doc) before implementation.
 `/honk` is the one command that sends no embed at all - its response is the
 audio clip on its own, and a title card above the player would only get in the
 way of it.
+
+`/economy` is the one command that shares a color with another rather than
+claiming its own, and it is a sharing rather than an exception: it is not a new
+feature area. It lives in `cogs/economy.py` beside `/market`, every figure it
+reports is the market's own faucet-and-sink ledger from docs/market.md read
+from a different angle, and a player running it is reading the market rather
+than something new. That is the same relationship `/balance` has to
+`/inventory` on the inventory orange - one feature, two views - and the yellow
+row above now covers the market's reporting as well as its menus.
+
+What the shared color costs is worth stating, because it is a real cost:
+`/economy status`, `/economy gdp` and `/market status` are now three visually
+identical embeds, and they are commands a player will run back to back. **The
+author line has to carry the whole distinction on its own**, so each names its
+command outright - `📊 Economy • <server name>` and `📊 Economy • GDP •
+<server name>` - rather than only the server, and they have to keep doing so.
+Anything that makes those headings similar makes the commands
+indistinguishable.
 
 The manual is the one deliberate exception to "one command, one color": each of
 its pages is tinted with the color of the feature it describes (the mining page

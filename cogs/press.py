@@ -15,16 +15,21 @@ Structurally it follows cogs/factory.py - same shared production_jobs queue,
 same up-front fee, same FIFO drain - with three differences worth knowing:
 
   * Its budget is press-days, not items. The press produces
-    press_rate_per_day(level) ruby-equivalents each day and every recipe costs
-    a whole number of those, so one machine speed drives four very different
-    recipe durations.
+    press_rate_per_day(run_level) ruby-equivalents each day and every
+    recipe costs a whole number of those, so one machine speed drives four
+    very different recipe durations.
   * Its progress accumulator is persisted in server_config.press_progress
     rather than held in memory. Jobs here run for days, so an in-memory total
     reset by every restart would mean a diamond never finishes on a bot that
     gets restarted weekly.
   * It banks no progress while its queue is empty. Otherwise an idle press
     would store up weeks of press-days and finish a newly queued diamond the
-    instant it was submitted.
+    instant it was submitted. Nor does a new run inherit anything: a job
+    queued onto an empty press clears whatever fraction the last run left
+    behind, and its first tick credits only the time since it was queued
+    (utils/db_helpers.py: elapsed_work_hours) - the same two rules the other
+    machines' ProductionClock applies, kept here in the persisted column
+    instead of in memory.
 """
 import discord
 from discord import app_commands
@@ -39,17 +44,25 @@ from utils.embeds import (
     PRESS_COLOR,
 )
 from utils.responses import respond
-from utils.formatting import format_currency
+from utils.formatting import format_currency, format_rate
 from utils.receipts import build_receipt_embed
+from utils.production_ledger import record_output
 from database.db import InsufficientQuantity
+from utils.government import charge_machine_fee
 from utils.db_helpers import (
-    bank_infrastructure_fee,
+    advance_job,
+    complete_job,
     ensure_server_row,
+    clock_now,
+    elapsed_work_hours,
+    guilds_with_queued_work,
     get_user_quantity,
     adjust_user_quantity,
     deduct_user_quantity,
     get_currency_balance,
-    charge_user_fee,
+    machine_fee,
+    run_level,
+    machine_speed_level,
     queue_room,
     queue_full_message,
 )
@@ -83,6 +96,7 @@ class PressCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
+        self._now = clock_now
         self.process_loop.start()
 
     def cog_unload(self):
@@ -126,11 +140,11 @@ class PressCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT press_fee, press_level, press_progress, currency_emoji "
+                    "SELECT press_fee_multiplier, press_level, press_progress, currency_emoji "
                     "FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
-                fee_rate = cfg["press_fee"]
+                fee_rate = machine_fee("press", cfg["press_fee_multiplier"])
                 currency_emoji = cfg["currency_emoji"]
 
                 room = await queue_room(tx, interaction.guild_id, interaction.user.id, "press", quantity)
@@ -159,10 +173,7 @@ class PressCog(commands.Cog):
                     await deduct_user_quantity(tx, interaction.user.id, input_id, needed)
 
                 if fee_total > 0:
-                    await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await bank_infrastructure_fee(
-                        tx, interaction.guild_id, "press", fee_total
-                    )
+                    await charge_machine_fee(tx, interaction.guild_id, interaction.user.id, "press", fee_total)
 
                 # Press-days already spoken for by the jobs in front of this
                 # one. Recipes cost wildly different amounts of press time, so
@@ -176,6 +187,15 @@ class PressCog(commands.Cog):
                     PRESS_RECIPES[job["target_id"]]["press_days"] * job["quantity"]
                     for job in queued
                 )
+                # An empty press starts this job from nothing. What's left in
+                # press_progress is the fraction of a tick the last run ended on,
+                # earned by work that is finished, and spending it here would
+                # hand this job time it never waited.
+                if not queued:
+                    await tx.execute(
+                        "UPDATE server_config SET press_progress = 0.0 WHERE guild_id = ?",
+                        (interaction.guild_id,),
+                    )
 
                 await tx.execute(
                     "INSERT INTO production_jobs (guild_id, user_id, job_type, target_id, quantity) "
@@ -183,15 +203,19 @@ class PressCog(commands.Cog):
                     (interaction.guild_id, interaction.user.id, product.value, quantity),
                 )
 
-                # Re-read rather than reuse cfg's level: this job's own fee may
-                # have just upgraded the press, and both the wait quoted below
-                # and the press time shown should use the speed it will run at.
+                # Re-read rather than reuse cfg's level: this job's own fee has
+                # just made the press faster (and may have levelled it), and
+                # both the wait quoted below and the press time shown should
+                # use the speed it will run at.
                 level_row = await tx.fetchone(
                     "SELECT press_level FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
                 level = level_row["press_level"]
-                progress = cfg["press_progress"]
+                rate_per_day = press_rate_per_day(
+                    await machine_speed_level(tx, interaction.guild_id, "press")
+                )
+                progress = cfg["press_progress"] if queued else 0.0
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -204,7 +228,7 @@ class PressCog(commands.Cog):
         # of the queue, so they shorten this job's wait too.
         days_until_ready = max(
             0.0, press_days_ahead + press_days * quantity - progress
-        ) / press_rate_per_day(level)
+        ) / rate_per_day
 
         embed = build_receipt_embed(
             title="⚙️ Pressing Receipt",
@@ -221,13 +245,13 @@ class PressCog(commands.Cog):
             currency_emoji=currency_emoji,
             eta_hours=days_until_ready * 24,
         )
-        days = press_days * quantity / press_rate_per_day(level)
+        days = press_days * quantity / rate_per_day
         embed.add_field(
             name="Press Time",
             value=(
                 f"This job alone needs **{days:,.1f}** days on the press at level {level} "
                 f"({press_days} press-day{'s' if press_days != 1 else ''} each, "
-                f"{press_rate_per_day(level)}/day)"
+                f"{format_rate(rate_per_day)}/day)"
             ),
             inline=False,
         )
@@ -236,12 +260,12 @@ class PressCog(commands.Cog):
     async def _press_status_impl(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
         cfg = await self.db.fetchone(
-            "SELECT press_level, press_fee, press_fees_collected, press_max_queue, "
+            "SELECT press_level, press_fee_multiplier, press_fees_collected, press_max_queue, "
             "press_progress, currency_emoji FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
         level = cfg["press_level"]
-        fee_rate = cfg["press_fee"]
+        fee_rate = machine_fee("press", cfg["press_fee_multiplier"])
         currency_emoji = cfg["currency_emoji"]
 
         jobs = await self.db.fetchall(
@@ -254,7 +278,7 @@ class PressCog(commands.Cog):
         # The press is FIFO like the other machines, but its queue is measured
         # in press-days rather than items, and whatever it has already banked
         # (press_progress) comes off the front of it.
-        rate_per_day = press_rate_per_day(level)
+        rate_per_day = press_rate_per_day(await machine_speed_level(self.db, interaction.guild_id, "press"))
         press_days_queued = sum(
             PRESS_RECIPES[job["target_id"]]["press_days"] * job["quantity"] for job in jobs
         )
@@ -267,7 +291,7 @@ class PressCog(commands.Cog):
             level=level,
             # The one machine whose speed isn't items per hour: a press-day is
             # what a recipe costs, and one ruby is one of them.
-            speed_text=f"{rate_per_day} press-day{'s' if rate_per_day != 1 else ''}/day",
+            speed_text=f"{format_rate(rate_per_day, 'press-day')}/day",
             fees_collected=cfg["press_fees_collected"],
             upgrade_cost=upgrade_threshold(level + 1),
             currency_emoji=currency_emoji,
@@ -329,24 +353,35 @@ class PressCog(commands.Cog):
 
     @tasks.loop(minutes=PRESS_TICK_MINUTES)
     async def process_loop(self):
-        """Each tick, every guild's press earns a slice of a day's press-days
-        and spends them on the oldest job in its queue."""
-        ticks_per_day = (60 * 24) / PRESS_TICK_MINUTES
-        configs = await self.db.fetchall("SELECT guild_id, press_level FROM server_config")
+        """Each tick, every guild's press that has work queued earns the
+        press-days the time since the tick before pays for - or, if its queue
+        was empty then, the time since the work was queued - and spends them on
+        the oldest job in its queue."""
+        now = self._now()
 
-        for cfg in configs:
+        # An idle press banks nothing. Without this it would store up weeks of
+        # press-days and finish a diamond the moment one was queued, which is
+        # the whole thing the timings exist to prevent. The work list already
+        # holds only servers with a live press job, so an idle press is never
+        # visited - and never has a write transaction opened just to find out
+        # it was idle, which every server got every tick until 1.4. The check
+        # inside the transaction stays as the race guard: the job could finish
+        # or vanish between the list and the lock.
+        for cfg in await guilds_with_queued_work(self.db, "press"):
             async with self.db.transaction() as tx:
                 job = await self._oldest_job(tx, cfg["guild_id"])
-                # An idle press banks nothing. Without this it would store up
-                # weeks of press-days and finish a diamond the moment one was
-                # queued, which is the whole thing the timings exist to prevent.
                 if job is None:
                     continue
 
                 row = await tx.fetchone(
                     "SELECT press_progress FROM server_config WHERE guild_id = ?", (cfg["guild_id"],)
                 )
-                progress = row["press_progress"] + press_rate_per_day(cfg["press_level"]) / ticks_per_day
+                speed = press_rate_per_day(run_level(cfg, now))
+                # work_started is the oldest live job, so a run that has been
+                # going since before the last tick gets a whole tick, and one
+                # whose first job arrived since gets only what it waited.
+                hours = elapsed_work_hours(cfg["work_started"], now, PRESS_TICK_MINUTES)
+                progress = row["press_progress"] + speed * hours / 24
 
                 while job is not None:
                     cost = PRESS_RECIPES[job["target_id"]]["press_days"]
@@ -358,19 +393,22 @@ class PressCog(commands.Cog):
                     progress = max(0.0, progress - cost)
 
                     await adjust_user_quantity(tx, job["user_id"], job["target_id"], 1)
+                    # One press job, one gem (or one ultra dense matter), and
+                    # one row. Its input side is real - hundreds of Iron or
+                    # thousands of Copper leaving circulation - which is what
+                    # the import/export line wants; its output side is a
+                    # gemstone, which is excluded from GDP wherever it came
+                    # from, so 'press' has no place in GDP_SOURCES either.
+                    await record_output(
+                        tx, job["guild_id"], "press", job["target_id"], 1,
+                        PRESS_RECIPES[job["target_id"]]["inputs"],
+                    )
                     remaining = job["quantity"] - 1
                     if remaining <= 0:
-                        await tx.execute(
-                            "UPDATE production_jobs SET status = 'complete', quantity = 0 WHERE job_id = ?",
-                            (job["job_id"],),
-                        )
-                        job = await self._oldest_job(tx, cfg["guild_id"])
+                        await complete_job(tx, job["job_id"])
                     else:
-                        await tx.execute(
-                            "UPDATE production_jobs SET quantity = ?, status = 'in_progress' WHERE job_id = ?",
-                            (remaining, job["job_id"]),
-                        )
-                        job = await self._oldest_job(tx, cfg["guild_id"])
+                        await advance_job(tx, job["job_id"], remaining)
+                    job = await self._oldest_job(tx, cfg["guild_id"])
 
                 await tx.execute(
                     "UPDATE server_config SET press_progress = ? WHERE guild_id = ?",

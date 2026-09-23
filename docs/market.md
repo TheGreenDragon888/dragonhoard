@@ -48,6 +48,27 @@ whoever queued the job. That deliberately makes the largest sink in the
 game more attractive to feed, which is the direction this section argues a
 sink should be pushed.
 
+**Prediction bets (1.4) are deliberately neither.** `/bet` moves currency
+between players and changes the supply not at all: the pot pays out exactly
+what was staked into it, there is no house cut, and the stakes sitting in
+escrow are added back by `circulating_currency` rather than counted as burned.
+A rake would have made it a sink of the good kind this section describes, and
+was ruled out because destroying currency was the one thing the feature was
+specified not to do. See docs/betting.md section 1 — the point worth carrying
+back here is that a heavily-betting server is redistributing, not inflating,
+and none of the figures in section 4 should move because of it.
+
+**The server government (1.4) delays the sink rather than shrinking it.** The
+elected Treasurer's tax diverts a share of every fee from being burned into a
+treasury the Mayor spends. Every project the Mayor can buy is a burn, and a
+bond only lets the burn happen before the tax that repays it arrives, so over
+a whole cycle a server burns what its fees would have burned anyway - see
+docs/government.md section 3. Two things do change. The bond premium, at most
+5/105 of each repayment, is currency that escapes the sink for good. And the
+Treasurer's fee multiplier (x0.25 to x4) sets how big the sink is in the first
+place, which until 1.4 was an admin's `/setup fee`. Held tax is counted in
+circulation, like order and bet escrow, until it is spent.
+
 Faucets, meanwhile, should always be tied to genuine economic activity —
 mining, smelting, crafting, or trading — rather than passive presence.
 Currency entering the economy should reflect real production or effort,
@@ -133,7 +154,17 @@ arithmetic rather than a limit:
   now an alias of `TRADEABLE_ORDER`. A job can only be finished by selling, so
   the board's vocabulary and the market's have to be the same list.
 
-Every payout goes through `record_minted`, so section 4's accounting sees it.
+- **Only the server's half of a sale counts toward it (1.4).** The three bounds
+  above all assume the goods left the player sector, because until 1.4 the only
+  buyer was the server. A player-to-player sale moves goods *within* that
+  sector, so none of them apply: if such a sale credited the board, two players
+  could pass one stack back and forth and mint the bonus on every leg at no
+  cost to either. This is the one bound enforced in code rather than falling
+  out of the arithmetic — see section 3 and `utils/market_book.py`.
+
+Every payout goes through `record_minted`, so section 4's accounting sees it. A
+player-to-player trade goes through neither `record_minted` nor `record_burned`,
+because it creates and destroys nothing.
 
 ---
 
@@ -288,6 +319,14 @@ The exclusion covers buying as well as selling. Once no server can acquire a
 gemstone, leaving them in the buy list would only offer players something no
 server will ever have in stock.
 
+**This is the server's exclusion, not a ban on the item (1.4).** Everything
+above is an argument about what one sale does to a *server's* economy at a
+price the server set. None of it argues that two players shouldn't trade a ruby
+at a price they agreed between themselves, which mints and burns nothing. Since
+1.4 they can, through `/market list` and `/market order`, and the gem's value is
+whatever another player will pay — which is a good deal closer to "what a gem is
+worth is what you build with it" than an unsellable item was.
+
 Note that this makes gemstones *purely* crafting inputs — drill bits,
 containers, drill upgrades, ultra dense matter, and the Mining Focus unlock.
 That is the intended shape. A gem's value should be what it builds, not what
@@ -317,20 +356,89 @@ five-member server and a five-hundred-member one. It is not a maximum: the
 server always accepts a sale and always pays the same rate for every unit
 sold, however much it is already holding.
 
-**Looking ahead — user-driven orders:** For now, the market is entirely
-server-managed: the server is the counterparty on every transaction,
-buying and selling directly against its own storage using the pricing
-model described above. This is intended as a foundation, not the final
-design. Eventually, users themselves should be able to place buy and sell
-orders directly against each other, with the server's own market
-activity becoming just one participant among many rather than the sole
-mechanism. The acquisition/disposal loop, the fixed spread, and the
-storage constraint described here are all designed to keep functioning
-usefully even after user-driven orders are introduced — the server simply
-becomes one more actor with the same rules everyone else has to follow. A
-static price is arguably a better foundation for that than the curve was: it
-is a standing bid and ask the server will always honour, which is exactly the
-role a market maker plays among other participants.
+**User-driven orders (1.4).** Players place their own asks (`/market list`)
+and bids (`/market order`) against each other, and the server is now one
+participant among several rather than the counterparty on every transaction.
+`/market buy` and `/market sell` route across both books automatically, taking
+the cheapest ask or the dearest bid first and falling back to the server.
+
+The foundation described above survived the change intact — the acquisition/
+disposal loop, the fixed spread and the storage constraint all still hold, and
+a static price turned out to be exactly the right thing to build on: it is a
+standing bid and ask the server will always honour, which is the role a market
+maker plays among other participants.
+
+Three rules shape the player books:
+
+**A player's offer has to beat the server's, or it isn't allowed.** An ask must
+be strictly under what the server charges and strictly over what the server
+pays; a bid is the same rule from the other side. An offer outside that band is
+one nobody has a reason to take — either the server is already cheaper, or the
+player would have done better trading with the server directly — and a book
+people read to find a deal should not be full of them. Materials the server
+does not trade (gemstones, components, containers, drills) have no band at all,
+because there is no quote to beat.
+
+That band is narrow, and it is why player prices are finer-grained than the
+server's. Iron ore's band is a single cent wide — the server pays 0.01 and asks
+0.02 — so at whole cents there is no price strictly inside it. Player prices are
+therefore whole numbers of *ten-thousandths* of a currency unit
+(`PLAYER_PRICE_SCALE`), which gives iron ore 99 usable prices and steel 4,799.
+
+**Everything tradeable between players is tradeable, including what the server
+won't touch.** Gemstones are the point of this: the server has been barred from
+them since 1.2 because one sale could end a server's economy, but that was
+never an argument against a ruby changing hands between two players at a price
+they agreed. Components, containers and drills are the same. A drill is listed
+individually rather than as a stack, because its level and attached container
+are most of what it is worth; for the same reason there are no drill *orders* —
+an order names a kind of thing, and a drill is never just its kind.
+
+**Exotic Matter is excluded entirely**, from both books and from the server.
+It accrues and is never disposed of, being reserved for a feature that has not
+been designed yet, so there is no price anyone is in a position to put on it.
+See `PERMANENT_MATERIALS` in `data/materials.py`, which is the single place that
+rule is stated.
+
+**What a player trade does to the money supply: nothing.** Goods move one way
+and currency the other, and the player sector holds the same total of both
+afterwards — the same status a `/donate player` transfer has. Only the server's
+leg of a trade mints or burns.
+
+That has one consequence which is easy to get wrong and would be expensive:
+**only the server's share of a sale may credit the job board.** The board pays
+a flat bonus per completion with no daily cap, and what bounds it is that goods
+can only re-enter the player sector by being bought back from the server at
+twice what selling them paid (section 1). A player-to-player sale never removes
+goods from that sector, so if it credited the board, two players could pass one
+stack back and forth and mint the bonus on every leg out of nothing. This is
+enforced in `cogs/economy.py`, which credits the board with the server-filled
+quantity and never with the full amount sold.
+
+**The books are shown aggregated per material**, not row by row: one line
+carrying the best price, the total depth behind it and how many people are
+offering. Only the best price is actionable — `/market buy` fills cheapest-ask
+first and `/market sell` fills dearest-bid first — so on a book where six
+people have undercut each other, the five rows behind the leader tell a reader
+nothing they can act on while crowding out every other material. It also bounds
+the field by the number of materials rather than the number of rows, which is
+what stops a heavily-traded material hiding the rest behind an "... and N
+more". Listed drills are the exception and are shown individually, because each
+is a specific drill whose level and container are most of its value.
+
+A player's OWN entries are a separate page, `/market entries`, rather than a
+field on the same embed. The two answer different questions — what the market
+is doing, against what I am committed to — and only the second needs a
+per-viewer database read, which `/market status` should not be paying for on a
+command everybody runs to check prices. It is also where the id `/market
+cancel` takes is looked up once the receipt has scrolled away.
+
+**Escrow.** A listing holds its goods and an order holds its currency from the
+moment it is placed: the goods leave the seller's inventory, the currency
+leaves the buyer's balance. Without that, a player could list a stack and then
+sell the same stack to the server, or bid with money they then spent. Escrowed
+currency has left a balance but **not** the economy, so it still counts as
+circulating — see section 4. `/market cancel` returns either in full.
 
 ---
 
@@ -340,8 +448,14 @@ To evaluate the health of a server's economy — both for internal balance
 tuning and as the eventual basis for exchange valuation — the following
 figures are worth tracking on an ongoing basis:
 
-- **Total currency in circulation** — the sum of all user currency
-  balances within the server, representing the total money supply.
+- **Total currency in circulation** — all user currency balances within the
+  server, **plus the currency escrowed in open `/market order` bids**. That
+  escrow has left a balance but not the economy: nothing was burned when it was
+  placed, and cancelling returns every unit. A plain `SUM(balance)` would show a
+  server's money supply shrinking every time somebody placed a bid and
+  recovering when they withdrew it. `circulating_currency` in
+  `utils/db_helpers.py` is the one definition, shared by `/economy status` and
+  the Ops dashboard for the same reason `slot_progress` is.
 - **Total currency minted (all-time and recent)** — cumulative currency
   created through all faucets (market purchases from users, daily job board
   rewards, and any future faucets), both as a running lifetime total and as
@@ -381,3 +495,174 @@ figures are worth tracking on an ongoing basis:
   economically meaningful action (mined, smelted, crafted, or traded
   through the market) within a recent window, as a healthier engagement
   signal than raw chat activity ever was.
+
+---
+
+## 5. Server GDP — Measuring Output Rather Than Money
+
+Everything in section 4 measures the *currency* side of a server: what was
+minted, what was burned, what is circulating. None of it measures what the
+server actually **produced**, and the two can move in opposite directions —
+a server whose players mine and smelt furiously but never sell has a
+flourishing economy and a completely static set of currency totals.
+
+`/economy` reports a GDP figure to close that gap. This section is what it
+means and why it is built the way it is.
+
+### The model is value-added
+
+A server's GDP over a window is the sum of the value each stage of
+production **added**, counted once:
+
+- **Mining** adds the market value of the raw materials a drill drew out of
+  that server's pool. Ten Iron Ore at 0.01 adds 0.10.
+- **Smelting** adds the difference between what came out and what went in.
+
+Counting finished goods at full value instead would double-count: the bar's
+0.15 *plus* the ore's 0.10 reports 0.25 for 0.15 of real output.
+
+The inputs include the flat coal the furnace burns per item
+(`FURNACE_COAL_COST_PER_UNIT`), not just the recipe, because that coal is
+genuinely consumed. It is not a rounding detail. At the current price table
+the three recipes add 0.02, 0.07 and 0.13 per unit of Iron, Copper and Steel
+respectively; ignoring the fuel would report 0.05, 0.10 and 0.16 — on Iron,
+more than doubling a figure by leaving out a cost larger than the margin
+itself. `tests/test_production_ledger.py` pins all three.
+
+### Only what the market prices is valued
+
+Value added needs a price for the output as well as for the inputs, and
+**only ores and smelted materials have one**. Components, drills, containers
+and ultra dense matter are kept out of the market deliberately (section 3),
+so there is no price to read and no honest way to invent one.
+
+So GDP counts mining, the furnace and the blast furnace, and nothing else.
+The factory, press and scrapper are still *recorded* — the ledger has a
+`source` column and every one of their events lands in it — they are simply
+not summed. Three consequences worth stating plainly, because each looks
+like an omission until you see the reason:
+
+- **The factory records real input and no output.** Twelve Copper worth 3.60
+  goes in and a Wiring worth nothing-the-market-will-quote comes out.
+- **The scrapper records the reverse**: no input (the component it destroyed
+  has no price) and real output (the ores and bars it hands back). Summed as
+  value added that would read as though recycling created goods from nothing,
+  which is the opposite of what scrapping does — it returns half.
+- **The press is excluded for the gemstone reason** below: its output is a
+  gem, or is made of them.
+
+What this buys is the property that makes the number worth quoting at all:
+every figure inside it is a price the market will actually honour. Widening
+the definition later is a change to one tuple (`GDP_SOURCES` in
+`utils/production_ledger.py`) and needs no backfill, because the rows are
+already there.
+
+### Attribution is by location, not ownership
+
+Credit goes to **the guild where the work physically happened**. Mined value
+goes to the server whose pool the drill drew from; a machine's value added
+goes to the server that ran the machine.
+
+The consequence is that a player can mine on server A and smelt on server B,
+and the two halves land in two different GDP figures — A gets the ore, B gets
+the margin. That is correct and intentional: it is imports and exports.
+Nothing is lost and nothing is counted twice.
+
+**This is the single easiest thing to get wrong in the whole feature.**
+`/collect` empties a player's drills in *every server at once*
+(`cogs/mining.py`), and `user_materials` is keyed on `user_id` alone with no
+guild anywhere in it. The guild to credit is `drills.guild_id` — the pool the
+ore came out of — and **not** `interaction.guild_id`, which is merely wherever
+the player happened to type the command. Using the latter would silently hand
+one server every other server's ore, and it would pass every test anyone
+wrote against a single server. One `/collect` may write ledger rows for
+several guilds in one transaction, and that is the normal case, not an edge
+one. `/mine remove` and the sweep that retracts drills from a server the bot
+was removed from bank hauls the same way, so `retract_drill` records them too
+— a haul that reaches an inventory unrecorded is production a server never
+got credit for.
+
+### Why per-unit provenance is impossible, and what replaces it
+
+The obvious next question — "was this bar smelted from ore mined *here*?" —
+cannot be answered and should not be attempted. Materials are fungible the
+moment they land: `user_materials` has one row per `(user_id, material_id)`
+and no guild column, so a pile of Iron Ore carries no record of which
+server's pool produced it. There is nowhere to put that record short of
+tracking every unit individually, which would mean rewriting inventory
+storage to answer a question no player asks.
+
+What `/economy` shows instead is the aggregate comparison: what this
+server's machines consumed over the window, against what was mined here over
+the same window. A server whose machines ran on more than it dug up is a net
+importer; one that dug up more than it consumed is a net exporter. That is
+the same question answered at the scale where it is both answerable and
+interesting, and it needs no provenance tracking at all. **Do not build
+per-unit provenance on top of this.** It is not a missing feature, it is a
+thing the data model rules out.
+
+### Gemstones are excluded
+
+Rubies, obsidian and diamonds are valued at 5,500 / 52,500 / 500,000 and are
+never sold (section 3). A single diamond drop would be worth more than a
+month of everybody else's mining put together, and a GDP figure that swings
+by half a million on one lucky drill is not measuring anything.
+
+They are recorded, counted, and displayed — in their own field on the embed,
+with their own count per gem. They are simply never summed. This is the same
+judgement section 3 made about letting them into the market, applied to a
+statistic instead of to a price.
+
+### The figure is cross-server comparable, and currency totals are not
+
+Every material's `market_price` is a global constant, identical on every
+server, denominated in whatever that server's currency happens to be. So GDP
+comes out in the server's own currency and is nonetheless **directly
+comparable between two servers** — which "minted", "burned" and "circulating"
+are not, since those depend entirely on how much each server has chosen to
+trade.
+
+That makes GDP the first figure the bot keeps that means the same thing in
+two places, which is precisely the kind of foundation section 2 argues an
+eventual exchange rate has to be built from: output a server actually
+produced, measured the same way everywhere.
+
+### There is no history, and none can be recovered
+
+**The ledger starts empty on the day this ships.** Goods produced were never
+recorded anywhere — not in `server_config`, not in `production_jobs`, which
+zeroes a job's quantity as it completes — so there is nothing to backfill
+from and no query clever enough to recover it. The events were not written
+down.
+
+Everything that follows from that had to be decided rather than discovered:
+
+- The embed shows a **"tracked since" date** rather than implying a lifetime
+  total.
+- The first week's figures are not comparable to anything, because there is
+  no earlier week.
+- A server that has been running for months looks identical to one installed
+  yesterday, and will keep doing so until it has been producing for as long
+  as the window is wide.
+
+The date on the embed is the whole mitigation. Without it, the first person
+to notice that their year-old server reports a day of GDP files a bug, and
+the answer — "that is the only day there is" — lives nowhere they can find
+it. It lives here.
+
+Rows are pruned at `LEDGER_HISTORY_DAYS` (90), comfortably past the widest
+window shown and enough for a future graph. This is the one table in the
+schema that grows with *play* rather than with players: each machine's loop
+can append a row per job it touches per `PROCESS_TICK_MINUTES` tick, on top
+of a row group per `/collect`.
+
+### Windows are rolling, not aligned to the board's day
+
+24 hours and 7 days, both measured back from now, in UTC — matching
+`occurred_at`'s `datetime('now')` rather than the job board's Arizona clock.
+The board's day is deliberately in a timezone that means something to the
+people playing (section 1); a rolling window has no such reason, and an
+aligned "today" would read as almost nothing for the first hours after every
+reset. That is exactly the "this number looks wrong" reaction the
+tracked-since line exists to head off, and there was no reason to introduce a
+second cause of it.

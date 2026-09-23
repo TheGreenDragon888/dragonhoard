@@ -47,19 +47,27 @@ from utils.responses import respond
 from utils.formatting import (
     format_currency,
     format_price,
+    format_rate,
     format_relative_timestamp,
     DEFAULT_CURRENCY_EMOJI,
 )
 from utils.receipts import build_receipt_embed
+from utils.production_ledger import record_output
 from database.db import InsufficientQuantity
+from utils.government import charge_machine_fee
 from utils.db_helpers import (
-    bank_infrastructure_fee,
+    advance_job,
+    complete_job,
     ensure_server_row,
+    guilds_with_queued_work,
+    machine_speed_level,
+    ProductionClock,
     get_user_quantity,
     adjust_user_quantity,
     deduct_user_quantity,
     get_currency_balance,
-    charge_user_fee,
+    machine_fee,
+    run_level,
     queue_room,
     queue_full_message,
 )
@@ -67,6 +75,7 @@ from utils.drills import (
     DrillScope,
     drill_choices,
     drill_label,
+    drill_unavailable_message,
     drill_short_label,
     describe_cost,
     fetch_drill,
@@ -74,6 +83,7 @@ from utils.drills import (
 )
 
 from data.materials import (
+    PERMANENT_MATERIALS,
     COMPONENT_MATERIALS,
     DRILLS,
     STORAGE_CONTAINERS,
@@ -98,17 +108,23 @@ JOB_DISPLAY_LIMIT = 10
 # already in, and drills need their own command anyway (see the module
 # docstring).
 #
-# Ultra dense matter is deliberately absent. It's the terminal prestige item,
-# nothing consumes it yet, and until something does, allowing it to be scrapped
-# would only ever turn ten diamonds into five with no upside.
+# Exotic Matter is deliberately absent, and this is one of three places that
+# is true - the market won't take it either, and neither will the player market
+# (1.4). The reason for all three lives once, beside PERMANENT_MATERIALS in
+# data/materials.py: it accrues and is never disposed of, being reserved for a
+# feature that has not been designed yet. The assertion below is what keeps
+# this table honest about it rather than merely happening to omit it.
 SCRAPPABLE = {**COMPONENT_MATERIALS, **STORAGE_CONTAINERS, **UPGRADE_MATERIALS}
+assert not (SCRAPPABLE.keys() & PERMANENT_MATERIALS), (
+    "Exotic Matter is never disposed of - see PERMANENT_MATERIALS"
+)
 
 
 class ScrapperCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
-        self._production_progress: dict[int, float] = {}
+        self._production = ProductionClock(PROCESS_TICK_MINUTES)
         self.process_loop.start()
 
     def cog_unload(self):
@@ -127,16 +143,6 @@ class ScrapperCog(commands.Cog):
             (guild_id,),
         )
         return row["items"]
-
-    @staticmethod
-    async def _current_level(db, guild_id: int) -> int:
-        """Read after the fee lands rather than reused from the config read at
-        the top: the job's own fee may have just upgraded the scrapper, and the
-        wait quoted on the receipt should use the speed it will run at."""
-        row = await db.fetchone(
-            "SELECT scrapper_level FROM server_config WHERE guild_id = ?", (guild_id,)
-        )
-        return row["scrapper_level"]
 
     @scrapper_group.command(name="scrap", description="Recycle items back into half of what they were made from")
     @app_commands.describe(item="What to break down", quantity="How many to break down — leave blank for 1")
@@ -159,10 +165,10 @@ class ScrapperCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT scrapper_fee, currency_emoji FROM server_config WHERE guild_id = ?",
+                    "SELECT scrapper_fee_multiplier, currency_emoji FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
-                fee_rate = cfg["scrapper_fee"]
+                fee_rate = machine_fee("scrapper", cfg["scrapper_fee_multiplier"])
                 currency_emoji = cfg["currency_emoji"]
 
                 room = await queue_room(tx, interaction.guild_id, interaction.user.id, "scrapper", quantity)
@@ -191,10 +197,7 @@ class ScrapperCog(commands.Cog):
                 await deduct_user_quantity(tx, interaction.user.id, item.value, quantity)
 
                 if fee_total > 0:
-                    await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await bank_infrastructure_fee(
-                        tx, interaction.guild_id, "scrapper", fee_total
-                    )
+                    await charge_machine_fee(tx, interaction.guild_id, interaction.user.id, "scrapper", fee_total)
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
                 await tx.execute(
@@ -202,7 +205,7 @@ class ScrapperCog(commands.Cog):
                     "VALUES (?, ?, 'scrapper', ?, ?)",
                     (interaction.guild_id, interaction.user.id, item.value, quantity),
                 )
-                level = await self._current_level(tx, interaction.guild_id)
+                speed_level = await machine_speed_level(tx, interaction.guild_id, "scrapper")
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -221,7 +224,7 @@ class ScrapperCog(commands.Cog):
             fee_total=fee_total,
             balance_after=balance_after,
             currency_emoji=currency_emoji,
-            eta_hours=(items_ahead + quantity) / scrapper_rate(level),
+            eta_hours=(items_ahead + quantity) / scrapper_rate(speed_level),
         )
         embed.add_field(
             name="You'll Get Back",
@@ -258,18 +261,17 @@ class ScrapperCog(commands.Cog):
                         ephemeral=True,
                     )
                     return
-                if row["locked_job_id"] is not None:
-                    await interaction.response.send_message(
-                        f"**{drill_label(row)}** is already queued at a machine.", ephemeral=True
-                    )
+                unavailable = drill_unavailable_message(row, "scrap it")
+                if unavailable is not None:
+                    await interaction.response.send_message(unavailable, ephemeral=True)
                     return
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT scrapper_fee, currency_emoji FROM server_config WHERE guild_id = ?",
+                    "SELECT scrapper_fee_multiplier, currency_emoji FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
-                fee_total = cfg["scrapper_fee"]
+                fee_total = machine_fee("scrapper", cfg["scrapper_fee_multiplier"])
                 currency_emoji = cfg["currency_emoji"]
 
                 # A drill is one item of scrapper work, so it counts as one
@@ -309,10 +311,7 @@ class ScrapperCog(commands.Cog):
                     await adjust_user_quantity(tx, interaction.user.id, returned_container, 1)
 
                 if fee_total > 0:
-                    await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await bank_infrastructure_fee(
-                        tx, interaction.guild_id, "scrapper", fee_total
-                    )
+                    await charge_machine_fee(tx, interaction.guild_id, interaction.user.id, "scrapper", fee_total)
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
 
@@ -334,7 +333,7 @@ class ScrapperCog(commands.Cog):
                     "UPDATE drills SET locked_job_id = ? WHERE drill_id = ? AND locked_job_id IS NULL",
                     (job_id, row["drill_id"]),
                 )
-                level = await self._current_level(tx, interaction.guild_id)
+                speed_level = await machine_speed_level(tx, interaction.guild_id, "scrapper")
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your balance changed while that was going through - nothing was queued or spent. Try again.",
@@ -352,7 +351,7 @@ class ScrapperCog(commands.Cog):
             description=(
                 f"Queued {DRILLS[row['drill_type']]['emoji']} **{drill_short_label(row)}** for "
                 f"recycling. It will be broken down "
-                f"{format_relative_timestamp((items_ahead + 1) / scrapper_rate(level))}."
+                f"{format_relative_timestamp((items_ahead + 1) / scrapper_rate(speed_level))}."
             ),
         )
         embed.add_field(
@@ -390,17 +389,17 @@ class ScrapperCog(commands.Cog):
     async def _scrapper_status_impl(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
         cfg = await self.db.fetchone(
-            "SELECT scrapper_level, scrapper_fee, scrapper_fees_collected, scrapper_max_queue, "
+            "SELECT scrapper_level, scrapper_fee_multiplier, scrapper_fees_collected, scrapper_max_queue, "
             "currency_emoji FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
         level = cfg["scrapper_level"]
-        fee_rate = cfg["scrapper_fee"]
+        fee_rate = machine_fee("scrapper", cfg["scrapper_fee_multiplier"])
         max_queue = cfg["scrapper_max_queue"]
         fees_collected = cfg["scrapper_fees_collected"]
         currency_emoji = cfg["currency_emoji"]
 
-        rate = scrapper_rate(level)
+        rate = scrapper_rate(await machine_speed_level(self.db, interaction.guild_id, "scrapper"))
 
         # LEFT JOIN so a drill scrap can name the drill it's working on: its
         # own target_id is a sentinel rather than a material, so there is
@@ -423,7 +422,7 @@ class ScrapperCog(commands.Cog):
             name="Scrapper",
             color=SCRAPPER_COLOR,
             level=level,
-            speed_text=f"{rate} item{'s' if rate != 1 else ''}/hour",
+            speed_text=f"{format_rate(rate, 'item')}/hour",
             fees_collected=fees_collected,
             upgrade_cost=upgrade_threshold(level + 1),
             currency_emoji=currency_emoji,
@@ -463,16 +462,16 @@ class ScrapperCog(commands.Cog):
 
     @tasks.loop(minutes=PROCESS_TICK_MINUTES)
     async def process_loop(self):
-        """Each tick, every guild's scrapper works through its hourly rate
-        spread over time, keeping a fractional accumulator per guild so a slow
-        machine doesn't over-produce every 5 minutes. See cogs/factory.py."""
-        ticks_per_hour = 60 / PROCESS_TICK_MINUTES
-        configs = await self.db.fetchall("SELECT guild_id, scrapper_level FROM server_config")
-        for cfg in configs:
-            rate = scrapper_rate(cfg["scrapper_level"])
-            progress = self._production_progress.get(cfg["guild_id"], 0.0) + (rate / ticks_per_hour)
-            produced_units = int(progress)
-            self._production_progress[cfg["guild_id"]] = progress - produced_units
+        """Each tick, every guild's scrapper that has work queued works
+        through as many items as the time since it last worked pays for,
+        carrying the fraction that doesn't make a whole item so a slow machine
+        doesn't over-produce every 5 minutes. See utils/db_helpers.py:
+        ProductionClock."""
+        now = self._production.now()
+        # Only servers with a live scrapper job; an idle scrapper costs nothing.
+        for cfg in await guilds_with_queued_work(self.db, "scrapper"):
+            rate = scrapper_rate(run_level(cfg, now))
+            produced_units = self._production.earn(cfg["guild_id"], rate, cfg["work_started"], now)
 
             remaining_capacity = produced_units
             while remaining_capacity > 0:
@@ -502,12 +501,26 @@ class ScrapperCog(commands.Cog):
                             await adjust_user_quantity(
                                 tx, job["user_id"], material_id, per_unit * produced
                             )
+                            # The mirror image of the factory's row: the
+                            # scrapper's OUTPUT is priced (it hands back ores
+                            # and smelted materials) and its input is not (the
+                            # component or drill it destroyed has no market
+                            # price). One row per material returned, none of
+                            # them carrying the input, so the thing that was
+                            # consumed is never counted twice across them.
+                            #
+                            # Recording an output with no input is exactly why
+                            # 'scrapper' is not in GDP_SOURCES: summed as value
+                            # added it would read as though recycling created
+                            # goods from nothing, when scrapping returns half
+                            # of what went in (data/materials.py: scrap_yield).
+                            await record_output(
+                                tx, job["guild_id"], "scrapper",
+                                material_id, per_unit * produced,
+                            )
 
                     if new_quantity <= 0:
-                        await tx.execute(
-                            "UPDATE production_jobs SET status = 'complete', quantity = 0 WHERE job_id = ?",
-                            (job["job_id"],),
-                        )
+                        await complete_job(tx, job["job_id"])
                         if is_drill_scrap:
                             # Matching on locked_job_id makes this idempotent:
                             # a job that somehow drains twice can't delete a
@@ -526,11 +539,12 @@ class ScrapperCog(commands.Cog):
                                     await adjust_user_quantity(
                                         tx, job["user_id"], material_id, quantity
                                     )
+                                    await record_output(
+                                        tx, job["guild_id"], "scrapper",
+                                        material_id, quantity,
+                                    )
                     else:
-                        await tx.execute(
-                            "UPDATE production_jobs SET quantity = ?, status = 'in_progress' WHERE job_id = ?",
-                            (new_quantity, job["job_id"]),
-                        )
+                        await advance_job(tx, job["job_id"], new_quantity)
 
     @process_loop.before_loop
     async def before_process_loop(self):

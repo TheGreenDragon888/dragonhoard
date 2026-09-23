@@ -181,24 +181,68 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(row["mining_slots_announced"], 1)
 
+    async def test_the_per_server_fee_columns_are_gone(self):
+        # 1.4 replaced them with a multiplier on the config.py default, and the
+        # decision was that every custom fee is discarded (docs/government.md,
+        # Q11). A column nothing reads would only invite reading it.
+        columns = {
+            row[1] for row in await self.db.fetchall("PRAGMA table_info(server_config)")
+        }
+        for machine in ("furnace", "blast_furnace", "factory", "press", "scrapper"):
+            with self.subTest(machine=machine):
+                self.assertNotIn(f"{machine}_fee", columns)
+                self.assertIn(f"{machine}_fee_multiplier", columns)
+                self.assertIn(f"{machine}_enhancement_level", columns)
+
+    async def test_an_existing_server_starts_ungoverned(self):
+        # Every government default is the server as it was before 1.4: fees at
+        # x1, no tax, nobody in office, nothing held.
+        row = await self.db.fetchone("SELECT * FROM server_config WHERE guild_id = ?", (GUILD,))
+        self.assertEqual(row["furnace_fee_multiplier"], 1.0)
+        self.assertEqual(row["tax_percent"], 0)
+        self.assertEqual(row["bond_rate_percent"], 0)
+        self.assertIsNone(row["mayor_id"])
+        self.assertIsNone(row["treasurer_id"])
+        self.assertEqual(row["treasury"], 0.0)
+        self.assertEqual(row["repayment_pool"], 0.0)
+        self.assertEqual(row["mining_slot_credit"], 0.0)
+
+    async def test_drills_already_placed_are_left_unstamped(self):
+        # NULL is what grandfathers a pre-update drill into the first election
+        # (utils/government.py: can_vote); stamping it with the migration time
+        # would leave its owner a week short.
+        rows = await self.db.fetchall("SELECT drill_id, placed_at FROM drills ORDER BY drill_id")
+        self.assertEqual({row["drill_id"]: row["placed_at"] for row in rows}, {7: None, 8: None})
+
+    async def test_its_owner_can_vote_in_the_very_first_election(self):
+        from utils.government import can_vote, next_voting_day
+        self.assertTrue(await can_vote(self.db, GUILD, USER, next_voting_day()))
+
+    async def test_opening_it_again_changes_nothing(self):
+        # Every 1.4 step is gated, so a second boot must neither fail on a
+        # dropped column nor stamp a placement time.
+        await self.db.init_schema()
+        row = await self.db.fetchone("SELECT placed_at FROM drills WHERE drill_id = 8")
+        self.assertIsNone(row["placed_at"])
+
     async def test_fees_banked_before_1_3_already_paid_for_their_slots(self):
         # The whole point of deriving the cap instead of storing it. This
         # database's 125.00 was collected by a version that had never heard of
         # mining slots, and the slots are simply there when new code opens it -
         # there is no backfill step that could have been missed.
         slots = await mining_slot_status(self.db, GUILD)
-        self.assertEqual(slots.invested, mining_slot_threshold(3))
+        self.assertEqual(slots.progress, mining_slot_threshold(3))
         self.assertEqual(slots.level, 3)
         self.assertEqual(slots.slots, BASE_MINING_SLOTS + 2)
 
     async def test_the_blast_furnace_columns_were_added_with_their_defaults(self):
         row = await self.db.fetchone(
-            "SELECT blast_furnace_level, blast_furnace_fee, blast_furnace_fees_collected, "
+            "SELECT blast_furnace_level, blast_furnace_fee_multiplier, blast_furnace_fees_collected, "
             "blast_furnace_max_queue FROM server_config WHERE guild_id = ?",
             (GUILD,),
         )
         self.assertEqual(row["blast_furnace_level"], 1)
-        self.assertEqual(row["blast_furnace_fee"], config.DEFAULT_BLAST_FURNACE_FEE)
+        self.assertEqual(row["blast_furnace_fee_multiplier"], 1.0)
         self.assertEqual(row["blast_furnace_fees_collected"], 0.0)
         self.assertEqual(row["blast_furnace_max_queue"], 5)
 
@@ -244,12 +288,12 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_scrapper_columns_were_added_with_their_defaults(self):
         row = await self.db.fetchone(
-            "SELECT scrapper_level, scrapper_fee, scrapper_fees_collected, scrapper_max_queue "
+            "SELECT scrapper_level, scrapper_fee_multiplier, scrapper_fees_collected, scrapper_max_queue "
             "FROM server_config WHERE guild_id = ?",
             (GUILD,),
         )
         self.assertEqual(row["scrapper_level"], 1)
-        self.assertEqual(row["scrapper_fee"], 0.10)
+        self.assertEqual(row["scrapper_fee_multiplier"], 1.0)
         self.assertEqual(row["scrapper_fees_collected"], 0.0)
         self.assertEqual(row["scrapper_max_queue"], 5)
 
@@ -266,12 +310,55 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         # them are plain CREATE TABLE IF NOT EXISTS - no migration, so what
         # this really checks is that init_schema runs the schema file before
         # anything that reads them.
-        for table in ("daily_jobs", "daily_job_progress", "user_notifications"):
+        for table in (
+            "daily_jobs", "daily_job_progress", "user_notifications", "production_ledger",
+            "market_listings", "market_orders", "prediction_bets", "prediction_wagers",
+        ):
             with self.subTest(table=table):
                 row = await self.db.fetchone(
                     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
                 )
                 self.assertIsNotNone(row)
+
+    async def test_the_drill_gained_a_listing_column_and_is_not_listed(self):
+        """1.4 escrows a listed drill in drills.listed_id. The column is
+        nullable, so it is added in place rather than by a table rebuild, and
+        it is gated on introspecting the table rather than on user_version -
+        adding a column IS visible in the schema.
+
+        Every existing drill gets NULL, which is the only correct value:
+        nothing could have listed one before the column existed, so there is
+        nothing to backfill."""
+        row = await self.db.fetchone("SELECT listed_id FROM drills WHERE drill_id = 7")
+        self.assertIsNone(row["listed_id"])
+
+    async def test_the_drill_gained_a_mined_until_column_left_null(self):
+        """drills.mined_until is added in place like listed_id. NULL is the
+        right value for a drill that predates it: the next harvest tick reads
+        it as one whole tick - what every tick credited before - and then
+        writes a real time."""
+        row = await self.db.fetchone("SELECT mined_until FROM drills WHERE drill_id = 7")
+        self.assertIsNone(row["mined_until"])
+
+    async def test_the_player_books_start_empty(self):
+        """market_listings and market_orders are plain new tables with no
+        migration behind them - the assertion that the no-migration claim in
+        database/db.py holds, the same thing the ledger test below checks."""
+        for table in ("market_listings", "market_orders"):
+            with self.subTest(table=table):
+                row = await self.db.fetchone(f"SELECT COUNT(*) AS n FROM {table}")
+                self.assertEqual(row["n"], 0)
+
+    async def test_the_production_ledger_starts_empty_and_stays_empty(self):
+        """1.4's ledger has nothing to backfill and no way to acquire one.
+        Goods produced were never recorded - not in server_config, not in
+        production_jobs, which zeroes a job's quantity as it completes - so an
+        old database opens with an empty table and GDP is only meaningful from
+        here on (docs/market.md section 5). This is the assertion that the
+        no-migration claim in database/db.py is actually true rather than a
+        migration somebody forgot to write."""
+        row = await self.db.fetchone("SELECT COUNT(*) AS n FROM production_ledger")
+        self.assertEqual(row["n"], 0)
 
     async def test_an_existing_player_is_not_retroactively_notified(self):
         """user_notifications starts empty, and that is the intended state for
@@ -479,6 +566,101 @@ class FreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
                 "VALUES (?, ?, 'teleporter', 'iron', 1)",
                 (GUILD, USER),
             )
+
+
+# notifications exactly as it stood from 1.0 to 1.3.1: a notice was text and
+# nothing else, because there was nothing a reader could do about one.
+_PRE_1_4_NOTIFICATIONS_SCHEMA = """
+CREATE TABLE notifications (
+    notification_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope           TEXT NOT NULL CHECK (scope IN ('global', 'server')),
+    guild_id        INTEGER,
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    notice_key      TEXT UNIQUE,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    CHECK ((scope = 'global') = (guild_id IS NULL))
+);
+"""
+
+
+class NoticeActionMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """1.4 lets a notice carry buttons (notifications.action_key), which is how
+    a new prediction bet reaches a server without the bot posting in a channel.
+
+    The column is nullable and added in place, gated on introspecting the table
+    rather than on user_version - the same treatment drills.listed_id got in
+    1.4, and for the same reason: adding a column IS visible in the schema, so
+    a fresh database already has it from schema.sql and must not be altered
+    again.
+    """
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        conn = sqlite3.connect(self.path)
+        conn.executescript(_PRE_1_4_NOTIFICATIONS_SCHEMA)
+        # One announcement of each scope, already posted and already read by
+        # somebody - the state every deployed database is actually in.
+        conn.execute(
+            "INSERT INTO notifications (notification_id, scope, guild_id, title, body, notice_key) "
+            "VALUES (1, 'global', NULL, 'Welcome', 'Some text', 'welcome')"
+        )
+        conn.execute(
+            "INSERT INTO notifications (notification_id, scope, guild_id, title, body) "
+            "VALUES (2, 'server', ?, 'Slots', 'More drills')",
+            (GUILD,),
+        )
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_the_column_was_added(self):
+        rows = await self.db.fetchall("PRAGMA table_info(notifications)")
+        self.assertIn("action_key", {row[1] for row in rows})
+
+    async def test_every_existing_notice_carries_no_action(self):
+        """NULL is the only correct backfill: nothing could attach an action to
+        a notice before the column existed, so there is nothing to recover."""
+        rows = await self.db.fetchall(
+            "SELECT notification_id, action_key FROM notifications ORDER BY notification_id"
+        )
+        self.assertEqual([row["action_key"] for row in rows], [None, None])
+
+    async def test_the_notices_themselves_are_untouched(self):
+        rows = await self.db.fetchall(
+            "SELECT title, body, notice_key FROM notifications ORDER BY notification_id"
+        )
+        self.assertEqual(
+            [tuple(row) for row in rows],
+            [("Welcome", "Some text", "welcome"), ("Slots", "More drills", None)],
+        )
+
+    async def test_opening_it_again_changes_nothing(self):
+        """The introspection gate has to hold on the second run, or every
+        restart would try to add a column that is already there."""
+        before = await self.db.fetchall("SELECT * FROM notifications ORDER BY notification_id")
+        await self.db.init_schema()
+        after = await self.db.fetchall("SELECT * FROM notifications ORDER BY notification_id")
+        self.assertEqual([tuple(row) for row in before], [tuple(row) for row in after])
+
+    async def test_a_notice_can_now_carry_one(self):
+        await self.db.execute(
+            "INSERT INTO notifications (scope, guild_id, title, body, action_key) "
+            "VALUES ('server', ?, 'New bet', 'Back it or not', 'bet:12')",
+            (GUILD,),
+        )
+        row = await self.db.fetchone(
+            "SELECT action_key FROM notifications WHERE title = 'New bet'"
+        )
+        self.assertEqual(row["action_key"], "bet:12")
 
 
 if __name__ == "__main__":

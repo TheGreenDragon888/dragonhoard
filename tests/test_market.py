@@ -272,9 +272,11 @@ class MarketReceiptEmbedTests(unittest.TestCase):
             material_id="iron_ore",
             quantity=5,
             material_remaining=42,
+            material_gained=False,
             currency_field="Received",
             currency_amount=10.0,
             balance_after=25.0,
+            currency_gained=True,
             currency_emoji="💰",
             round_up_currency=False,
         )
@@ -292,11 +294,28 @@ class MarketReceiptEmbedTests(unittest.TestCase):
     def test_currency_field_names_the_amount_moved_and_new_balance(self):
         value = self._field(self._embed(), "Received")
         self.assertIn("💰 **10.00**", value)
-        self.assertIn("(25.00 remaining)", value)
+        self.assertIn("(25.00 balance)", value)
 
     def test_a_missing_currency_emoji_falls_back_to_the_default(self):
         value = self._field(self._embed(currency_emoji=None), "Received")
         self.assertIn(DEFAULT_CURRENCY_EMOJI, value)
+
+    def test_the_side_given_up_says_remaining_not_gained_wording(self):
+        value = self._field(
+            self._embed(
+                material_field="Bought", material_gained=True,
+                currency_field="Spent", currency_gained=False,
+            ),
+            "Spent",
+        )
+        self.assertIn("(25.00 remaining)", value)
+
+    def test_the_material_side_gained_says_held_not_remaining(self):
+        value = self._field(
+            self._embed(material_field="Bought", material_gained=True),
+            "Bought",
+        )
+        self.assertIn("(42 held)", value)
 
     def test_round_up_currency_false_rounds_a_sale_payout_down(self):
         # A sale must never look more generous than it was.

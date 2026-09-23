@@ -18,6 +18,7 @@ time.
 """
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import config
@@ -39,7 +40,9 @@ from data.materials import (
     upgrade_threshold,
 )
 from utils.db_helpers import (
+    machine_fee_rate,
     MACHINES,
+    ProductionClock,
     ensure_server_row,
     ensure_user_row,
     get_user_quantity,
@@ -210,7 +213,12 @@ class BlastFurnaceTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.cog = BlastFurnaceCog.__new__(BlastFurnaceCog)
         self.cog.db = self.db
-        self.cog._production_progress = {}
+        # A clock the test moves a tick at a time. It starts a minute ahead of
+        # real time so a job queued here (queued_at is SQLite's real clock)
+        # reads as having been waiting since before the first tick, which then
+        # earns a whole tick of work - see utils/db_helpers.py: ProductionClock.
+        self.now = datetime.now(timezone.utc) + timedelta(minutes=1)
+        self.cog._production = ProductionClock(PROCESS_TICK_MINUTES, now=lambda: self.now)
 
     async def asyncTearDown(self):
         self._dir.cleanup()
@@ -219,6 +227,7 @@ class BlastFurnaceTestCase(unittest.IsolatedAsyncioTestCase):
         """Runs the drain loop's body. A level 1 blast furnace does one batch
         an hour, so a whole hour of ticks is one batch."""
         for _ in range(times):
+            self.now += timedelta(minutes=PROCESS_TICK_MINUTES)
             await BlastFurnaceCog.process_loop.coro(self.cog)
 
     def ticks_per_hour(self):
@@ -301,16 +310,28 @@ class BlastFurnaceDrainTests(BlastFurnaceTestCase):
             await get_user_quantity(self.db, USER, "iron"), BLAST_FURNACE_BATCH_SIZE
         )
 
-    async def test_an_idle_machine_banks_nothing_it_can_spend_later(self):
-        """The accumulator carries fractions of a batch, but a job queued after
-        a long idle stretch must not be finished instantly by progress the
-        machine 'earned' while empty - it is capped at one batch of carry the
-        same way the furnace's is, because int() takes whole batches out of the
-        accumulator every tick whether or not there is work."""
+    async def test_a_new_job_does_not_inherit_the_last_ones_leftover_progress(self):
+        """The fraction of a batch left when a queue empties must not be spent
+        on the next job queued, however much later. It used to be: it sat in
+        memory while the machine was idle and went to the next job's first
+        tick, and at 10 batches an hour that was enough to finish a one-batch
+        job on the tick after it was queued. (The test this replaced idled a
+        machine that had never worked, so it had no fraction to leak.)"""
+        await self.set_level(10)  # 10/hour against 12 ticks/hour: 5/6 a tick
+        await self.queue_job(1)
+        await self.tick(2)        # 5/3 earned: one batch out, 2/3 left over
+        self.assertEqual(await get_user_quantity(self.db, USER, "iron"), BLAST_FURNACE_BATCH_SIZE)
+
         await self.tick(self.ticks_per_hour() * 5)
-        job_id = await self.queue_job(2)
+        job_id = await self.queue_job(1)
+        await self.db.execute(
+            "UPDATE production_jobs SET queued_at = ? WHERE job_id = ?",
+            (self.now.strftime("%Y-%m-%d %H:%M:%S"), job_id),
+        )
+        await self.tick()         # 5/6 of a batch, not 2/3 + 5/6
+        self.assertEqual((await self.job(job_id))["quantity"], 1)
         await self.tick()
-        self.assertEqual((await self.job(job_id))["quantity"], 2)
+        self.assertEqual((await self.job(job_id))["status"], "complete")
 
 
 class BlastFurnaceQueueTests(BlastFurnaceTestCase):
@@ -337,10 +358,11 @@ class BlastFurnaceQueueTests(BlastFurnaceTestCase):
 
     async def test_a_new_server_starts_on_the_configured_fee(self):
         row = await self.db.fetchone(
-            "SELECT blast_furnace_fee, blast_furnace_level FROM server_config WHERE guild_id = ?",
-            (GUILD,),
+            "SELECT blast_furnace_level FROM server_config WHERE guild_id = ?", (GUILD,),
         )
-        self.assertEqual(row["blast_furnace_fee"], config.DEFAULT_BLAST_FURNACE_FEE)
+        self.assertEqual(
+            await machine_fee_rate(self.db, GUILD, "blast_furnace"), config.DEFAULT_BLAST_FURNACE_FEE
+        )
         self.assertEqual(row["blast_furnace_level"], 1)
 
 

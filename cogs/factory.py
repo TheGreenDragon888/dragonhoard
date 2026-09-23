@@ -28,17 +28,24 @@ from utils.embeds import (
     FACTORY_COLOR,
 )
 from utils.responses import respond
-from utils.formatting import format_currency
+from utils.formatting import format_currency, format_rate
 from utils.receipts import build_receipt_embed
+from utils.production_ledger import record_output
 from database.db import InsufficientQuantity
+from utils.government import charge_machine_fee
 from utils.db_helpers import (
-    bank_infrastructure_fee,
+    advance_job,
+    complete_job,
     ensure_server_row,
+    guilds_with_queued_work,
+    machine_speed_level,
+    ProductionClock,
     get_user_quantity,
     adjust_user_quantity,
     deduct_user_quantity,
     get_currency_balance,
-    charge_user_fee,
+    machine_fee,
+    run_level,
     queue_room,
     queue_full_message,
 )
@@ -46,10 +53,10 @@ from utils.drills import (
     DrillScope,
     drill_choices,
     drill_label,
+    drill_unavailable_message,
     drill_short_label,
     describe_cost,
     fetch_drill,
-    guild_name_map,
     is_local_drill,
     material_breakdown_lines,
     release_stale_drill_locks,
@@ -90,7 +97,7 @@ class FactoryCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
-        self._production_progress: dict[int, float] = {}
+        self._production = ProductionClock(PROCESS_TICK_MINUTES)
         self.process_loop.start()
 
     def cog_unload(self):
@@ -130,10 +137,10 @@ class FactoryCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT factory_fee, currency_emoji FROM server_config WHERE guild_id = ?",
+                    "SELECT factory_fee_multiplier, currency_emoji FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
-                fee_rate = cfg["factory_fee"]
+                fee_rate = machine_fee("factory", cfg["factory_fee_multiplier"])
                 currency_emoji = cfg["currency_emoji"]
 
                 room = await queue_room(tx, interaction.guild_id, interaction.user.id, "factory", quantity)
@@ -161,10 +168,7 @@ class FactoryCog(commands.Cog):
                     await deduct_user_quantity(tx, interaction.user.id, input_id, needed)
 
                 if fee_total > 0:
-                    await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await bank_infrastructure_fee(
-                        tx, interaction.guild_id, "factory", fee_total
-                    )
+                    await charge_machine_fee(tx, interaction.guild_id, interaction.user.id, "factory", fee_total)
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
 
@@ -172,7 +176,7 @@ class FactoryCog(commands.Cog):
                     "INSERT INTO production_jobs (guild_id, user_id, job_type, target_id, quantity) VALUES (?, ?, 'factory', ?, ?)",
                     (interaction.guild_id, interaction.user.id, item.value, quantity),
                 )
-                level = await self._current_level(tx, interaction.guild_id)
+                speed_level = await machine_speed_level(tx, interaction.guild_id, "factory")
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -194,7 +198,7 @@ class FactoryCog(commands.Cog):
             fee_total=fee_total,
             balance_after=balance_after,
             currency_emoji=currency_emoji,
-            eta_hours=(items_ahead + quantity) / factory_rate(level),
+            eta_hours=(items_ahead + quantity) / factory_rate(speed_level),
         )
         await respond(interaction, self.db, embed=embed)
 
@@ -210,28 +214,15 @@ class FactoryCog(commands.Cog):
         )
         return row["items"]
 
-    @staticmethod
-    async def _current_level(db, guild_id: int) -> int:
-        """Read after the fee lands rather than reused from the config read at
-        the top: the job's own fee may have just upgraded the factory, and the
-        wait quoted on the receipt should use the speed it will run at."""
-        row = await db.fetchone(
-            "SELECT factory_level FROM server_config WHERE guild_id = ?", (guild_id,)
-        )
-        return row["factory_level"]
-
     async def _upgradable_drill_autocomplete(self, interaction: discord.Interaction, current: str):
         """Drills you can upgrade from here: the ones in your inventory, plus
         the ones you have placed in THIS server. A drill placed elsewhere is
         excluded because pulling it out of the ground (below) is only something
         this command can do to a server it's actually looking at."""
-        rows = await self.db.fetchall(
-            "SELECT * FROM drills WHERE owner_id = ?", (interaction.user.id,)
-        )
         return await drill_choices(
             self.db, interaction.user.id, current,
             scope=DrillScope.LOCAL, guild_id=interaction.guild_id,
-            guild_names=guild_name_map(self.bot, rows),
+            bot=self.bot,
         )
 
     @factory_group.command(name="upgrade", description="Queue a level-up for one of your drills")
@@ -257,10 +248,9 @@ class FactoryCog(commands.Cog):
                         ephemeral=True,
                     )
                     return
-                if row["locked_job_id"] is not None:
-                    await interaction.response.send_message(
-                        f"**{drill_label(row)}** is already queued for an upgrade.", ephemeral=True
-                    )
+                unavailable = drill_unavailable_message(row, "queue it for an upgrade")
+                if unavailable is not None:
+                    await interaction.response.send_message(unavailable, ephemeral=True)
                     return
 
                 # A placed drill is pulled out of the ground here rather than
@@ -301,10 +291,10 @@ class FactoryCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT factory_fee, currency_emoji FROM server_config WHERE guild_id = ?",
+                    "SELECT factory_fee_multiplier, currency_emoji FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
-                fee_rate = cfg["factory_fee"]
+                fee_rate = machine_fee("factory", cfg["factory_fee_multiplier"])
                 currency_emoji = cfg["currency_emoji"]
 
                 # An upgrade is one item of factory work, so it counts against
@@ -332,10 +322,7 @@ class FactoryCog(commands.Cog):
                     await deduct_user_quantity(tx, interaction.user.id, input_id, needed)
 
                 if fee_total > 0:
-                    await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await bank_infrastructure_fee(
-                        tx, interaction.guild_id, "factory", fee_total
-                    )
+                    await charge_machine_fee(tx, interaction.guild_id, interaction.user.id, "factory", fee_total)
 
                 items_ahead = await self._items_ahead(tx, interaction.guild_id)
 
@@ -351,7 +338,7 @@ class FactoryCog(commands.Cog):
                     "UPDATE drills SET locked_job_id = ? WHERE drill_id = ? AND locked_job_id IS NULL",
                     (job_id, row["drill_id"]),
                 )
-                factory_level = await self._current_level(tx, interaction.guild_id)
+                speed_level = await machine_speed_level(tx, interaction.guild_id, "factory")
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -376,7 +363,7 @@ class FactoryCog(commands.Cog):
             currency_emoji=currency_emoji,
             # An upgrade is one item of factory work, so it takes exactly as
             # long as crafting one thing from the same position in the queue.
-            eta_hours=(items_ahead + 1) / factory_rate(factory_level),
+            eta_hours=(items_ahead + 1) / factory_rate(speed_level),
         )
         embed.add_field(
             name="Mining Rate",
@@ -412,16 +399,16 @@ class FactoryCog(commands.Cog):
     async def _factory_status_impl(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
         cfg = await self.db.fetchone(
-            "SELECT factory_level, factory_fee, factory_fees_collected, factory_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
+            "SELECT factory_level, factory_fee_multiplier, factory_fees_collected, factory_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
         level = cfg["factory_level"]
-        fee_rate = cfg["factory_fee"]
+        fee_rate = machine_fee("factory", cfg["factory_fee_multiplier"])
         max_queue = cfg["factory_max_queue"]
         fees_collected = cfg["factory_fees_collected"]
         currency_emoji = cfg["currency_emoji"]
 
-        rate = factory_rate(level)
+        rate = factory_rate(await machine_speed_level(self.db, interaction.guild_id, "factory"))
         upgrade_cost = upgrade_threshold(level + 1)
 
         # LEFT JOIN so an upgrade job can name the drill it's working on: its
@@ -446,8 +433,7 @@ class FactoryCog(commands.Cog):
             name="Factory",
             color=FACTORY_COLOR,
             level=level,
-            # A level 1 factory really does produce one item an hour.
-            speed_text=f"{rate} item{'s' if rate != 1 else ''}/hour",
+            speed_text=f"{format_rate(rate, 'item')}/hour",
             fees_collected=fees_collected,
             upgrade_cost=upgrade_cost,
             currency_emoji=currency_emoji,
@@ -489,18 +475,16 @@ class FactoryCog(commands.Cog):
 
     @tasks.loop(minutes=PROCESS_TICK_MINUTES)
     async def process_loop(self):
-        """Each tick, every guild's factory processes its hourly rate spread
-        over time. The loop keeps a fractional accumulator per guild so level
-        1 can produce 1 item/hour without over-producing every 5 minutes."""
-        ticks_per_hour = 60 / PROCESS_TICK_MINUTES
-        configs = await self.db.fetchall(
-            "SELECT guild_id, factory_level FROM server_config"
-        )
-        for cfg in configs:
-            rate = factory_rate(cfg["factory_level"])
-            progress = self._production_progress.get(cfg["guild_id"], 0.0) + (rate / ticks_per_hour)
-            produced_units = int(progress)
-            self._production_progress[cfg["guild_id"]] = progress - produced_units
+        """Each tick, every guild's factory that has work queued works through
+        as many items as the time since it last worked pays for, carrying the
+        fraction that doesn't make a whole item - so level 1 can produce 1
+        item/hour without over-producing every 5 minutes. See
+        utils/db_helpers.py: ProductionClock."""
+        now = self._production.now()
+        # Only servers with a live factory job; an idle factory costs nothing.
+        for cfg in await guilds_with_queued_work(self.db, "factory"):
+            rate = factory_rate(run_level(cfg, now))
+            produced_units = self._production.earn(cfg["guild_id"], rate, cfg["work_started"], now)
 
             remaining_capacity = produced_units
             while remaining_capacity > 0:
@@ -532,12 +516,40 @@ class FactoryCog(commands.Cog):
                     else:
                         await adjust_user_quantity(tx, job["user_id"], job["target_id"], produced)
 
-                    if new_quantity <= 0:
-                        await tx.execute(
-                            "UPDATE production_jobs SET status = 'complete', quantity = 0 WHERE job_id = ?",
-                            (job["job_id"],),
+                    if not is_upgrade:
+                        # A factory craft records real input and NO output, and
+                        # that asymmetry is the honest answer rather than a gap:
+                        # components, drills and containers are deliberately
+                        # kept out of the market (docs/market.md section 3), so
+                        # there is no price for what came out and inventing one
+                        # would put a made-up number into a headline figure.
+                        # This is exactly why 'factory' isn't in GDP_SOURCES -
+                        # the row exists for the import/export line, which asks
+                        # what this server's machines CONSUMED.
+                        info = get_material_info(job["target_id"])
+                        await record_output(
+                            tx, job["guild_id"], "factory", job["target_id"], produced,
+                            {
+                                input_id: per_unit * produced
+                                for input_id, per_unit in (info or {}).get("inputs", {}).items()
+                            },
                         )
+
+                    if new_quantity <= 0:
+                        await complete_job(tx, job["job_id"])
                         if is_upgrade:
+                            # The drill is read before the bump so the recorded
+                            # cost is the one the player was actually charged -
+                            # drill_upgrade_cost is a function of the level
+                            # being LEFT, so reading it afterwards would price
+                            # the next upgrade instead of this one. An upgrade
+                            # produces no item at all, so it is pure
+                            # consumption; quantity 1 is the job, not a good.
+                            upgraded = await tx.fetchone(
+                                "SELECT drill_type, level FROM drills "
+                                "WHERE drill_id = ? AND locked_job_id = ?",
+                                (job["target_drill_id"], job["job_id"]),
+                            )
                             # Matching on locked_job_id makes this idempotent: a
                             # job that somehow drains twice can't bump a drill that
                             # has since been locked by a different upgrade.
@@ -546,11 +558,16 @@ class FactoryCog(commands.Cog):
                                 "WHERE drill_id = ? AND locked_job_id = ?",
                                 (job["target_drill_id"], job["job_id"]),
                             )
+                            if upgraded is not None:
+                                await record_output(
+                                    tx, job["guild_id"], "factory",
+                                    DRILL_UPGRADE_JOB_TARGET, 1,
+                                    drill_upgrade_cost(
+                                        upgraded["drill_type"], upgraded["level"]
+                                    ),
+                                )
                     else:
-                        await tx.execute(
-                            "UPDATE production_jobs SET quantity = ?, status = 'in_progress' WHERE job_id = ?",
-                            (new_quantity, job["job_id"]),
-                        )
+                        await advance_job(tx, job["job_id"], new_quantity)
 
     async def _deliver_drills(self, db, user_id: int, drill_type: str, count: int):
         """A crafted drill becomes a tracked instance rather than an inventory

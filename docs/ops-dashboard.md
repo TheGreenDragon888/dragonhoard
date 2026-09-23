@@ -98,7 +98,58 @@ deliberately built without:
   of their own, so server activity is inferred from the newest of a queued
   production job, a posted daily job, or a paid job-board completion. A
   server with none of those ever recorded shows "no recorded activity"
-  rather than a fabricated day count.
+  rather than a fabricated day count. The same is true of a server quiet
+  for longer than those records are kept - finished production jobs for
+  `COMPLETED_JOB_HISTORY_DAYS` (90, `utils/db_helpers.py`) and daily jobs
+  for `JOB_HISTORY_DAYS` (30, `utils/job_board.py`) - since after that
+  there is nothing left to date it from.
+
+## Circulating currency includes escrow
+
+The "circulating" figure is **not** `SUM(balance)`. It is that plus two kinds of
+escrowed currency, each of which has left its owner's balance but not the
+economy:
+
+- **open `/market order` bids** - nothing is burned when an order is placed, and
+  cancelling returns every unit.
+- **stakes on a running `/bet`** - the pot is paid out in full when the bet
+  resolves, and cancelling one hands every cent back.
+
+Without the escrow terms a server's money supply would appear to shrink whenever
+somebody placed a bid or a wager, and recover when they withdrew it.
+
+The two are counted in different units - bids in `PLAYER_PRICE_SCALE`
+ten-thousandths, stakes in whole cents - which is why `circulating_currency`
+takes them as separate arguments instead of one pre-summed total.
+
+The dashboard and the bot share one definition of this rather than each summing
+it: `circulating_currency` in `utils/db_helpers.py`, for the same reason
+`slot_progress` is imported here rather than re-implemented. The two readers
+hold different database handles - the bot an async `Database`, this an ordinary
+`sqlite3` connection - so the SQL is shared as constants and the arithmetic as a
+function. See docs/market.md section 4.
+
+## The Production (GDP) card
+
+Each server's detail view carries a **Production (GDP)** figure over the same
+two windows `/economy gdp` shows players (24 hours and 7 days), read with the
+bot's own definitions — the windows and `GDP_SOURCES` come from
+`utils/production_ledger.py` rather than being restated in `web/queries.py`,
+so the dashboard's number is the same number a player sees rather than a
+lookalike computed twice.
+
+Two things about it will look wrong and are not:
+
+- **It reads zero on every server until that server produces something under
+  1.4.** The production ledger has no history and none can be backfilled —
+  goods produced were never recorded anywhere before it existed. The card
+  says which date it has been tracking from, or "Nothing recorded yet" if it
+  has nothing at all. See docs/market.md section 5.
+- **It counts mining and smelting only, and no gemstones.** The factory,
+  press and scrapper produce goods the market does not price, so there is no
+  value-added figure to compute for them; gemstones are excluded because a
+  single diamond is valued at 500,000 against iron ore's 0.01. Both
+  exclusions are argued in docs/market.md section 5.
 
 ## Running it permanently (systemd)
 

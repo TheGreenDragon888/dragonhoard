@@ -9,7 +9,12 @@ import re
 import unittest
 from datetime import datetime, timezone
 
-from utils.formatting import format_duration, format_price, format_relative_timestamp
+from utils.formatting import (
+    format_compact_price,
+    format_duration,
+    format_price,
+    format_relative_timestamp,
+)
 
 TIMESTAMP = re.compile(r"^<t:(?P<epoch>\d+):R>$")
 
@@ -120,3 +125,52 @@ class FormatRelativeTimestampTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FormatCompactPriceTests(unittest.TestCase):
+    """The fixed-width player-price column (utils/formatting.py).
+
+    Deleted in 1.3 when the server's prices became whole cents and needed no
+    padding; restored in 1.4, when players gained the ability to set a price of
+    any magnitude. The invariant is the width, not any one rendering.
+    """
+
+    @staticmethod
+    def width(text: str) -> int:
+        """Digits plus any metric suffix, NOT counting the decimal point -
+        the measure the docstring promises is constant."""
+        return len(text.replace(".", ""))
+
+    def test_every_magnitude_is_the_same_width(self):
+        for value in (
+            0.0001, 0.0101, 0.48, 9.5, 99.99, 123.4, 999.4,
+            1500, 99_999, 250_000, 5_500_000, 5e11, 9e14,
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(
+                    self.width(format_compact_price(value)), 5,
+                    "the whole point is that a column of these lines up",
+                )
+
+    def test_a_sub_cent_price_keeps_its_precision(self):
+        """The case the server's own prices never hit, and the reason
+        format_price alone is not enough for a player book: 0.0001 shown at two
+        decimals is 0.00, which reads as free."""
+        self.assertEqual(format_compact_price(0.0001), "0.0001")
+        self.assertEqual(format_compact_price(0.0199), "0.0199")
+
+    def test_large_values_take_a_metric_suffix(self):
+        self.assertTrue(format_compact_price(1500).endswith("K"))
+        self.assertTrue(format_compact_price(5_500_000).endswith("M"))
+        self.assertTrue(format_compact_price(5e9).endswith("B"))
+        self.assertTrue(format_compact_price(5e12).endswith("T"))
+
+    def test_rounding_up_a_tier_moves_to_the_next_one(self):
+        """999.996 would render as "1000.0" at its own tier, which is six
+        digits - _format_compact_tier returns None and the caller retries."""
+        self.assertEqual(format_compact_price(999.996), "1.000K")
+
+    def test_a_value_past_the_last_tier_grows_rather_than_losing_precision(self):
+        text = format_compact_price(9e15)
+        self.assertTrue(text.endswith("T"))
+        self.assertEqual(float(text[:-1]), 9000.0)

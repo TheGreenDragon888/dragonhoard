@@ -7,6 +7,7 @@ at runtime - it's balance data you'll tune by editing this file and
 restarting the bot, not something users modify.
 """
 import random
+from fractions import Fraction
 
 from data.emoji import custom_emoji
 
@@ -45,9 +46,9 @@ RAW_MATERIALS = {
     "iron_ore":    {"name": "Iron Ore",    "emoji": custom_emoji("IronOre", 1523432328028885034, 1533714268560691281),    "drop_chance": 0.5667,   "market_price": 0.01},
     "copper_ore":  {"name": "Copper Ore",  "emoji": custom_emoji("CopperOre", 1523432342813933699, 1533714267478560818),  "drop_chance": 0.28335,  "market_price": 0.02},
     "coal":        {"name": "Coal",        "emoji": custom_emoji("Coal", 1523432352318099456, 1533714266551484516),       "drop_chance": 0.14985,  "market_price": 0.03},
-    "ruby":        {"name": "Ruby",        "emoji": custom_emoji("Ruby", 1532897325238980680, 1533714310134497404),       "drop_chance": 0.00009,  "market_price": 5500.00},
+    "ruby":        {"name": "Ruby",        "plural": "Rubies",   "emoji": custom_emoji("Ruby", 1532897325238980680, 1533714310134497404),       "drop_chance": 0.00009,  "market_price": 5500.00},
     "obsidian":    {"name": "Obsidian",    "emoji": custom_emoji("Obsidian", 1532899466687021268, 1533714309119737946),   "drop_chance": 0.000009, "market_price": 52500.00},
-    "diamond":     {"name": "Diamond",     "emoji": custom_emoji("Diamond", 1523433355708858612, 1533714307911778446),    "drop_chance": 0.000001, "market_price": 500000.00},
+    "diamond":     {"name": "Diamond",     "plural": "Diamonds", "emoji": custom_emoji("Diamond", 1523433355708858612, 1533714307911778446),    "drop_chance": 0.000001, "market_price": 500000.00},
 }
 
 # Smelted materials: produced by the furnace from raw materials.
@@ -321,11 +322,34 @@ PRESS_RECIPES = {
 # raw_input_cost and the /inventory ordering read.
 PRESS_MATERIALS["ultra_dense_matter"]["inputs"] = PRESS_RECIPES["ultra_dense_matter"]["inputs"]
 
+# Exotic Matter accrues and is never spent. It is reserved for a feature that
+# has not been designed yet - it is intended to enhance abilities or features
+# still to be decided - so there is no price anyone is in a position to put on
+# it, and a player parting with it would be parting with something whose value
+# has not been set. It cannot be sold to the server, listed or ordered on the
+# player market (1.4), scrapped, or consumed by any recipe.
+#
+# That last part is currently true of ultra dense matter by coincidence rather
+# than by rule: nothing consumes it because nothing has been built that would,
+# and it is absent from SCRAPPABLE and TRADEABLE_ORDER for two other reasons
+# again. This constant is the rule itself, so the property stops depending on
+# three separate omissions all continuing to hold.
+#
+# Keyed on PRESS_MATERIALS - the table INVENTORY_CATEGORIES renders as the
+# "Exotic Matter" category - rather than on the id, so a second exotic material
+# inherits every one of those exclusions by being added to that table alone.
+# Same reason JOB_BOARD_MATERIALS aliases TRADEABLE_ORDER instead of restating
+# it.
+PERMANENT_MATERIALS: frozenset[str] = frozenset(PRESS_MATERIALS)
+
 # Infrastructure throughput, per level. Furnace, factory and scrapper are in
 # items per hour and the blast furnace in batches per hour (see
 # BLAST_FURNACE_BATCH_SIZE); the press is in ruby-equivalents per day (see
 # PRESS_RECIPES). All five scale linearly and have no maximum level - the cost
-# of the next upgrade is the only ceiling.
+# of the next upgrade is the only ceiling. The level a machine RUNS at is not
+# its whole-number level but effective_level(), which moves between two levels
+# as fees come in; linearity is what lets the rate functions take that
+# fractional level unchanged.
 FURNACE_RATE_PER_LEVEL = 5
 FACTORY_RATE_PER_LEVEL = 1
 PRESS_RATE_PER_LEVEL = 1
@@ -397,30 +421,33 @@ UPGRADE_THRESHOLD_BASE = 5.00
 UPGRADE_THRESHOLD_STEP = 5
 
 
-def furnace_rate(level: int) -> int:
+# The five rate functions take a float because the level a machine runs at is
+# effective_level(), not the whole number it displays. A whole-number level in
+# gives the same whole-number rate out it always did.
+def furnace_rate(level: float) -> float:
     """Smelted items per hour at this furnace level."""
     return FURNACE_RATE_PER_LEVEL * level
 
 
-def blast_furnace_rate(level: int) -> int:
+def blast_furnace_rate(level: float) -> float:
     """Batches per hour at this blast furnace level. Multiply by
     BLAST_FURNACE_BATCH_SIZE for the smelted items that actually lands."""
     return BLAST_FURNACE_RATE_PER_LEVEL * level
 
 
-def factory_rate(level: int) -> int:
+def factory_rate(level: float) -> float:
     """Crafted items per hour at this factory level."""
     return FACTORY_RATE_PER_LEVEL * level
 
 
-def press_rate_per_day(level: int) -> int:
+def press_rate_per_day(level: float) -> float:
     """Ruby-equivalents per day at this press level. A recipe's press_days is
     what it costs against this budget, so a level 3 press gets through one
     diamond (9 press-days) in three days."""
     return PRESS_RATE_PER_LEVEL * level
 
 
-def scrapper_rate(level: int) -> int:
+def scrapper_rate(level: float) -> float:
     """Items recycled per hour at this scrapper level."""
     return SCRAPPER_RATE_PER_LEVEL * level
 
@@ -429,6 +456,31 @@ def upgrade_threshold(level: int) -> float:
     """Fees a machine must have collected to reach `level`. Levels are
     unbounded, so this always returns a number - there is no "max level"."""
     return UPGRADE_THRESHOLD_BASE * UPGRADE_THRESHOLD_STEP ** (level - 2)
+
+
+def effective_level(level: int, fees_collected: float) -> float:
+    """The level a machine's speed is computed at: its whole-number level plus
+    how far its collected fees are through that level. Halfway from the fees
+    that reached this level to the fees that reach the next one runs halfway
+    between the two levels' speeds - a level 1 furnace with 2.50 of its 5.00
+    collected smelts 7.5 an hour, not 5.
+
+    Measured across the level's own span of fees rather than as fees over the
+    next threshold (the ratio the status embeds print), because the latter
+    would jump a machine's speed by 1 / UPGRADE_THRESHOLD_STEP of a level at
+    the moment it levelled up; this one arrives at exactly the next level's
+    speed as the fees arrive at its threshold (tests/test_machine_speed.py).
+
+    Level 1 spans from zero: a server starts there having paid nothing, and
+    apply_machine_upgrades never tests upgrade_threshold(1). Clamped both ways
+    so a stored level out of step with its fees (only possible by editing the
+    database) reads as that level rather than as something outside it.
+
+    Only speed interpolates. The queue cap, the level shown to players and
+    levelling itself all stay on the whole number."""
+    floor = upgrade_threshold(level) if level > 1 else 0.0
+    ceiling = upgrade_threshold(level + 1)
+    return level + min(1.0, max(0.0, (fees_collected - floor) / (ceiling - floor)))
 
 
 def effective_max_queue(base: int, level: int) -> int:
@@ -462,8 +514,9 @@ BLAST_FURNACE_COAL_COST_PER_BATCH = FURNACE_COAL_COST_PER_UNIT * BLAST_FURNACE_B
 # saying "MAX" would have been wrong on every server that had unlocked a slot.
 BASE_MINING_SLOTS = 3
 
-# Cumulative infrastructure fees - every machine's, added together - a server
-# must have paid to unlock its FIRST extra mining slot. Each slot after it
+# How much mining slot progress a server needs - every machine's lifetime fees
+# added together, plus what the government has bought toward slots
+# (utils/db_helpers.py: slot_progress) - to unlock its FIRST extra mining slot. Each slot after it
 # costs UPGRADE_THRESHOLD_STEP times the last, exactly as machine levels do, so
 # the ladder is 25 / 125 / 625 / 3,125 and climbs out of reach on its own
 # rather than stopping at a cap.
@@ -481,29 +534,34 @@ BASE_MINING_SLOTS = 3
 # a ruby pays once (press_days 1), it is five ruby-presses. Because
 # upgrade_threshold(3) is also 25, a server that has taken any single machine
 # to level 3 has necessarily paid enough for its first slot as well.
+#
+# Since 1.4 the Mayor can also buy slot progress directly with a Mining Slot
+# Enhancement, which counts MINING_SLOT_ENHANCEMENT_MULTIPLIER times over and
+# levels no machine. At that multiplier a slot rung costs exactly what the same
+# machine rung does - see MINING_SLOT_ENHANCEMENT_MULTIPLIER for why that was
+# judged a fair trade rather than a way around the reasoning above.
 MINING_SLOT_THRESHOLD_BASE = 25.00
 
 
 def mining_slot_threshold(level: int) -> float:
-    """Cumulative infrastructure fees a server must have paid to reach mining
-    slot `level`. Level 1 is what every server starts with and costs nothing,
-    so this is only meaningful from 2 up; like machine levels there is no
-    maximum, so it always returns a number."""
+    """How much mining slot progress a server needs to reach mining slot
+    `level` (see utils/db_helpers.py: slot_progress). Level 1 is what every
+    server starts with and costs nothing, so this is only meaningful from 2 up;
+    like machine levels there is no maximum, so it always returns a number."""
     return MINING_SLOT_THRESHOLD_BASE * UPGRADE_THRESHOLD_STEP ** (level - 2)
 
 
-def mining_slot_level(invested: float) -> int:
-    """The highest mining slot level `invested` in lifetime infrastructure fees
-    pays for.
+def mining_slot_level(fees: float) -> int:
+    """The highest mining slot level `fees` of mining slot progress pays for.
 
     Loops rather than inverting the exponential, for the same reason
     apply_machine_upgrades does: floating point at a threshold boundary is the
     one place this must not be off by one, and a server that has paid exactly
-    625.00 has earned the level it just bought. `invested` is finite, so the
+    625.00 has earned the level it just bought. `fees` is finite, so the
     loop is too.
     """
     level = 1
-    while invested >= mining_slot_threshold(level + 1):
+    while fees >= mining_slot_threshold(level + 1):
         level += 1
     return level
 
@@ -515,6 +573,80 @@ def mining_slots(level: int) -> int:
     The floor is defensive, matching effective_max_queue - a zero reaching here
     would strand every drill in the server rather than merely being stingy."""
     return BASE_MINING_SLOTS + max(1, level) - 1
+
+
+# ---------------------------------------------------------------------------
+# Government projects (docs/government.md). What the Mayor can spend the
+# treasury on, and what each buys. Everything here is a burn.
+# ---------------------------------------------------------------------------
+
+# Infrastructure Enhancement: each level doubles one machine's speed, on top of
+# the speed its own level gives it (enhancement_speed). The first level costs
+# ENHANCEMENT_PRICE_BASE and every level after it ENHANCEMENT_PRICE_STEP times
+# the last, the same step as every other ladder in this file.
+#
+# The two ladders are deliberately priced against different things.
+# Doubling a machine by levelling it costs whatever the levels between L and
+# 2L cost on upgrade_threshold, and that grows with L: 150 more at level 2,
+# 3,875 at level 3, 97,500 at level 4. A doubling at a price that does not
+# depend on L is therefore a poor buy for a small server and a bargain for a
+# large one - which is the point. It exists for the servers whose shared
+# machines have become the bottleneck, and those are the servers whose
+# machines are already several levels up.
+ENHANCEMENT_PRICE_BASE = 1_000.00
+ENHANCEMENT_PRICE_STEP = UPGRADE_THRESHOLD_STEP
+
+
+def enhancement_price(current_level: int) -> float:
+    """What the NEXT Infrastructure Enhancement costs a machine that already
+    has `current_level` of them (0 for a machine that has none)."""
+    return ENHANCEMENT_PRICE_BASE * ENHANCEMENT_PRICE_STEP ** current_level
+
+
+def enhancement_speed(level: int) -> float:
+    """The speed multiplier `level` Infrastructure Enhancements give a machine:
+    each one doubles it."""
+    return 2.0 ** max(0, level)
+
+
+# Mining Slot Enhancement: treasury money spent on it counts this many times
+# over toward the mining slot ladder, and toward nothing else.
+#
+# Five because MINING_SLOT_THRESHOLD_BASE is five times UPGRADE_THRESHOLD_BASE
+# and the two ladders share their step, so at 5x a slot rung costs exactly
+# what the same machine rung costs. Fees paid the ordinary way buy a machine
+# level AND slot progress with the same money; this buys the slot alone, and
+# the multiplier is the price of giving the machine level up.
+MINING_SLOT_ENHANCEMENT_MULTIPLIER = 5
+
+# Server Bonanza: for BONANZA_HOURS, every drill in the server mines and every
+# machine runs at BONANZA_SPEED_MULTIPLIER times its speed.
+BONANZA_HOURS = 48
+BONANZA_SPEED_MULTIPLIER = 2
+
+# What a Bonanza costs: BONANZA_GDP_SHARE of the server's 7-day GDP, and never
+# less than BONANZA_MINIMUM_PRICE, which sets the price for every server whose
+# 7-day GDP is under 100.
+#
+# The share is bounded on both sides by what a Bonanza can produce. Doubling
+# everything for 48 of a week's 168 hours adds at most 2/7 of a week's output,
+# so any share of 2/7 or more takes at least as much currency out as the extra
+# output could mint by being sold; at 0.5 the extra output returns at most 57%
+# of the price. And any share below 1 means a server that idles to depress its
+# GDP loses more output than it saves on the price. See docs/government.md.
+BONANZA_GDP_SHARE = 0.5
+BONANZA_MINIMUM_PRICE = 50.00
+
+# A Bonanza is not offered until a server's production ledger reaches back
+# this far. GDP is read over a 7-day window, and a ledger younger than that
+# under-reads it - which would sell the first Bonanzas cheap.
+BONANZA_HISTORY_DAYS = 7
+
+
+def bonanza_price(week_gdp: float) -> float:
+    """What a Server Bonanza costs a server whose 7-day GDP is `week_gdp`."""
+    return max(BONANZA_MINIMUM_PRICE, BONANZA_GDP_SHARE * week_gdp)
+
 
 # Every drill type starts here; a container adds its storage_bonus on top.
 BASE_STORAGE_CAPACITY = 100
@@ -759,6 +891,82 @@ def purchase_total(material_id: str, quantity: int) -> float:
     return MARKET_PRICE_CENTS[material_id] * MARKET_BUY_MARKUP * quantity / 100
 
 
+# Player-set prices (1.4: /market list and /market order) are stored as a whole
+# number of ten-thousandths of a currency unit - a hundredth of a cent.
+#
+# MARKET_PRICE_CENTS' unit could not be reused. A player listing has to undercut
+# the server's ask and beat its bid, and for iron ore those are 0.01 and 0.02:
+# a band one cent wide, containing no whole cent a seller would rationally pick.
+# At this scale it holds 99 prices. The other five tradeable materials hold 199,
+# 299, 1,499, 2,999 and 4,799 - run player_price_bounds over TRADEABLE_ORDER to
+# reproduce those.
+#
+# Ten-thousandths rather than any other sub-cent unit because it is exactly the
+# precision format_price already falls back to when an amount would otherwise
+# display as 0.00, so nothing new had to be taught to render one.
+PLAYER_PRICE_SCALE = 10_000
+
+
+def player_price_units(price: float) -> int | None:
+    """A player's typed price as an exact integer count of
+    1/PLAYER_PRICE_SCALE, or None if it isn't a whole number of them.
+
+    Rejecting rather than rounding is deliberate: a price is multiplied by a
+    quantity up to MAX_MARKET_QUANTITY, so silently rounding 0.00015 to 0.0002
+    would move a million-unit trade by 50. Telling someone their price is too
+    precise is a better outcome than charging them a different one than they
+    typed.
+
+    The 1e-6 tolerance absorbs the binary representation of the decimal the
+    user typed (0.07 * 10000 is 699.9999999999999), which is the same class of
+    float artifact sale_total multiplies in cents to avoid.
+    """
+    scaled = price * PLAYER_PRICE_SCALE
+    nearest = round(scaled)
+    if nearest <= 0 or abs(scaled - nearest) > 1e-6:
+        return None
+    return int(nearest)
+
+
+def player_price_total(price_units: int, quantity: int) -> float:
+    """What `quantity` units cost at a player's price.
+
+    Multiplied as integers and divided once at the end, for the reason
+    sale_total spells out: the per-unit float form drifts off a whole
+    sub-cent at ordinary quantities, and a balance a hair under what it should
+    be is what makes "you can afford 2" appear for something you can afford 3
+    of. The largest product this can produce is a price times
+    MAX_MARKET_QUANTITY, and integers stay exact to 2**53, so there is nothing
+    to drift here.
+    """
+    return price_units * quantity / PLAYER_PRICE_SCALE
+
+
+def player_price_bounds(material_id: str) -> tuple[int | None, int | None]:
+    """The exclusive (low, high) bounds a player's price must sit strictly
+    between, in PLAYER_PRICE_SCALE units - or (None, None) for a material the
+    server does not trade, where a player may ask whatever they like.
+
+    Both ends are the server's own quotes, and the rule is the same one from
+    either side: an offer nobody has a reason to take is not worth putting on
+    the book. A listing at or above the server's ask is one nobody would buy
+    when the server sells the same thing cheaper; a bid at or below the
+    server's bid is one nobody would fill when the server pays the same or
+    more. The band between them is where a player is actually the better
+    counterparty.
+
+    Gemstones carry a MARKET_PRICE_CENTS entry but are NOT in TRADEABLE_ORDER -
+    the server neither buys nor sells them (docs/market.md section 3) - so they
+    correctly fall through to unbounded here. Reading their price as a band
+    would invent a server quote that does not exist.
+    """
+    if material_id not in TRADEABLE_ORDER:
+        return None, None
+    per_unit = PLAYER_PRICE_SCALE // 100
+    cents = MARKET_PRICE_CENTS[material_id]
+    return cents * per_unit, cents * MARKET_BUY_MARKUP * per_unit
+
+
 _MATERIAL_TABLES = (
     RAW_MATERIALS, SMELTED_MATERIALS, COMPONENT_MATERIALS,
     DRILLS, UPGRADE_MATERIALS, STORAGE_CONTAINERS, PRESS_MATERIALS,
@@ -780,6 +988,19 @@ def get_material_info(material_id: str) -> dict | None:
     """Looks up a material regardless of which tier (raw/smelted/component/
     drill/container) it belongs to. Returns None if the ID doesn't exist."""
     return ALL_MATERIALS.get(material_id)
+
+
+def material_name(info: dict, count: int) -> str:
+    """A material's name as it reads after `count` - "3 Rubies", "1 Ruby".
+
+    Only the countable materials carry a "plural"; everything else is a mass
+    noun ("Iron Ore", "Obsidian") whose name already reads correctly after any
+    count, so it falls back to "name". Not for "Nx" multiplier text, which
+    keeps the singular ("3x Ruby").
+    """
+    if count == 1:
+        return info["name"]
+    return info.get("plural", info["name"])
 
 
 def effective_capacity(container_type: str | None) -> int:
@@ -838,9 +1059,10 @@ def accrue(carry: float, amount: float) -> tuple[int, float]:
     return whole, max(0.0, total - whole)
 
 
-def advance_harvest(progress: float, rate_per_hour: float, ticks_per_hour: float) -> tuple[int, float]:
-    """Splits a tick's worth of mining into whole items now and a fraction to
-    carry into the next tick.
+def advance_harvest(progress: float, rate_per_hour: float, hours: float) -> tuple[int, float]:
+    """Splits `hours` of mining - a tick's worth, or less for a drill that only
+    started mining partway through one (cogs/mining.py: harvest_loop) - into
+    whole items now and a fraction to carry into the next tick.
 
     The carry is what makes a level worth exactly its stated rate. At 12
     ticks/hour an iron drill's level is +0.083 items/tick, so rounding each
@@ -850,7 +1072,7 @@ def advance_harvest(progress: float, rate_per_hour: float, ticks_per_hour: float
     divide evenly into ticks would survive without this; most don't, and which
     ones do changes with any retune, so the carry is unconditional rather than
     something to reason about per tier."""
-    return accrue(progress, rate_per_hour / ticks_per_hour)
+    return accrue(progress, rate_per_hour * hours)
 
 
 # Gemstones drop from mining like the ores do, so they live in RAW_MATERIALS,
@@ -905,13 +1127,15 @@ def draw_from_pool(available: dict[str, int], count: int, rng=random) -> dict[st
 
     Sequential rather than a closed-form multivariate hypergeometric because
     `count` is a single drill's share of one 5-minute tick - a handful of
-    items - over six materials. The loop is cheaper than the arithmetic that
-    would replace it.
+    items for most drills - over six materials. The loop is cheaper than the
+    arithmetic that would replace it. The pool's total is carried as a running
+    figure rather than re-summed per item, because it runs inside the write
+    lock and a high-level drill's `count` is in the hundreds.
     """
     remaining = {m: q for m, q in available.items() if q > 0}
+    total = sum(remaining.values())
     drawn: dict[str, int] = {}
     for _ in range(max(0, count)):
-        total = sum(remaining.values())
         if total <= 0:
             break
         roll = rng.randrange(total)
@@ -921,6 +1145,7 @@ def draw_from_pool(available: dict[str, int], count: int, rng=random) -> dict[st
             if roll < cumulative:
                 drawn[material_id] = drawn.get(material_id, 0) + 1
                 remaining[material_id] -= 1
+                total -= 1
                 if remaining[material_id] == 0:
                     del remaining[material_id]
                 break
@@ -1267,6 +1492,165 @@ def apply_mining_efficiency(
     return converted, carries
 
 
+# ---------------------------------------------------------------------------
+# Mining affinity
+# ---------------------------------------------------------------------------
+
+# A player who has reached the diamond stage can commit their GEMSTONES to one
+# kind. Where a focus re-aims the ore tier and an efficiency amplifies it, a
+# affinity is the focus's mirror one tier up: every gem that isn't the one you
+# chose arrives as the one you chose, at the same rarity ratio a focus converts
+# ore at - and then a little more, because a diamond should buy more than a
+# re-aim (MINING_AFFINITY_CONVERSION_BONUS).
+#
+# It is a THIRD independent feature, not a second half of either: it does not
+# require a focus or an efficiency, is not gated behind them, and touches
+# nothing they touch. The ore tier and the gem tier never meet.
+#
+# Why the gem tier needed anything at all. Gem progression is otherwise
+# all-or-nothing: a bag holds exactly one diamond (docs/mining.txt), so a
+# player either digs it up or doesn't, and 90 rubies are worth the same mining
+# with no way to trade them toward it. The press does ore -> gem; nothing did
+# gem -> gem.
+#
+# The ratios are the drop chances, so focus_conversion_rate does this tier
+# unchanged - 90 rubies or 9 obsidian to a diamond, exactly, because the drop
+# chances were built as 90:9:1. Measured against the market prices those gems
+# carry, the unbonused ratio is close to value-neutral but not exactly so, and
+# it errs in both directions: as a percentage of the price given up, converting
+# into a diamond receives 101.01% from rubies and 105.82% from obsidian, while
+# rubies into obsidian receives 95.45%. Across all six pairs the spread is
+# 94.50% to 105.82%.
+# Left at the rarity ratio anyway, for the reason MINING_FOCUSES gives - rarity
+# is the ratio a player can hold in their head, and gems are chosen for what
+# they build rather than for resale (they are not tradeable at all; see
+# TRADEABLE_ORDER).
+MINING_AFFINITIES = {
+    "none": {
+        "name": "None", "emoji": "⚖️", "primary": None,
+        "blurb": "Gemstones arrive exactly as you mined them.",
+    },
+    **{
+        gem_id: {
+            "name": RAW_MATERIALS[gem_id]["name"],
+            "emoji": RAW_MATERIALS[gem_id]["emoji"],
+            "primary": gem_id,
+        }
+        for gem_id in GEMSTONES
+    },
+}
+
+DEFAULT_MINING_AFFINITY = "none"
+
+# Ten times what an efficiency costs and ninety times a focus, which is what
+# the tier below each one already costs in mining: a ruby is one per 11,111
+# items, an obsidian one per 111,111 and a diamond one per 1,000,000. Charged
+# ONCE, like both of its siblings and for the same reason - the benefit of
+# CHANGING which gem you are aiming at is worth a fraction of what the feature
+# itself costs, so pricing each change at a gem would mean nobody ever revised
+# one. Changes are free and rate-limited to one a day.
+MINING_AFFINITY_UNLOCK_COST = {"diamond": 1}
+MINING_AFFINITY_SWITCH_PER_DAY = 1
+
+# How much better than an even trade a conversion is. At 1.0 this feature would
+# be a pure re-aim like a focus; the diamond it costs should buy more than that.
+#
+# What it is worth in total is NOT this number, and the difference is worth
+# knowing before retuning it. A bag's gems are exactly thirds by value - 90
+# rubies, 9 obsidian and 1 diamond are one diamond-equivalent each - so
+# whichever gem is chosen, two thirds of the gems in a bag get converted and
+# one third (the chosen gem itself) passes through unbonused. The total is
+# therefore (2 * BONUS + 1) / 3, identical for all three choices: 1.67x here,
+# and it would take 2.5 to reach a true doubling. tests/test_mining_affinity.py
+# pins both that identity and this figure.
+MINING_AFFINITY_CONVERSION_BONUS = 2.0
+
+
+def affinity_conversion_rate(source_id: str, target_id: str) -> float:
+    """How many `target_id` one `source_id` becomes under an affinity: the
+    rarity ratio a focus would use, times the bonus.
+
+    Deliberately NOT used to convert the carry when a player changes affinity
+    (utils/mining_affinity.py: set_affinity). The carry holds gem value already
+    earned, and re-bonusing it on every change would let a player pump a
+    fraction of a diamond into a whole one by switching back and forth."""
+    return focus_conversion_rate(source_id, target_id) * MINING_AFFINITY_CONVERSION_BONUS
+
+
+def affinity_ratio(source_id: str, target_id: str) -> tuple[int, int]:
+    """A conversion as the smallest whole number of each: (source, target), so
+    (45, 1) for rubies into a diamond and (9, 2) for obsidian into diamonds.
+
+    Rendered from the rate rather than written into the table, so retuning a
+    drop chance or the bonus can never leave the picker quoting the old trade.
+    Every live pair lands on whole numbers under 200; the denominator limit is
+    a guard against a future retune printing a ratio nobody can read rather
+    than something the current table needs."""
+    ratio = Fraction(affinity_conversion_rate(source_id, target_id)).limit_denominator(1000)
+    return ratio.denominator, ratio.numerator
+
+
+# Each gem's blurb is the trade itself, in the smallest whole numbers it can be
+# written in (affinity_ratio), as "<icon> 45 → <icon> 1" pairs. Derived rather
+# than written out, for the reason the efficiency blurbs are: retuning a drop
+# chance or the bonus must not be able to leave the picker quoting a trade the
+# game no longer makes.
+#
+# ICON ONLY, no material names and no explanation. A gem's emoji is how it is
+# identified everywhere else in the bot, and what an affinity does is legible
+# from the rates themselves - only None, which has no rates to show, gets words.
+for _target in GEMSTONES:
+    MINING_AFFINITIES[_target]["blurb"] = " · ".join(
+        f"{RAW_MATERIALS[_source]['emoji']} {_n} → {RAW_MATERIALS[_target]['emoji']} {_m}"
+        for _source in GEMSTONES
+        if _source != _target
+        for _n, _m in (affinity_ratio(_source, _target),)
+    )
+
+
+def apply_mining_affinity(
+    affinity_id: str, breakdown: dict[str, int], carry: float = 0.0
+) -> tuple[dict[str, int], float]:
+    """Converts a haul's GEMSTONES according to an affinity. Returns the new
+    breakdown and the fraction of the chosen gem still owed.
+
+    The ore tier is never touched, whatever the affinity - the exact mirror of
+    the promise a focus makes about gems, and the reason the three features can
+    be reasoned about one at a time.
+
+    The carry matters far more here than it does for a focus. A focus owes at
+    most a fraction of one iron ore; this owes at most a fraction of a diamond,
+    which is up to 89 rubies of mining, so it is surfaced to the player
+    everywhere rather than kept as an internal detail (utils/mining_affinity.py:
+    affinity_progress, and the three places cogs/mining.py shows it).
+
+    One carry covers every source gem because an affinity has exactly one
+    target, the same reason a focus needs only one.
+
+    THE CHOSEN GEM PASSES THROUGH UNBONUSED. It is not converted, so there is
+    nothing to reward - and bonusing it would mean a diamond affinity doubled
+    the diamonds a bag holds, which is the one thing docs/mining.txt promises
+    the pool alone decides.
+    """
+    affinity = MINING_AFFINITIES[affinity_id]
+    target = affinity["primary"]
+    if target is None:
+        return dict(breakdown), carry
+
+    converted = dict(breakdown)
+    owed = 0.0
+    for material_id, quantity in breakdown.items():
+        if material_id == target or material_id not in GEMSTONES:
+            continue
+        owed += quantity * affinity_conversion_rate(material_id, target)
+        del converted[material_id]
+
+    whole, new_carry = accrue(carry, owed)
+    if whole:
+        converted[target] = converted.get(target, 0) + whole
+    return converted, new_carry
+
+
 # What fraction of a recipe the scrapper hands back (see scrap_yield).
 SCRAP_RETURN_RATE = 0.5
 
@@ -1439,6 +1823,17 @@ JOB_BOARD_MATERIALS: tuple[str, ...] = TRADEABLE_ORDER
 #     quantity * price is exactly 1.00 - and loses on everything else.
 #   * It still requires real production. The only way to claim it is to put
 #     materials into the market, which is the same work a plain sale is.
+#
+# A FOURTH thing has to hold since 1.4, and it is the one that is enforced in
+# code rather than falling out of the arithmetic: only the portion of a sale
+# that clears against the SERVER may credit the board. A player-to-player sale
+# does not remove goods from the player sector - the goods simply move within
+# it - so the round trip above never happens and none of the three bounds
+# apply. Two players could pass one stack back and forth and collect the bonus
+# on every leg, at no cost to either, for as long as they cared to. See
+# utils/market_book.py's module docstring and cogs/economy.py's market_sell,
+# which credits credit_job_progress with server_quantity(fills) and never with
+# the full quantity sold.
 #
 # What it is no longer bounded by is a per-day cap, and that is the deliberate
 # change: the day's material is now worth roughly twice its market price to

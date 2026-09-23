@@ -64,8 +64,11 @@ async def boost_haul(tx: _Executor, user_id: int, breakdown: dict[str, int]) -> 
     """Applies this player's efficiency to a haul on its way out of a drill,
     and banks whatever fractions of a material the correction left owing.
 
-    Called from the same places convert_haul is, immediately after it, so an
-    efficiency can't be dodged by choosing a different way to pick materials up.
+    Called from the same places convert_haul is, immediately after it: /collect,
+    /mine remove, and the retraction that happens when the bot leaves a server.
+    A focus and an affinity are applied everywhere so they can't be DODGED by
+    picking a different way to empty a drill; an efficiency is applied
+    everywhere for the mirror reason, so it can't be FORFEITED by one.
 
     Persisting the carries is what stops the correction being a money printer
     in one direction and a shredder in the other: converting in small batches

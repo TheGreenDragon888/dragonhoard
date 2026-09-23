@@ -17,7 +17,11 @@ from pathlib import Path
 import discord
 
 from database.db import Database
-from data.materials import MINING_EFFICIENCY_UNLOCK_COST, MINING_FOCUS_UNLOCK_COST
+from data.materials import (
+    MINING_AFFINITY_UNLOCK_COST,
+    MINING_EFFICIENCY_UNLOCK_COST,
+    MINING_FOCUS_UNLOCK_COST,
+)
 from data.notifications import GEM_UNLOCK_NOTICES, GLOBAL_NOTICES, GlobalNotice
 from utils.db_helpers import (
     adjust_user_quantity,
@@ -251,12 +255,12 @@ class PersonalNoticeTests(NotificationTestCase):
             await adjust_user_quantity(self.db, USER, material_id, 50)
         self.assertEqual(await self.personal(), [])
 
-    async def test_a_diamond_raises_nothing(self):
-        # The third gemstone unlocks no command, so there is nothing to tell
-        # anyone. This is the guard on "gemstone" being the trigger rather than
-        # "the two gems that open something".
+    async def test_a_diamond_raises_the_affinity_notice(self):
+        # The diamond unlocked no command until /affinity, and this test used
+        # to pin that it stayed silent. It opens one now, so it says so - the
+        # trigger was always "a gem that opens something", never "a gemstone".
         await adjust_user_quantity(self.db, USER, "diamond", 1)
-        self.assertEqual(await self.personal(), [])
+        self.assertEqual(await self.personal(), [GEM_UNLOCK_NOTICES["diamond"].key])
 
     async def test_the_second_gem_of_a_kind_says_nothing(self):
         await adjust_user_quantity(self.db, USER, "ruby", 1)
@@ -326,11 +330,11 @@ class PersonalNoticeTests(NotificationTestCase):
 
 
 class GemUnlockNoticeTests(unittest.TestCase):
-    """The two hints as data. Their wording is meant to be edited freely - what
+    """The three hints as data. Their wording is meant to be edited freely - what
     these check is the handful of things the rest of the system relies on."""
 
     def test_they_cover_exactly_the_gems_that_unlock_a_command(self):
-        self.assertEqual(set(GEM_UNLOCK_NOTICES), {"ruby", "obsidian"})
+        self.assertEqual(set(GEM_UNLOCK_NOTICES), {"ruby", "obsidian", "diamond"})
 
     def test_keys_are_unique(self):
         # Two notices sharing a key means the second never fires: the primary
@@ -350,12 +354,14 @@ class GemUnlockNoticeTests(unittest.TestCase):
         # The entire point of the notice. Everything else in it is flavour.
         self.assertIn("/focus", GEM_UNLOCK_NOTICES["ruby"].body)
         self.assertIn("/efficiency", GEM_UNLOCK_NOTICES["obsidian"].body)
+        self.assertIn("/affinity", GEM_UNLOCK_NOTICES["diamond"].body)
 
     def test_each_still_costs_the_one_gem_the_text_promises(self):
         # The bodies say the unlock is paid once, in the singular. If either
         # cost stops being a single gem of that type, the wording is wrong.
         self.assertEqual(MINING_FOCUS_UNLOCK_COST, {"ruby": 1})
         self.assertEqual(MINING_EFFICIENCY_UNLOCK_COST, {"obsidian": 1})
+        self.assertEqual(MINING_AFFINITY_UNLOCK_COST, {"diamond": 1})
 
     def test_they_fit_an_embed(self):
         for notice in GEM_UNLOCK_NOTICES.values():

@@ -10,30 +10,35 @@ statement standing alone) or a Transaction (all of them committing together).
 Pass a Transaction whenever the caller reads a value and then writes based on
 it - see Database.transaction for why that matters.
 """
-from typing import NamedTuple
+from datetime import datetime, timedelta, timezone
+from typing import Callable, NamedTuple
 
 import config
 from database.db import Database, InsufficientQuantity, _Executor
 from data.materials import (
+    BONANZA_SPEED_MULTIPLIER,
+    PLAYER_PRICE_SCALE,
+    enhancement_speed,
     get_material_info,
+    effective_level,
     effective_max_queue,
     mining_slot_level,
     mining_slot_threshold,
     mining_slots,
     upgrade_threshold,
 )
-from utils.formatting import format_currency
+from utils.formatting import format_currency, plural
 from utils.notifications import post_server_notification, post_user_notification
 from data.notifications import GEM_UNLOCK_NOTICES
 
-# Every machine whose per-server settings live in <machine>_level, _fee,
-# _fees_collected and _max_queue columns on server_config, and whose queued
-# work shares the production_jobs table. That uniform naming is what lets
-# /setup fee, /setup max_queue and queue_room below all be one implementation
-# instead of five - adding a sixth machine means adding it here and nowhere
+# Every machine whose per-server settings live in <machine>_level,
+# _fees_collected, _max_queue, _fee_multiplier and _enhancement_level columns on
+# server_config, and whose queued work shares the production_jobs table. That
+# uniform naming is what lets /setup max_queue, /treasurer fee and queue_room
+# below all be one implementation instead of five - adding a sixth machine
+# means adding it here, its default fee to MACHINE_DEFAULT_FEES, and nowhere
 # else. The blast furnace, added in 1.3, is what proved that: it needed no
-# change to any function in this module beyond this tuple and the fee inserted
-# by ensure_server_row.
+# change to any function in this module beyond this tuple and its fee.
 #
 # What a machine counts in is NOT uniform, though. Everything here is denominated
 # in whatever unit that machine charges and queues by, which is one item for four
@@ -41,18 +46,67 @@ from data.notifications import GEM_UNLOCK_NOTICES
 # blast furnace - hence the `unit` argument on queue_full_message below.
 MACHINES = ("furnace", "blast_furnace", "factory", "press", "scrapper")
 
-# Every fee a server has ever paid into its infrastructure, added up across all
-# five machines, as a SQL expression. Built from MACHINES rather than written
-# out, so a sixth machine starts counting toward mining slots by being added to
-# that tuple and nowhere else - the same property that makes queue_room and
+# What each machine charges at a fee multiplier of x1, in the unit it counts in
+# (an item, a batch for the blast furnace, a press-day for the press). The base
+# every server's fee is a multiple of: there is no per-server fee, only the
+# Treasurer's multiplier on this (utils/government.py: FEE_MULTIPLIERS). So
+# retuning one of these in config.py changes it on every server at once.
+MACHINE_DEFAULT_FEES: dict[str, float] = {
+    "furnace": config.DEFAULT_FURNACE_FEE,
+    "blast_furnace": config.DEFAULT_BLAST_FURNACE_FEE,
+    "factory": config.DEFAULT_FACTORY_FEE,
+    "press": config.DEFAULT_PRESS_FEE,
+    "scrapper": config.DEFAULT_SCRAPPER_FEE,
+}
+
+
+def machine_fee(machine: str, multiplier: float) -> float:
+    """What `machine` charges per unit on a server whose Treasurer has set its
+    fee multiplier to `multiplier`."""
+    return MACHINE_DEFAULT_FEES[machine] * multiplier
+
+
+async def machine_fee_rate(db: _Executor, guild_id: int, machine: str) -> float:
+    """machine_fee for one server, read from its multiplier. A server with no
+    row yet is on x1, the default every row starts with."""
+    if machine not in MACHINES:
+        raise ValueError(f"unknown machine {machine!r}")
+    row = await db.fetchone(
+        f"SELECT {machine}_fee_multiplier AS multiplier FROM server_config WHERE guild_id = ?",
+        (guild_id,),
+    )
+    return machine_fee(machine, row["multiplier"] if row else 1.0)
+
+
+# Every column a machine's lifetime fees are banked in. Built from MACHINES
+# rather than written out, so a sixth machine's fees count by being added to
+# that tuple and nowhere else, the same property that makes queue_room and
 # apply_machine_upgrades single implementations.
+FEES_COLLECTED_COLUMNS: tuple[str, ...] = tuple(
+    f"{machine}_fees_collected" for machine in MACHINES
+)
+
+# Everything the mining slot ladder is priced in: every machine's banked fees,
+# plus mining_slot_credit - what the government has bought for slots directly
+# (every government burn once, Mining Slot Enhancement five times over; see
+# utils/government.py).
 #
-# There is deliberately no stored column holding this total. Every figure in it
-# is already banked in a <machine>_fees_collected column that only ever grows,
-# so a separate accumulator would be a second copy of the same number with its
-# own opportunities to drift - and summing on read is what makes mining slots
-# retroactive to fees a server paid before the feature existed.
-_INVESTED_SQL = " + ".join(f"{machine}_fees_collected" for machine in MACHINES)
+# This tuple and slot_progress() below are the one definition of the total.
+# Its two consumers have to agree - the "Mining slot progress" figure /economy
+# status shows and the mining slot ladder priced in that same figure - so
+# neither adds the columns up on its own. It was "Fees collected" until 1.4,
+# and was renamed because the credit column made it more than fees.
+#
+# There is deliberately no stored column holding the total. Every figure in it
+# is already banked in a column that only ever grows, so a separate accumulator
+# would be a second copy of the same number with its own opportunities to
+# drift - and summing on read is what makes mining slots retroactive to fees a
+# server paid before the feature existed.
+SLOT_PROGRESS_COLUMNS: tuple[str, ...] = FEES_COLLECTED_COLUMNS + ("mining_slot_credit",)
+
+# The same columns as a SELECT list, for the queries that fetch a row purely to
+# hand it to slot_progress.
+_SLOT_PROGRESS_SQL = ", ".join(SLOT_PROGRESS_COLUMNS)
 
 
 def machine_label(machine: str) -> str:
@@ -62,27 +116,28 @@ def machine_label(machine: str) -> str:
     return machine.replace("_", " ")
 
 
+def slot_progress(cfg) -> float:
+    """This server's mining slot progress: every fee its five machines have
+    ever banked plus everything the government has bought toward slots, added
+    up (SLOT_PROGRESS_COLUMNS).
+
+    One function rather than a sum written out at each call site, because the
+    figure /economy status shows and the figure the mining slot ladder is
+    priced in have to be the same number (mining_slot_status).
+
+    Takes an already-fetched row rather than querying, since every caller has
+    one in hand - and the callers inside a transaction need the row that
+    transaction just wrote, not a second read of their own.
+    """
+    return sum(cfg[column] for column in SLOT_PROGRESS_COLUMNS)
+
+
 async def ensure_user_row(db: _Executor, user_id: int):
     await db.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
 
 
 async def ensure_server_row(db: _Executor, guild_id: int):
-    # Fees are inserted explicitly rather than left to the schema DEFAULTs:
-    # a database created before a default changed keeps its old column
-    # DEFAULT forever, so relying on it would give new servers stale fees.
-    await db.execute(
-        "INSERT OR IGNORE INTO server_config "
-        "(guild_id, furnace_fee, blast_furnace_fee, factory_fee, press_fee, scrapper_fee) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (
-            guild_id,
-            config.DEFAULT_FURNACE_FEE,
-            config.DEFAULT_BLAST_FURNACE_FEE,
-            config.DEFAULT_FACTORY_FEE,
-            config.DEFAULT_PRESS_FEE,
-            config.DEFAULT_SCRAPPER_FEE,
-        ),
-    )
+    await db.execute("INSERT OR IGNORE INTO server_config (guild_id) VALUES (?)", (guild_id,))
 
 
 class QueueRoom(NamedTuple):
@@ -150,7 +205,7 @@ def queue_full_message(machine: str, room: QueueRoom, unit: str = "item") -> str
     factor of BLAST_FURNACE_BATCH_SIZE and send the player looking for 500
     missing items."""
     return (
-        f"You can only queue up to {room.effective:,} {unit}s worth of "
+        f"You can only queue up to {room.effective:,} {plural(unit)} worth of "
         f"{machine_label(machine)} recipes per user at once ({room.base:,} per level, "
         f"at level {room.level:,}), and you already have {room.queued:,}. "
         f"Complete some jobs first."
@@ -166,12 +221,12 @@ async def get_user_quantity(db: _Executor, user_id: int, material_id: str) -> in
 
 
 async def announce_first_gem(db: _Executor, user_id: int, material_id: str) -> bool:
-    """Tells a player about the command their first ruby or obsidian unlocks,
-    once. Returns whether this raised the notice.
+    """Tells a player about the command their first ruby, obsidian or diamond
+    unlocks, once. Returns whether this raised the notice.
 
-    Both gems unlock something a player has no other way to discover - /focus
-    and /efficiency do not appear anywhere until you hold the gem that opens
-    them - so finding one and not being told is finding nothing. The wording
+    All three gems unlock something a player has no other way to discover -
+    /focus, /efficiency and /affinity do not appear anywhere until you hold the
+    gem that opens them - so finding one and not being told is finding nothing. The wording
     lives in data/notifications.py: GEM_UNLOCK_NOTICES.
 
     "First" is not derived from the quantity going 0 -> 1, which would fire
@@ -280,6 +335,20 @@ async def get_server_stock(db: _Executor, guild_id: int, material_id: str) -> in
     return row["quantity"] if row else 0
 
 
+async def get_server_stocks(db: _Executor, guild_id: int) -> dict[str, int]:
+    """Everything the server's market is holding, by material, in one query.
+
+    For any surface that reads more than one material - /market status reads
+    every tradeable one, the furnace's auto-smelt reads five - this replaces a
+    get_server_stock per material. A material with no row is simply absent,
+    so read it with .get(material_id, 0)."""
+    rows = await db.fetchall(
+        "SELECT material_id, quantity FROM server_material_storage WHERE guild_id = ?",
+        (guild_id,),
+    )
+    return {row["material_id"]: row["quantity"] for row in rows}
+
+
 async def adjust_server_stock(db: _Executor, guild_id: int, material_id: str, delta: int):
     await db.execute(
         """
@@ -305,6 +374,122 @@ async def adjust_currency_balance(db: _Executor, guild_id: int, user_id: int, de
         ON CONFLICT (guild_id, user_id) DO UPDATE SET balance = balance + excluded.balance
         """,
         (guild_id, user_id, delta),
+    )
+
+
+# One guild's balances and its escrowed order currency, as SQL. Shared as
+# strings because the two readers hold different handles: the bot has an async
+# Database, web/queries.py has its own synchronous sqlite3 connection, and
+# neither can call the other's accessor. What they must not do is disagree
+# about the query.
+CIRCULATING_BALANCE_SQL = (
+    "SELECT COALESCE(SUM(balance), 0) AS total FROM server_currency_balances "
+    "WHERE guild_id = ?"
+)
+ESCROWED_UNITS_SQL = (
+    "SELECT COALESCE(SUM(quantity * price_units), 0) AS units FROM market_orders "
+    "WHERE guild_id = ?"
+)
+# The same total for every guild at once, which is how the dashboard reads it -
+# it renders every server in one pass and would otherwise issue one query per
+# server. Spelled out rather than derived from the string above: a GROUP BY
+# has to select the column it groups on, so the two are not the same query with
+# a different tail.
+ESCROWED_UNITS_BY_GUILD_SQL = (
+    "SELECT guild_id, COALESCE(SUM(quantity * price_units), 0) AS units "
+    "FROM market_orders GROUP BY guild_id"
+)
+# The other escrow: currency staked on a prediction bet that has not settled
+# (1.4). Held on prediction_wagers exactly as a bid's is held on market_orders,
+# and just as much not a burn - a cancelled bet hands every cent back. Denoted
+# in CENTS, which is what prediction_wagers.stake_cents stores; the order
+# escrow above is in PLAYER_PRICE_SCALE units. The two scales are why
+# circulating_currency takes them as separate arguments rather than one total.
+#
+# Spelled with the literal `status IN ('open', 'closed')` that
+# idx_prediction_bets_live is partial on - see utils/betting.py: LIVE_BETS_SQL,
+# which is the same predicate for the same reason.
+BET_ESCROW_CENTS_SQL = (
+    "SELECT COALESCE(SUM(w.stake_cents), 0) AS cents "
+    "FROM prediction_wagers w JOIN prediction_bets b ON b.bet_id = w.bet_id "
+    "WHERE b.guild_id = ? AND b.status IN ('open', 'closed')"
+)
+BET_ESCROW_CENTS_BY_GUILD_SQL = (
+    "SELECT b.guild_id, COALESCE(SUM(w.stake_cents), 0) AS cents "
+    "FROM prediction_wagers w JOIN prediction_bets b ON b.bet_id = w.bet_id "
+    "WHERE b.status IN ('open', 'closed') GROUP BY b.guild_id"
+)
+# What the server government is holding (1.4): the treasury and the bond
+# repayment pool. Both are server_config columns, so a reader that already has
+# the row (web/queries.py) takes them off it with government_held() instead.
+GOVERNMENT_HELD_SQL = (
+    "SELECT treasury + repayment_pool AS held FROM server_config WHERE guild_id = ?"
+)
+
+
+def government_held(cfg) -> float:
+    """The treasury and the repayment pool of an already-fetched server_config
+    row - the currency circulating_currency's `government_held` means."""
+    return cfg["treasury"] + cfg["repayment_pool"]
+
+
+def circulating_currency(
+    balance_total: float,
+    escrowed_units: int,
+    escrowed_bet_cents: int = 0,
+    government_held: float = 0.0,
+) -> float:
+    """Every unit of this server's currency that still belongs to somebody:
+    what is sitting in balances, plus what open buy orders and running bets are
+    holding, plus what the server government holds.
+
+    One function rather than the sum written out per call site, for the same
+    reason slot_progress is one - /economy status and the Ops dashboard both
+    report this figure and have to agree about it.
+
+    The escrow is the part that is easy to get wrong. Placing a /market order
+    deducts the currency from the buyer's balance (the order cannot promise
+    money that has since been spent), but that is NOT a burn: nothing was
+    destroyed, and cancelling the order hands every unit back. It has left
+    server_currency_balances and not the economy. A plain SUM(balance) would
+    therefore report a server's money supply shrinking every time somebody
+    placed a bid, and recovering when they withdrew it - see docs/market.md
+    section 4.
+
+    A prediction bet's stakes (1.4) are the same case in every respect: the
+    stake leaves the better's balance when the wager is placed, the pot is paid
+    out in full when the bet resolves, and cancelling hands back every cent. A
+    server whose members had a large bet running would otherwise look like one
+    that had just burned the stake.
+
+    So is the government's money (1.4). Tax and bond sales leave players'
+    balances for the treasury or the repayment pool, and nothing is burned
+    until the Mayor spends it on a project - repayments go back to players
+    untouched (docs/government.md, Money flow).
+
+    escrowed_units is in PLAYER_PRICE_SCALE units, because that is how
+    market_orders stores a price; escrowed_bet_cents is in cents, because that
+    is how prediction_wagers stores a stake; balance_total is already in
+    currency. Three arguments rather than one pre-summed total precisely
+    because the scales differ - adding them up is the step that has to happen
+    in one place.
+    """
+    return (
+        balance_total
+        + escrowed_units / PLAYER_PRICE_SCALE
+        + escrowed_bet_cents / 100
+        + government_held
+    )
+
+
+async def circulating_currency_for(db: _Executor, guild_id: int) -> float:
+    """circulating_currency for one guild, for callers holding a Database."""
+    balances = await db.fetchone(CIRCULATING_BALANCE_SQL, (guild_id,))
+    escrow = await db.fetchone(ESCROWED_UNITS_SQL, (guild_id,))
+    bets = await db.fetchone(BET_ESCROW_CENTS_SQL, (guild_id,))
+    held = await db.fetchone(GOVERNMENT_HELD_SQL, (guild_id,))
+    return circulating_currency(
+        balances["total"], escrow["units"], bets["cents"], held["held"] if held else 0.0
     )
 
 
@@ -357,18 +542,22 @@ async def apply_machine_upgrades(db: _Executor, guild_id: int, machine: str) -> 
 
 class MiningSlots(NamedTuple):
     """How many drills one player may have placed in one server, and the
-    investment behind that number - everything a caller needs to state the cap
+    progress behind that number - everything a caller needs to state the cap
     and explain where it came from."""
 
     level: int             # 1 on a server that has never paid a fee
     slots: int             # drills one player may place here
-    invested: float        # lifetime infrastructure fees, all machines summed
-    next_threshold: float  # `invested` needed for one more slot
+    progress: float        # mining slot progress (slot_progress)
+    next_threshold: float  # `progress` needed for one more slot
 
 
 async def mining_slot_status(db: _Executor, guild_id: int) -> MiningSlots:
-    """This server's mining slot cap, derived from its lifetime infrastructure
-    fees (see _INVESTED_SQL).
+    """This server's mining slot cap, derived from its mining slot progress
+    (slot_progress).
+
+    Reads that figure through the same function /economy status displays rather
+    than adding the columns up again here, so the progress a player is shown
+    on one surface is the number the cap is actually derived from on the other.
 
     Read rather than stored, so it is correct the instant a fee is banked and
     for fees banked before the feature shipped - there is no marker to migrate
@@ -380,15 +569,15 @@ async def mining_slot_status(db: _Executor, guild_id: int) -> MiningSlots:
     than an error - ensure_server_row has simply not run for it yet.
     """
     row = await db.fetchone(
-        f"SELECT {_INVESTED_SQL} AS invested FROM server_config WHERE guild_id = ?",
+        f"SELECT {_SLOT_PROGRESS_SQL} FROM server_config WHERE guild_id = ?",
         (guild_id,),
     )
-    invested = row["invested"] if row else 0.0
-    level = mining_slot_level(invested)
+    progress = slot_progress(row) if row else 0.0
+    level = mining_slot_level(progress)
     return MiningSlots(
         level=level,
         slots=mining_slots(level),
-        invested=invested,
+        progress=progress,
         next_threshold=mining_slot_threshold(level + 1),
     )
 
@@ -403,15 +592,15 @@ def mining_slots_full_message(slots: MiningSlots, currency_emoji: str | None) ->
     return (
         f"You already have all {slots.slots:,} of this server's mining slots filled. "
         f"The next one unlocks at "
-        f"{format_currency(slots.next_threshold, currency_emoji)} in total "
-        f"infrastructure fees - this server has invested "
-        f"{format_currency(slots.invested, currency_emoji)} so far."
+        f"{format_currency(slots.next_threshold, currency_emoji)} of mining slot progress - "
+        f"this server has {format_currency(slots.progress, currency_emoji)} so far, "
+        f"and every fee its machines charge and every project its Mayor funds adds to that."
     )
 
 
 async def announce_mining_slot_unlocks(db: _Executor, guild_id: int) -> int:
-    """Posts a server notice if this server's lifetime fees have bought it a
-    mining slot nobody has been told about yet, and returns its slot level.
+    """Posts a server notice if this server's mining slot progress has bought it
+    a mining slot nobody has been told about yet, and returns its slot level.
 
     server_config.mining_slots_announced is a record of what has been ANNOUNCED,
     not of what has been unlocked - mining_slot_status derives the live cap and
@@ -430,14 +619,14 @@ async def announce_mining_slot_unlocks(db: _Executor, guild_id: int) -> int:
     the figure from before the fee that paid for the slot.
     """
     cfg = await db.fetchone(
-        f"SELECT {_INVESTED_SQL} AS invested, mining_slots_announced AS announced, "
+        f"SELECT {_SLOT_PROGRESS_SQL}, mining_slots_announced AS announced, "
         f"currency_emoji FROM server_config WHERE guild_id = ?",
         (guild_id,),
     )
     if cfg is None:
         return 1
 
-    level = mining_slot_level(cfg["invested"])
+    level = mining_slot_level(slot_progress(cfg))
     if level <= cfg["announced"]:
         return level
 
@@ -449,12 +638,13 @@ async def announce_mining_slot_unlocks(db: _Executor, guild_id: int) -> int:
     await post_server_notification(
         db, guild_id,
         "⛏️ New Mining Slot" if slots_now - mining_slots(cfg["announced"]) == 1 else "⛏️ New Mining Slots",
-        f"This server's infrastructure investment has passed "
+        f"This server's mining slot progress has passed "
         f"**{format_currency(mining_slot_threshold(level), cfg['currency_emoji'])}**, "
         f"and every player here can now keep **{slots_now:,} drills** in the ground "
         f"instead of {mining_slots(cfg['announced']):,}.\n\n"
-        f"Fees from every machine count toward this, so anything smelted, crafted, "
-        f"pressed, scrapped or donated paid for it. Use `/mine place` to fill it.",
+        f"Fees from every machine count toward this, and so does every project the "
+        f"Mayor funds, so anything smelted, crafted, pressed, scrapped or donated "
+        f"paid for it. Use `/mine place` to fill it.",
     )
     await db.execute(
         "UPDATE server_config SET mining_slots_announced = ? WHERE guild_id = ?",
@@ -478,9 +668,10 @@ async def bank_infrastructure_fee(
     find every one of them again.
 
     Charging the player is deliberately NOT part of this. A fee reaches here
-    through charge_user_fee (a burn) or through /donate (a burn recorded
-    separately), and folding those together would mean one of the two callers
-    passing a flag to skip half the function.
+    through utils/government.py: charge_machine_fee (the untaxed share of a
+    fee, burned), through /donate or through a Mayor's machine funding (burns
+    recorded by their callers), and folding those together would mean the
+    callers passing a flag to skip half the function.
     """
     if machine not in MACHINES:
         raise ValueError(f"unknown machine {machine!r}")
@@ -501,24 +692,256 @@ async def record_burned(db: _Executor, guild_id: int, amount: float):
     )
 
 
-async def charge_user_fee(db: _Executor, guild_id: int, user_id: int, amount: float):
-    """Deducts an infrastructure fee from a user's balance. Fees are a currency
-    sink (docs/market.md section 1/4) - the amount leaves circulation entirely
-    rather than moving to another balance.
+# ---------------------------------------------------------------------------
+# Production jobs
+# ---------------------------------------------------------------------------
 
-    Raises InsufficientQuantity if the user can't cover it, which aborts the
-    surrounding transaction. It used to clamp the balance to zero instead, so a
-    fee charged against too small a balance silently burned less than it
-    recorded, drifting currency_burned_total away from the currency that
-    actually left circulation."""
-    if amount <= 0:
-        return
-    await db.execute(
-        "INSERT OR IGNORE INTO server_currency_balances (guild_id, user_id, balance) VALUES (?, ?, 0.0)",
-        (guild_id, user_id),
+# How long a finished job's row is kept before it is deleted. A job is marked
+# complete rather than deleted when its machine finishes it, because the row is
+# the record that the work happened; but nothing reads a finished job back
+# except the Ops dashboard's "last activity" heuristic (web/queries.py), which
+# looks at most this far back. Before 1.4 completed rows were kept forever,
+# and every live-job lookup - the processing loops each tick, queue_room on
+# every queue command - scanned the lot; the partial index in schema.sql is
+# what makes those lookups cheap, and this is what keeps the table itself from
+# growing without bound. The same 90 days the production ledger keeps
+# (utils/production_ledger.py: LEDGER_HISTORY_DAYS), for the same reason.
+COMPLETED_JOB_HISTORY_DAYS = 90
+
+# SQLite's own datetime('now') layout, which is what queued_at's DEFAULT
+# writes; a cutoff compared against it as text has to match it exactly. Same
+# constant utils/production_ledger.py keeps, which can't be imported from here
+# without a cycle.
+_SQLITE_TIMESTAMP = "%Y-%m-%d %H:%M:%S"
+
+# The last date a prune ran, so the DELETE happens about once a day rather
+# than every time a job finishes. Process-local on purpose, exactly like the
+# ledger's: a restart prunes once more than it strictly had to.
+_jobs_last_pruned: str | None = None
+
+
+async def guilds_with_queued_work(db: _Executor, machine: str):
+    """The servers that have a live job on `machine` - the work list a
+    processing loop walks each tick. Each row carries everything that loop
+    needs to know how much work it may do: the machine's `level` and `collected`
+    fees, its `enhancement` level and the server's `bonanza_until` (together,
+    run_level), and `work_started`, the queued_at of its oldest live job (for
+    ProductionClock).
+
+    Only those servers, rather than every server_config row: a machine with an
+    empty queue has nothing to do, and until 1.4 every loop visited every
+    server every tick anyway, running a job lookup (and, for the furnace, the
+    whole auto-smelt check) against servers that had been idle for months or
+    that the bot had been removed from. The grouped subquery is what the
+    partial index on production_jobs exists for, and it is the same one read
+    that found the live jobs at all, so the extra columns cost no extra query.
+    """
+    if machine not in MACHINES:
+        raise ValueError(f"unknown machine {machine!r}")
+    return await db.fetchall(
+        f"SELECT sc.guild_id, sc.{machine}_level AS level, "
+        f"sc.{machine}_fees_collected AS collected, "
+        f"sc.{machine}_enhancement_level AS enhancement, sc.bonanza_until, "
+        f"live.work_started "
+        f"FROM server_config sc JOIN ("
+        f"SELECT guild_id, MIN(queued_at) AS work_started FROM production_jobs "
+        f"WHERE job_type = ? AND status != 'complete' GROUP BY guild_id"
+        f") live ON live.guild_id = sc.guild_id",
+        (machine,),
     )
-    await deduct_currency_balance(db, guild_id, user_id, amount)
-    await record_burned(db, guild_id, amount)
+
+
+def bonanza_active(bonanza_until: str | None, now: datetime | None = None) -> bool:
+    """Whether a Server Bonanza ending at `bonanza_until` (server_config's
+    column of that name) is running at `now`."""
+    if bonanza_until is None:
+        return False
+    return sqlite_timestamp(now or clock_now()) < bonanza_until
+
+
+def speed_multiplier(enhancement: int, bonanza_until: str | None, now: datetime | None = None) -> float:
+    """How many times its levelled speed a machine runs at: doubled per
+    Infrastructure Enhancement, and doubled again while a Bonanza runs."""
+    bonanza = BONANZA_SPEED_MULTIPLIER if bonanza_active(bonanza_until, now) else 1
+    return enhancement_speed(enhancement) * bonanza
+
+
+def run_level(cfg, now: datetime | None = None) -> float:
+    """The level a machine's rate function is called at: effective_level times
+    speed_multiplier. Every rate function is linear in its level
+    (data/materials.py), so multiplying the level is multiplying the speed.
+
+    Takes a row with `level`, `collected`, `enhancement` and `bonanza_until` -
+    guilds_with_queued_work's row, or machine_speed_level's."""
+    return effective_level(cfg["level"], cfg["collected"]) * speed_multiplier(
+        cfg["enhancement"], cfg["bonanza_until"], now
+    )
+
+
+async def machine_speed_level(db: _Executor, guild_id: int, machine: str) -> float:
+    """The level (run_level) `machine` runs at in this server right now, for a
+    status embed or a receipt's quoted wait. A receipt calls it after the job's
+    fee is banked, inside the same transaction, because that fee has just moved
+    the machine's speed - by a fraction of a level every time now, not only when
+    it crosses a threshold."""
+    if machine not in MACHINES:
+        raise ValueError(f"unknown machine {machine!r}")
+    cfg = await db.fetchone(
+        f"SELECT {machine}_level AS level, {machine}_fees_collected AS collected, "
+        f"{machine}_enhancement_level AS enhancement, bonanza_until "
+        f"FROM server_config WHERE guild_id = ?",
+        (guild_id,),
+    )
+    return run_level(cfg)
+
+
+# int() of a sum of per-tick fractions can land a hair under the whole unit it
+# should have reached; same tolerance and same reasoning as cogs/press.py:
+# PROGRESS_EPSILON.
+_PRODUCTION_EPSILON = 1e-9
+
+
+def clock_now() -> datetime:
+    """The clock every tick loop measures elapsed time on - the five machines'
+    and the drills'. UTC, matching the datetime('now') the timestamps it is
+    compared against were written with. The loops hold a reference to it rather
+    than calling it by name so their tests can hand them a clock of their own."""
+    return datetime.now(timezone.utc)
+
+
+def sqlite_timestamp(when: datetime) -> str:
+    """`when` in the layout datetime('now') writes, for a timestamp column that
+    elapsed_work_hours will later read back."""
+    return when.strftime(_SQLITE_TIMESTAMP)
+
+
+def elapsed_work_hours(since: str | None, now: datetime, tick_minutes: float) -> float:
+    """How many hours of work a tick may credit, given `since` - the moment
+    this work was last credited up to, or began, as a datetime('now') string.
+
+    Never more than one tick: that is what bounds a restart, a late tick, or a
+    `since` from before a long outage to what a tick always credited. Never
+    less than zero, for a timestamp written a moment after `now` was read. And
+    a whole tick when `since` is unknown (NULL), which is exactly what a tick
+    credited before anything was timestamped.
+
+    The one rule behind ProductionClock, the press loop and the drill harvest:
+    work is paid for by time that has actually passed since it could start,
+    never by the tick merely arriving."""
+    tick_hours = tick_minutes / 60
+    if since is None:
+        return tick_hours
+    started = datetime.strptime(since, _SQLITE_TIMESTAMP).replace(tzinfo=timezone.utc)
+    return min(tick_hours, max(0.0, (now - started).total_seconds() / 3600))
+
+
+class ProductionClock:
+    """How much work each server's machine has earned since it last worked -
+    the per-guild accumulator the four item-counting machine loops share.
+
+    Work is earned from elapsed time, not counted in ticks, and never from
+    before the work existed. Before this each tick simply credited an hour's
+    rate over the ticks in an hour to whatever job was at the head of the
+    queue, however recently it had been queued - so any machine fast enough to
+    make one unit per tick (a level 3 furnace, which 25 collected fees buys)
+    handed a newly queued job its first unit on the very next tick, seconds
+    after the command if the tick was due, against a receipt that had quoted
+    minutes. And the fraction left over when a queue emptied sat in memory
+    untouched until the next job was queued, however much later, and was spent
+    on it; at level 2 that alone could finish a one-item job on its first tick.
+
+    So, per server:
+
+    * A run of work begins when the queue goes from empty to not. It is
+      detected by the oldest live job having been queued at or after this
+      clock last worked the server - an empty queue was never visited in
+      between, which is exactly the case. A new run starts from nothing: no
+      leftover fraction, and time counted from when its work was queued.
+    * Within a run, time is counted from the last tick.
+    * Either way, no tick earns more than one tick's worth. That bounds what a
+      restart can hand out (this state is in memory, and a restarted bot sees
+      every run as new) and what a late tick can, to what a tick always
+      earned.
+
+    What this deliberately keeps from before: a restart still loses the
+    fraction in flight, under one unit of work, and time the bot was down is
+    not worked. The press persists its own accumulator instead
+    (server_config.press_progress) because one unit of ITS work is days, and
+    applies the same two rules its own way - see cogs/press.py.
+
+    `now` is injectable because the loops are tested a tick at a time, far
+    faster than real time; production passes nothing and gets UTC.
+    """
+
+    def __init__(self, tick_minutes: float, now: Callable[[], datetime] | None = None):
+        self._tick_minutes = tick_minutes
+        self._now = now or clock_now
+        # guild_id -> (fraction of a unit carried, when this clock last worked it)
+        self._state: dict[int, tuple[float, datetime]] = {}
+
+    def now(self) -> datetime:
+        return self._now()
+
+    def earn(self, guild_id: int, rate_per_hour: float, work_started: str, now: datetime) -> int:
+        """The whole units `guild_id`'s machine has earned by `now`, at
+        `rate_per_hour`, given `work_started` (guilds_with_queued_work's column
+        of that name). Whatever fraction is left over carries to the next tick
+        of the same run."""
+        started = datetime.strptime(work_started, _SQLITE_TIMESTAMP).replace(tzinfo=timezone.utc)
+        carry, worked_at = self._state.get(guild_id, (0.0, None))
+        # queued_at is whole seconds, so worked_at is compared at whole seconds
+        # too: a job queued in the same second a tick ran still reads as new.
+        if worked_at is None or started >= worked_at:
+            carry, since = 0.0, work_started
+        else:
+            since = sqlite_timestamp(worked_at)
+        progress = carry + rate_per_hour * elapsed_work_hours(since, now, self._tick_minutes)
+        units = int(progress + _PRODUCTION_EPSILON)
+        self._state[guild_id] = (max(0.0, progress - units), now.replace(microsecond=0))
+        return units
+
+
+async def complete_job(db: _Executor, job_id: int) -> None:
+    """Marks a job finished: its quantity is zeroed, because quantity is what's
+    LEFT to produce, and the row stays as the record that it ran (see
+    COMPLETED_JOB_HISTORY_DAYS). Every machine's loop finishes a job through
+    here, which is also where the once-a-day prune hangs."""
+    await db.execute(
+        "UPDATE production_jobs SET status = 'complete', quantity = 0 WHERE job_id = ?",
+        (job_id,),
+    )
+    await prune_completed_jobs(db)
+
+
+async def advance_job(db: _Executor, job_id: int, remaining: int) -> None:
+    """Records that a job produced part of its quantity this tick and has
+    `remaining` still to go."""
+    await db.execute(
+        "UPDATE production_jobs SET quantity = ?, status = 'in_progress' WHERE job_id = ?",
+        (remaining, job_id),
+    )
+
+
+async def prune_completed_jobs(db: _Executor, now: datetime | None = None) -> None:
+    """Drops finished jobs queued more than COMPLETED_JOB_HISTORY_DAYS ago, at
+    most once a day per process. Called from complete_job rather than from a
+    loop of its own, on the same reasoning the ledger and the job board prune
+    from their write paths: the moment a row is written is when the table is
+    worth trimming, and a loop would be one more thing to keep running.
+
+    Compares queued_at, the only timestamp a job carries - a job queued that
+    long ago and now complete is long past anything that reads it."""
+    global _jobs_last_pruned
+    now = now or datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    if _jobs_last_pruned == today:
+        return
+    _jobs_last_pruned = today
+    cutoff = (now - timedelta(days=COMPLETED_JOB_HISTORY_DAYS)).strftime(_SQLITE_TIMESTAMP)
+    await db.execute(
+        "DELETE FROM production_jobs WHERE status = 'complete' AND queued_at < ?",
+        (cutoff,),
+    )
 
 
 def build_recipe_lines(recipes: dict) -> list[str]:

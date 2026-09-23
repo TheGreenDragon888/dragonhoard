@@ -32,6 +32,8 @@ from utils.embeds import (
     PRESS_COLOR,
     SCRAPPER_COLOR,
     JOBBOARD_COLOR,
+    BET_COLOR,
+    GOVERNMENT_COLOR,
 )
 
 from data.materials import (
@@ -45,6 +47,18 @@ from data.materials import (
     BASE_MINING_SLOTS,
     MINING_SLOT_THRESHOLD_BASE,
     UPGRADE_THRESHOLD_STEP,
+    BONANZA_HOURS,
+    BONANZA_MINIMUM_PRICE,
+    ENHANCEMENT_PRICE_BASE,
+    ENHANCEMENT_PRICE_STEP,
+    MINING_SLOT_ENHANCEMENT_MULTIPLIER,
+)
+from utils.government import (
+    BOND_DENOMINATIONS_CENTS,
+    DEBT_CAP_DAYS,
+    FEE_MULTIPLIERS,
+    MAX_BOND_RATE_PERCENT,
+    VOTER_DRILL_DAYS,
 )
 
 # What one batch of Steel actually costs, for the blast furnace page below.
@@ -77,6 +91,12 @@ class ManualSection:
 
 
 DEFAULT_SECTION = "start"
+
+
+def format_bond(cents: int) -> str:
+    """A bond denomination as the manual quotes it - a whole number of the
+    server's currency, whatever it is called."""
+    return f"{cents // 100:,}"
 
 
 SECTIONS: dict[str, ManualSection] = {}
@@ -156,10 +176,11 @@ _add(ManualSection(
         "through a batch, find a Diamond. `/mine status` shows exactly which gems are left.\n\n"
         f"Every server starts you with **{BASE_MINING_SLOTS} mining slots** - {BASE_MINING_SLOTS} "
         "drills you can have in the ground here at once - and unlocks more as the server "
-        "invests in its machines. Every fee anyone pays to the furnace, blast furnace, "
+        "makes mining slot progress. Every fee anyone pays to the furnace, blast furnace, "
         "factory, press or scrapper counts toward the same total, and so does anything given "
-        f"with `/donate infrastructure`. The first extra slot costs "
-        f"**{MINING_SLOT_THRESHOLD_BASE:,.0f}** in total fees and each one after that costs "
+        "with `/donate infrastructure` and every project the Mayor funds (see `/help "
+        "government`). The first extra slot costs "
+        f"**{MINING_SLOT_THRESHOLD_BASE:,.0f}** in progress and each one after that costs "
         f"{UPGRADE_THRESHOLD_STEP} times the last. `/mine status` shows how far along your "
         "server is. Slots are server-wide: when one unlocks, *everybody* here gets it.\n\n"
         f"Every drill holds **{BASE_STORAGE_CAPACITY}** items by itself, and once it "
@@ -222,6 +243,13 @@ _add(ManualSection(
             "to unlock, then changing is free once a day. Run it with no option to see what "
             "each one does, and whether your focus can feed it.",
         ),
+        ManualCommand(
+            "/affinity", "/affinity [affinity]",
+            "Commits your gemstones to one kind: every other gem you mine arrives as that "
+            "one instead, at better than an even trade. Costs one Diamond to unlock, then "
+            "changing is free once a day and your progress comes with you. Run it with no "
+            "option to see what each gem costs in the others.",
+        ),
     ),
     notes=(
         (
@@ -237,6 +265,14 @@ _add(ManualSection(
             "it you get and in what proportion, so a haul smelts down with less left over. "
             "Pick the one matching what your focus actually mines: Steel wants iron ore, so "
             "it does very little on a Copper & Coal focus.",
+        ),
+        (
+            "Mining Affinity",
+            "The gem tier's version of a focus, and separate again from both of the others. "
+            "45 rubies become a diamond, so the gems you were never going to spend turn "
+            "into the one you were. It only ever changes which gem you get - how many you "
+            "find is the server's pool and nothing here touches it. Part-finished progress "
+            "is remembered and shown on /mine status, /collect and /affinity.",
         ),
         (
             "Gemstones",
@@ -267,8 +303,9 @@ _add(ManualSection(
         f"Every item smelted also burns **{FURNACE_COAL_COST_PER_UNIT} extra coal** as fuel, "
         "on top of whatever its recipe already calls for - so keep coal in reserve, and don't "
         "sell all of it.\n\n"
-        "The furnace levels up as the server pays fees into it, and a higher level smelts "
-        "more per hour for everyone."
+        "Every fee paid into the furnace makes it smelt faster for everyone - not only when "
+        "it levels up. Halfway to its next level, it runs halfway between the two levels' "
+        "speeds."
     ),
     commands=(
         ManualCommand(
@@ -325,7 +362,7 @@ _add(ManualSection(
         f"batch, and your queue limit is a number of batches. Your receipt shows the real "
         f"totals: what came out of your inventory, and how many items are coming back.\n\n"
         f"Like the furnace, it takes the materials and the fee **when you queue the job**, it "
-        f"levels up on the fees paid into it, and it's shared with everyone in the server."
+        f"gets faster with every fee paid into it, and it's shared with everyone in the server."
     ),
     commands=(
         ManualCommand(
@@ -379,7 +416,7 @@ _add(ManualSection(
         "action for a while. Each level costs an Upgrade Pack plus that drill's own tier "
         "material, and the cost doubles with every level, so early levels are cheap and "
         "late ones are a project. Each one adds a fifth of the drill's base speed.\n\n"
-        "The factory levels up on the fees paid into it and crafts faster at higher levels."
+        "The factory crafts faster with every fee paid into it, and levels up as they add up."
     ),
     commands=(
         ManualCommand(
@@ -422,7 +459,8 @@ _add(ManualSection(
         "luck for certainty.\n\n"
         "Press jobs are measured in **press-days**, and they mean it: a press produces one "
         "press-day of work per day for each level it has, so a diamond worth nine press-days "
-        "takes a level 1 press nine real days and a level 3 press three. Queue it and forget "
+        "takes a level 1 press nine real days and a level 3 press three - and every fee paid "
+        "toward its next level shaves a little more off. Queue it and forget "
         "about it. The fee is charged per press-day rather than per item, which is why "
         "pressing is the most expensive thing you can queue.\n\n"
         "A press earns nothing while it sits idle, so on a busy server it's worth keeping "
@@ -459,8 +497,14 @@ _add(ManualSection(
     body=(
         "Every server has its own currency with its own name and emoji, set by its admins. "
         "Currency is not shared between servers - what you earn here stays here.\n\n"
-        "The server itself is who you trade with. It keeps its own warehouse of materials, "
-        "buys from you, and sells back to you at a markup.\n\n"
+        "The server is one of the people you trade with, not the only one. It keeps its own "
+        "warehouse, buys from you, and sells back at a markup - and you can trade with "
+        "everyone else here too, through `/market list` and `/market order`. Buying and "
+        "selling take the better deal automatically.\n\n"
+        "**A player price has to beat the server's.** A listing must undercut what the "
+        "server charges and a bid must beat what it pays, or it's an offer nobody has a "
+        "reason to take. Things the server doesn't trade - gemstones, components, "
+        "containers, drills - have no such limit.\n\n"
         "**Selling is the only way currency comes into existence.** There's no payout for "
         "chatting and no daily handout - if you want money, you mine and you sell. Money "
         "leaves again through the fees you pay to the machines you use, and when "
@@ -471,35 +515,80 @@ _add(ManualSection(
         "Buying back always costs exactly double what selling paid, which is where the "
         "server makes its margin.\n\n"
         "You can move up to **1,000,000** at a time in either direction.\n\n"
-        "**Gemstones can't be traded.** Rubies, obsidian and diamonds are worth so much more "
-        "than anything else that a single sale used to be worth more than a whole server "
-        "could earn playing the game. They're crafting materials now, and only that - what a "
-        "gem is worth is what you build with it."
+        "**Gemstones can't be sold to the server.** Rubies, obsidian and diamonds are worth "
+        "so much more than anything else that one sale used to be worth more than a whole "
+        "server could earn. The server won't touch them - but other players will.\n\n"
+        "**Exotic Matter can never be traded at all.** Not to the server, not to another "
+        "player, not for any price. It accrues and it stays yours - it's being held back "
+        "for something that hasn't been built yet."
     ),
     commands=(
         ManualCommand(
-            "/market sell", "/market sell <material> <quantity>",
-            "Sells ores and smelted materials from your inventory to the server. This is how "
-            "you earn. Gemstones aren't accepted.",
+            "/market sell", "/market sell <item> <quantity>",
+            "Sells out of your inventory, to whichever player bid highest for it and then "
+            "to the server. This is how you earn. The list only shows what you actually "
+            "hold AND somebody here will buy - so if something you own isn't on it, "
+            "nobody is currently buying it and `/market list` is how you find someone.",
         ),
         ManualCommand(
-            "/market buy", "/market buy <material> <quantity>",
-            "Buys materials back out of the server's own stock. You can only buy what it "
-            "actually has on hand.",
+            "/market buy", "/market buy <item> [quantity]",
+            "Buys from the cheapest source going - player listings first, since they have "
+            "to undercut the server, then the server's own stock. The list shows only "
+            "what's genuinely for sale right now, how much of it there is and what the "
+            "best price is, including individual drills somebody has put up.",
+        ),
+        ManualCommand(
+            "/market list", "/market list <item> <price> [quantity]",
+            "Puts something of yours up for sale to the rest of the server at a price you "
+            "set. Anything you own works - ore, gemstones, components, containers, even a "
+            "specific drill with its level and container intact. What you list is held "
+            "aside until somebody buys it or you take it back, so it leaves your inventory "
+            "straight away.",
+        ),
+        ManualCommand(
+            "/market order", "/market order <item> <quantity> <price>",
+            "Puts up a standing offer to BUY something, at your price, from whoever wants "
+            "to fill it. The money is held aside the moment you place it, so the order can "
+            "always pay out - you get it back in full if you withdraw.",
+        ),
+        ManualCommand(
+            "/market entries", "/market entries",
+            "Everything you personally have on the market - what you're selling, what "
+            "you're bidding for, and how much of your balance those bids are holding. "
+            "Each one carries the number `/market cancel` takes.",
+        ),
+        ManualCommand(
+            "/market cancel", "/market cancel <id>",
+            "Takes back one of your own listings or orders and returns whatever it was "
+            "holding - the goods, or the money. The number comes from the receipt you got "
+            "when you made it, and `/market entries` lists it too.",
         ),
         ManualCommand(
             "/market status", "/market status",
             "Shows what the server will pay, what it charges, and how much of each material "
-            "it's holding. The prices don't change, so this is really a stock list - what "
-            "the server has is what you can buy back.",
+            "it's holding - plus what the players are selling and bidding for, with the "
+            "best price on each and how much is behind it. For your own entries, see "
+            "`/market entries`.",
+        ),
+        ManualCommand(
+            "/economy status", "/economy status",
+            "The whole server's economy on one page: the wealth its players hold, its mining "
+            "slot progress, what it produced this week, what's queued, and today's job. "
+            "Read-only - it costs nothing to look.",
+        ),
+        ManualCommand(
+            "/economy gdp", "/economy gdp",
+            "What the server actually produced, in detail: the last 24 hours and the last 7 "
+            "days, which stage of production added the value, and whether its machines ran "
+            "on more than it dug up here.",
         ),
         ManualCommand(
             "/donate infrastructure", "/donate infrastructure <machine> <amount>",
             "Pays your own currency into one of the server's machines. It counts exactly "
-            "like a fee, so it levels the machine up for everyone - the only way to push a "
+            "like a fee, so it speeds the machine up for everyone - the only way to push a "
             "machine along deliberately instead of waiting for use to do it. It also counts "
-            "toward the server's mining slots, which every machine's fees feed into "
-            "together, so a donation buys progress on two ladders at once.",
+            "toward the progress that unlocks mining slots, which every machine feeds together, "
+            "so a donation buys progress on two ladders at once.",
         ),
         ManualCommand(
             "/donate player", "/donate player <member> <amount>",
@@ -515,6 +604,20 @@ _add(ManualSection(
             "another player is the one exception - that money just changes hands. A server "
             "that mints far more than it burns ends up with money that doesn't buy much, "
             "which is what the fees are quietly there to prevent.",
+        ),
+        (
+            "What server GDP means",
+            "`/economy gdp` reports what this server **produced**, which is a different thing "
+            "from how much money it has. Mining counts what you dug out of this server's "
+            "pool; smelting counts what the bars are worth **minus** the ore and coal they "
+            "ate, so nothing is counted twice.\n\n"
+            "It's credited to the server the work happened in, not the one you typed the "
+            "command in - so if you mine here and smelt somewhere else, each server gets "
+            "its own half. Gemstones are left out entirely: one Diamond is worth more than "
+            "a month of everyone's mining, and a number that swings that far isn't telling "
+            "you anything.\n\n"
+            "It counts from when this was added, so a long-running server starts at nothing "
+            "like everyone else - none of it was written down before.",
         ),
     ),
 ))
@@ -644,9 +747,9 @@ _add(ManualSection(
         "you mean to keep. And **you never lose a gemstone to it**: the scrapper always returns "
         "at least one of a recipe's most valuable part, so a Ruby Container gives its ruby "
         "back.\n\n"
-        "Like the other machines it takes a fee, works through a queue, and levels up on the "
-        "fees it collects - a level 1 scrapper gets through 2 items an hour, a level 2 gets "
-        "through 4."
+        "Like the other machines it takes a fee, works through a queue, and gets faster on "
+        "the fees it collects - a level 1 scrapper gets through 2 items an hour, a level 2 "
+        "gets through 4, and one halfway between the two gets through 3."
     ),
     commands=(
         ManualCommand(
@@ -679,6 +782,144 @@ _add(ManualSection(
 ))
 
 
+
+_add(ManualSection(
+    key="betting",
+    label="Bets",
+    emoji="🎲",
+    color=BET_COLOR,
+    summary="Bet the server's currency on what happens next",
+    body=(
+        "Anyone can propose something that might happen - `/bet open` - and stake their own "
+        "currency saying it will. Everyone else can back them or take the other side. When "
+        "the time comes, a server admin says which way it went and the whole pot is split "
+        "between the people who were right.\n\n"
+        "**Your winnings depend on the odds, and the odds are just who bet what.** All the "
+        "money staked goes into one pot. If the winning side put in a tenth of that pot, "
+        "everyone on it gets ten times what they staked back - their own money plus the "
+        "money that was bet against them. If the winning side was the crowded one, the "
+        "payout is small, because there was less to win.\n\n"
+        "**Nothing is created and nothing is taken.** The pot pays out exactly what went "
+        "into it - there's no house cut and the bot keeps nothing. Every unit somebody wins "
+        "is a unit somebody else lost.\n\n"
+        "Your stake leaves your balance the moment you place it and is held until the bet "
+        "settles, so you can't stake money and spend it too. **You pick a side once** - you "
+        "can add more to it later, but you can't switch sides or back out.\n\n"
+        "You'll see new bets on your next command, with buttons to take either side. "
+        "`/bet status` shows you everything running here whenever you want it."
+    ),
+    commands=(
+        ManualCommand(
+            "/bet open", "/bet open <prediction> <amount> <closes_in>",
+            "Proposes something and stakes that it happens. `closes_in` is how many hours "
+            "people have to join in.",
+        ),
+        ManualCommand(
+            "/bet place", "/bet place <bet> <side> <amount>",
+            "Backs a bet or takes the other side. The buttons do the same thing.",
+        ),
+        ManualCommand(
+            "/bet status", "/bet status [bet]",
+            "One bet's pools and odds, or a list of everything running here.",
+        ),
+        ManualCommand(
+            "/bet resolve", "/bet resolve <bet> <outcome>",
+            "Says which way it went and pays the pot out. Needs Manage Server.",
+        ),
+        ManualCommand(
+            "/bet cancel", "/bet cancel <bet>",
+            "Calls the whole thing off and hands every stake back. Needs Manage Server.",
+        ),
+    ),
+    notes=(
+        (
+            "If nobody takes the other side",
+            "A bet only pays out if somebody was on the winning side. If an admin resolves a "
+            "bet the way nobody backed, there's nothing to pay and no honest way to keep the "
+            "losing stakes - so the bet is voided and everyone gets their own money back. The "
+            "same happens if it's cancelled.",
+        ),
+        (
+            "Odds move until the bet closes",
+            "The multiple you see is what the bet pays **right now**. Every wager after yours "
+            "changes it - money arriving on your side shares the pot more ways, money arriving "
+            "against you makes the pot bigger. What's locked in is your stake and your side, "
+            "never the odds you saw when you placed it.",
+        ),
+    ),
+))
+
+_add(ManualSection(
+    key="government",
+    label="Government",
+    emoji="🏛️",
+    color=GOVERNMENT_COLOR,
+    summary="Elect a Mayor and a Treasurer, lend the server money, fund big projects",
+    body=(
+        "Every server elects a **Mayor** and a **Treasurer** each week, and nobody can hold "
+        "both. Admins have no say in any of it.\n\n"
+        "**Voting is on Thursdays** (the job board's clock), and the votes are counted at "
+        "midnight. You can't vote for yourself, and to vote at all you need a drill that has "
+        f"been placed in this server for at least {VOTER_DRILL_DAYS} days - or one that was "
+        "already in the ground when elections arrived. Vote again and only "
+        "your latest counts. An office nobody votes on keeps its holder, so a Mayor stays "
+        "Mayor until somebody votes for somebody else. The Mayor is decided first; if the "
+        "Treasurer ballot's winner just became Mayor, the next one down gets it.\n\n"
+        "**The Treasurer sets the money.** Each machine's fee is its default times "
+        + ", ".join(f"x{m:g}" for m in FEE_MULTIPLIERS) + ", and a **tax** of 0-100% of every "
+        "fee goes to the government instead of being destroyed. Each setting can change once "
+        "a day.\n\n"
+        "**The Mayor spends it.** Tax lands in the treasury, and the Mayor spends it on "
+        "projects: funding a machine's level, an **Infrastructure Enhancement** (doubles one "
+        f"machine's speed on top of its level - {ENHANCEMENT_PRICE_BASE:,.0f} for the first, "
+        f"{ENHANCEMENT_PRICE_STEP} times as much for each after), a **Mining Slot "
+        f"Enhancement** (every 1 spent counts {MINING_SLOT_ENHANCEMENT_MULTIPLIER} toward the "
+        f"next mining slot), or a **Server Bonanza** ({BONANZA_HOURS} hours of double-speed "
+        "drills and machines, priced at half the server's weekly GDP and never under "
+        f"{BONANZA_MINIMUM_PRICE:,.0f}). Every project spend is destroyed, just as the fee "
+        "would have been - and it all counts toward mining slots."
+    ),
+    commands=(
+        ManualCommand("/government status", "/government status",
+                      "Who holds office, the fees and tax, the treasury and the debt, and what "
+                      "each project costs right now."),
+        ManualCommand("/vote mayor", "/vote mayor <member>", "Votes for a Mayor. Thursdays only."),
+        ManualCommand("/vote treasurer", "/vote treasurer <member>", "Votes for a Treasurer. Thursdays only."),
+        ManualCommand("/treasurer fee", "/treasurer fee <machine> <multiplier>",
+                      "Sets one machine's fee as a multiple of its default. Treasurer only."),
+        ManualCommand("/treasurer tax", "/treasurer tax <percent>",
+                      "Sets the tax on every machine fee. Treasurer only. It can't drop below the "
+                      "rate bonds were last sold at while the server owes on them."),
+        ManualCommand("/treasurer bondrate", "/treasurer bondrate <percent>",
+                      f"Sets the premium new bonds repay, 0-{MAX_BOND_RATE_PERCENT}%. Treasurer only."),
+        ManualCommand("/mayor fund", "/mayor fund <machine> <amount>",
+                      "Pays treasury money into a machine's level, like `/donate infrastructure`. "
+                      "Mayor only."),
+        ManualCommand("/mayor enhance", "/mayor enhance <machine>",
+                      "Buys a machine an Infrastructure Enhancement. Mayor only."),
+        ManualCommand("/mayor slots", "/mayor slots <amount>",
+                      "Spends treasury money on a Mining Slot Enhancement. Mayor only."),
+        ManualCommand("/mayor bonanza", "/mayor bonanza", "Starts a Server Bonanza. Mayor only."),
+        ManualCommand("/mayor bonds", "/mayor bonds <amount>",
+                      "Puts bonds up for sale, or withdraws the sale with 0. Mayor only."),
+        ManualCommand("/bonds buy", "/bonds buy <denomination>",
+                      "Lends the server currency from the Mayor's bond sale."),
+        ManualCommand("/bonds holdings", "/bonds holdings", "What the server still owes you."),
+    ),
+    notes=(
+        (
+            "Bonds",
+            "A bond lends the server money now and is repaid out of tax: "
+            + ", ".join(format_bond(c) for c in BOND_DENOMINATIONS_CENTS) + ", plus the "
+            "Treasurer's premium, fixed when you buy. While the server owes anything, **all** "
+            "of its tax repays bondholders - every hour, split in proportion to what each is "
+            f"still owed. The server can't owe more than its last {DEBT_CAP_DAYS} days of tax. "
+            "Leave the server and your bonds are frozen, not lost: they pick up again when you "
+            "come back.",
+        ),
+    ),
+))
+
 _add(ManualSection(
     key="setup",
     label="Server Setup",
@@ -690,10 +931,9 @@ _add(ManualSection(
         "everyone can see how their server is configured, but only admins can change "
         "anything.\n\n"
         "Each server is configured on its own: its currency has whatever name and emoji its "
-        "admins chose, and the fees and queue limits on its machines are set locally too. "
-        "Machines level up on the fees they collect, so a server that charges nothing has "
-        "machines that never improve, and one that charges too much prices its players out - "
-        "the fee is the main dial an admin has.\n\n"
+        "admins chose, and the queue limits on its machines are set locally too. What the "
+        "machines **charge** isn't an admin setting: the Treasurer your server elects sets "
+        "it (`/help government`).\n\n"
         "Replies from the bot are private by default so it stays out of the way. A server "
         "with a dedicated bot channel may prefer to make them public.\n\n"
         "Dragonhoard answers in every channel unless an admin points it at one with "
@@ -715,12 +955,6 @@ _add(ManualSection(
             "/setup channel", "/setup channel [channel]",
             "Restricts the bot to one channel, and to threads inside it. Leave the channel "
             "blank to lift the restriction and allow every channel again.",
-        ),
-        ManualCommand(
-            "/setup fee", "/setup fee <infrastructure> <amount>",
-            "Sets what one of the server's machines charges. Per item produced - except the "
-            "press, which charges per press-day, and the blast furnace, which charges per "
-            f"batch of {BLAST_FURNACE_BATCH_SIZE}.",
         ),
         ManualCommand(
             "/setup max_queue", "/setup max_queue <infrastructure> <amount>",

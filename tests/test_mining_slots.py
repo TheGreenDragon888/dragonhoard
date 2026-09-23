@@ -120,7 +120,7 @@ class MiningSlotStatusTestCase(unittest.IsolatedAsyncioTestCase):
         slots = await mining_slot_status(self.db, GUILD)
         self.assertEqual(slots.level, 1)
         self.assertEqual(slots.slots, BASE_MINING_SLOTS)
-        self.assertEqual(slots.invested, 0.0)
+        self.assertEqual(slots.progress, 0.0)
         self.assertEqual(slots.next_threshold, MINING_SLOT_THRESHOLD_BASE)
 
     async def test_a_guild_with_no_row_is_level_one_rather_than_an_error(self):
@@ -135,7 +135,7 @@ class MiningSlotStatusTestCase(unittest.IsolatedAsyncioTestCase):
         await self.set_fees(**{machine: share for machine in MACHINES})
 
         slots = await mining_slot_status(self.db, GUILD)
-        self.assertAlmostEqual(slots.invested, MINING_SLOT_THRESHOLD_BASE)
+        self.assertAlmostEqual(slots.progress, MINING_SLOT_THRESHOLD_BASE)
         self.assertEqual(slots.level, 2)
         self.assertEqual(slots.slots, BASE_MINING_SLOTS + 1)
 
@@ -260,7 +260,7 @@ class MiningSlotsFullMessageTests(unittest.IsolatedAsyncioTestCase):
         message = mining_slots_full_message(slots, None)
         self.assertIn(str(BASE_MINING_SLOTS), message)
         self.assertIn("25.00", message)
-        self.assertIn("infrastructure fees", message)
+        self.assertIn("mining slot progress", message)
 
 
 class _FakeResponse:

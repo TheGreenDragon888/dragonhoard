@@ -15,8 +15,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from data.materials import (
+    apply_mining_efficiency,
+    apply_mining_focus,
+    apply_mining_affinity,
+)
 from database.db import Database
+from utils.db_helpers import ensure_user_row
 from utils.drills import DrillScope, drill_choices, is_local_drill, retract_drill
+from utils.mining_efficiency import set_efficiency
+from utils.mining_focus import set_focus
+from utils.mining_affinity import set_affinity
 
 OWNER = 4242
 STRANGER = 9999
@@ -214,3 +223,85 @@ class DrillScopeTests(DrillTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RetractionAppliesMiningEnhancementsTests(DrillTestCase):
+    """Pulling a drill early IS a collection, so it has to run the same three
+    haul transforms /collect does, in the same order.
+
+    Two of them are applied so the path can't be used to DODGE something the
+    player committed to; the efficiency is applied so it can't be used to
+    FORFEIT something the player paid an obsidian for. This path applied the
+    focus from the start and gained the other two later, so what these pin is
+    that nobody drops one again.
+    """
+
+    async def holding(self, **contents):
+        row = await self.add_drill(stored_amount=sum(contents.values()))
+        for material_id, quantity in contents.items():
+            await self.db.execute(
+                "INSERT INTO drill_contents (drill_id, material_id, quantity) VALUES (?, ?, ?)",
+                (row["drill_id"], material_id, quantity),
+            )
+        await ensure_user_row(self.db, OWNER)
+        return await self.drill(row["drill_id"])
+
+    async def retract(self, row):
+        async with self.db.transaction() as tx:
+            return await retract_drill(tx, row)
+
+    async def test_an_efficiency_is_applied_rather_than_forfeited(self):
+        async with self.db.transaction() as tx:
+            await ensure_user_row(tx, OWNER)
+            await set_efficiency(tx, OWNER, "iron", "2026-09-21")
+
+        haul = {"iron_ore": 100, "coal": 10}
+        row = await self.holding(**haul)
+        breakdown = await self.retract(row)
+
+        # Pinned against the balance function rather than against numbers of
+        # its own, so retuning the boost moves tests/test_mining_efficiency.py
+        # and leaves this one asserting what it is actually about: that the
+        # boost ran at all.
+        expected, _ = apply_mining_efficiency("iron", haul)
+        self.assertEqual(breakdown, expected)
+        self.assertGreater(sum(breakdown.values()), sum(haul.values()))
+
+    async def test_a_focus_is_applied_rather_than_dodged(self):
+        async with self.db.transaction() as tx:
+            await ensure_user_row(tx, OWNER)
+            await set_focus(tx, OWNER, "coal", "2026-09-21")
+
+        row = await self.holding(iron_ore=100)
+        breakdown = await self.retract(row)
+        self.assertNotIn("iron_ore", breakdown)
+
+    async def test_a_affinity_is_applied_rather_than_dodged(self):
+        async with self.db.transaction() as tx:
+            await ensure_user_row(tx, OWNER)
+            await set_affinity(tx, OWNER, "diamond", "2026-09-21")
+
+        row = await self.holding(ruby=45)
+        breakdown = await self.retract(row)
+        self.assertEqual(breakdown, {"diamond": 1})
+
+    async def test_all_three_run_together_and_in_collects_order(self):
+        async with self.db.transaction() as tx:
+            await ensure_user_row(tx, OWNER)
+            await set_focus(tx, OWNER, "iron", "2026-09-21")
+            await set_efficiency(tx, OWNER, "iron", "2026-09-21")
+            await set_affinity(tx, OWNER, "diamond", "2026-09-21")
+
+        haul = {"iron_ore": 60, "copper_ore": 40, "coal": 10, "ruby": 45}
+        row = await self.holding(**haul)
+        breakdown = await self.retract(row)
+
+        expected, _ = apply_mining_focus("iron", haul)
+        expected, _ = apply_mining_efficiency("iron", expected)
+        expected, _ = apply_mining_affinity("diamond", expected)
+        self.assertEqual(breakdown, expected)
+
+    async def test_a_player_with_none_of_them_gets_their_haul_untouched(self):
+        haul = {"iron_ore": 100, "coal": 10, "ruby": 3}
+        row = await self.holding(**haul)
+        self.assertEqual(await self.retract(row), haul)

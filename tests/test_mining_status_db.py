@@ -17,8 +17,12 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 from cogs.mining import MiningCog
+from data.materials import MINING_FOCUSES
 from database.db import Database
 from utils.db_helpers import ensure_server_row, ensure_user_row
+from utils.mining_efficiency import set_efficiency
+from utils.mining_focus import set_focus
+from utils.mining_affinity import convert_gems, set_affinity
 
 GUILD = 7171
 USER = 6161
@@ -34,7 +38,7 @@ class FakeUser:
 class FakeInteraction:
     def __init__(self, guild_id, user_id):
         self.guild_id = guild_id
-        self.guild = None  # skips human_member_count, unused by mine_status's speed line
+        self.guild = None  # mine_status reads nothing off the guild object
         self.user = FakeUser(user_id)
         self.response = AsyncMock()
 
@@ -132,3 +136,67 @@ class MineStatusDrillStorageTests(MineStatusTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MineStatusEnhancementsTests(MineStatusTestCase):
+    """The "Mining Enhancements" field, which replaced 1.3.1's "Your Mining
+    Focus".
+
+    The rule that field exists to hold: it lists what a player has PAID FOR
+    and nothing else. Every one of the three defaults reads identically to
+    never having bought the feature (get_focus and friends return the default
+    for a missing row), so listing unbought ones would fill the embed with
+    rows of "None" advertising features the player can't reach - and there is
+    no way for the field to tell those two states apart other than `unlocked`.
+    """
+
+    async def unlock_focus(self, focus_id="iron"):
+        async with self.db.transaction() as tx:
+            await set_focus(tx, USER, focus_id, "2026-09-20")
+
+    async def unlock_efficiency(self, efficiency_id="steel"):
+        async with self.db.transaction() as tx:
+            await set_efficiency(tx, USER, efficiency_id, "2026-09-20")
+
+    async def unlock_affinity(self, affinity_id="diamond"):
+        async with self.db.transaction() as tx:
+            await set_affinity(tx, USER, affinity_id, "2026-09-20")
+
+    async def test_a_player_who_has_bought_nothing_gets_no_field(self):
+        await self.add_drill(USER)
+        self.assertIsNone(await self.field("Mining Enhancements"))
+
+    async def test_it_lists_only_what_has_been_unlocked(self):
+        await self.unlock_focus()
+        field = await self.field("Mining Enhancements")
+        self.assertIn("Focus", field)
+        self.assertNotIn("Efficiency", field)
+        self.assertNotIn("Affinity", field)
+
+    async def test_it_lists_all_three_once_all_three_are_unlocked(self):
+        await self.unlock_focus()
+        await self.unlock_efficiency()
+        await self.unlock_affinity()
+        field = await self.field("Mining Enhancements")
+        for label in ("Focus", "Efficiency", "Affinity"):
+            self.assertIn(label, field)
+
+    async def test_the_chosen_option_is_named_not_just_the_feature(self):
+        await self.unlock_focus("copper")
+        field = await self.field("Mining Enhancements")
+        self.assertIn(MINING_FOCUSES["copper"]["name"], field)
+
+    async def test_affinity_progress_rides_along_with_the_affinity_line(self):
+        await self.unlock_affinity("diamond")
+        async with self.db.transaction() as tx:
+            await convert_gems(tx, USER, {"ruby": 44})
+        field = await self.field("Mining Enhancements")
+        # 44 of the 45 rubies a diamond takes, as a percentage - the unit a
+        # mixed haul can be quoted in honestly.
+        self.assertIn("97%", field)
+
+    async def test_a_affinity_with_nothing_accrued_shows_no_progress_line(self):
+        await self.unlock_affinity("diamond")
+        field = await self.field("Mining Enhancements")
+        self.assertIn("Affinity", field)
+        self.assertNotIn("toward", field)

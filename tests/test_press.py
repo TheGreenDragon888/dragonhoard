@@ -5,6 +5,7 @@ levels. Pure arithmetic over data/materials.py - no database, no discord.py.
 import unittest
 
 from data.materials import (
+    PERMANENT_MATERIALS,
     ALL_MATERIALS,
     PRESS_MATERIALS,
     PRESS_RECIPES,
@@ -117,12 +118,21 @@ class PressRecipeTests(unittest.TestCase):
         self.assertGreater(raw_input_cost("ultra_dense_matter"), 0.0)
 
     def test_ultra_dense_matter_is_not_tradeable(self):
-        # docs/market.md section 3: crafted and finished goods never trade.
-        from cogs.economy import TRADEABLE_MATERIALS
+        """Not by the server, and not by another player either.
+
+        This used to cite docs/market.md section 3 - "crafted and finished
+        goods never trade" - and that is no longer the reason. As of 1.4
+        players DO trade finished goods with each other, so Exotic Matter is a
+        genuine exception rather than an instance of a general rule: it accrues
+        and is never disposed of (data/materials.py: PERMANENT_MATERIALS).
+        """
+        from cogs.economy import ORDERABLE_MATERIALS, TRADEABLE_MATERIALS
 
         for material_id in PRESS_MATERIALS:
             self.assertNotIn(material_id, TRADEABLE_MATERIALS)
+            self.assertNotIn(material_id, ORDERABLE_MATERIALS)
             self.assertNotIn("market_price", ALL_MATERIALS[material_id])
+            self.assertIn(material_id, PERMANENT_MATERIALS)
 
     def test_pressed_gems_are_ordinary_raw_materials(self):
         # The press outputs the same rubies mining does - no synthetic twin.

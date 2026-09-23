@@ -92,21 +92,21 @@
     const serverTable = `
       <div class="table-wrap">
         <table class="dho">
-          <thead><tr><th>Server</th><th>Players</th><th>Drills</th><th>Pool</th><th>Invested</th><th>Slots</th><th>Minted</th><th>Burned</th><th>In hand</th><th>Burn</th></tr></thead>
+          <thead><tr><th>Server</th><th>Players</th><th>Drills</th><th>Pool</th><th>Slot progress</th><th>Slots</th><th>Minted</th><th>Burned</th><th>In hand</th><th>Burn</th></tr></thead>
           <tbody>
           ${o.serverRows.map((s) => `
             <tr class="clickable" data-view="servers" data-guild="${esc(s.guild_id)}">
               <td>${esc(s.name)} <span style="font-size:12px;color:var(--text-subtle)">${esc(s.currency)}</span></td>
               <td>${esc(s.players)}</td><td>${esc(s.drills)}</td>
               <td style="color:${s.poolColor}">${esc(s.pool)}</td>
-              <td>${esc(s.invested)}</td><td>${esc(s.slots)}</td>
+              <td>${esc(s.fees)}</td><td>${esc(s.slots)}</td>
               <td>${esc(s.minted)}</td><td>${esc(s.burned)}</td>
               <td style="color:var(--text-primary)">${esc(s.circulating)}</td>
               <td style="color:${s.burnColor}">${esc(s.burnPct)}</td>
             </tr>`).join('')}
           </tbody>
         </table>
-        <div class="table-note">Currency columns are each server's own currency. Invested is lifetime fees across all five machines — what buys mining slots.</div>
+        <div class="table-note">Currency columns are each server's own currency. Slot progress is lifetime fees across all five machines plus what the server government has bought toward slots — what buys mining slots.</div>
       </div>`;
 
     const machineTable = `
@@ -267,7 +267,7 @@
 
           <div class="grid-4">
             <div class="card"><div class="stat-label">Minted</div><div class="stat-value xs">${esc(s.minted)}</div><div class="stat-sub" style="font-size:12px">Market buying from players, plus job board</div></div>
-            <div class="card"><div class="stat-label">Burned</div><div class="stat-value xs">${esc(s.burned)}</div><div class="stat-sub" style="font-size:12px">Fees, donations, market resales</div></div>
+            <div class="card"><div class="stat-label">Burned</div><div class="stat-value xs">${esc(s.burned)}</div><div class="stat-sub" style="font-size:12px">Fees, donations, government projects, market resales</div></div>
             <div class="card"><div class="stat-label">In circulation</div><div class="stat-value xs">${esc(s.circulating)}</div><div class="stat-sub" style="font-size:12px">${esc(s.reconcile)}</div></div>
             <div class="card"><div class="stat-label">Burn ratio</div><div class="stat-value xs">${esc(s.burnPct)}</div><div class="stat-sub" style="font-size:12px">${esc(s.burnNote)}</div></div>
           </div>
@@ -279,6 +279,14 @@
               ${machines}
             </div>
             <div style="display:flex;flex-direction:column;gap:24px">
+              <div class="card">
+                <div class="stat-label">Production (GDP)</div>
+                <div style="display:flex;flex-direction:column;gap:12px;margin-top:6px">
+                  <div class="kv-row"><span>Last 24h</span><span>${esc(s.gdp.day)}</span></div>
+                  <div class="kv-row"><span>Last 7d</span><span>${esc(s.gdp.week)}</span></div>
+                </div>
+                <div class="stat-sub" style="margin-top:10px">${esc(s.gdp.note)}. Value added by mining and smelting; gemstones excluded.</div>
+              </div>
               <div class="card">
                 <div class="stat-label">Mining slots</div>
                 <div style="display:flex;align-items:baseline;gap:10px"><span style="font-family:var(--font-display);font-size:34px;font-weight:800;color:var(--text-primary)">${esc(s.slots)}</span><span style="font-size:14px">drills per player</span></div>

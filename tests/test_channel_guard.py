@@ -60,7 +60,7 @@ class ExemptionTests(unittest.TestCase):
 
     def test_the_exempt_names_are_real_top_level_command_names(self):
         """interaction_check matches against interaction.data["name"], which is
-        the TOP-LEVEL name even for a subcommand - so /setup fee is matched by
+        the TOP-LEVEL name even for a subcommand - so /setup currency is matched by
         "setup". A typo here would silently exempt nothing."""
         registered = {command.name for command in SetupCog.__cog_app_commands__}
         self.assertIn("setup", registered)

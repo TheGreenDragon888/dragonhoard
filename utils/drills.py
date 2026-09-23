@@ -29,10 +29,14 @@ from data.materials import (
     effective_capacity,
     effective_rate,
     get_material_info,
+    material_name,
     roll_raw_material,
 )
 from utils.db_helpers import ensure_user_row, adjust_user_quantity
 from utils.mining_focus import convert_haul
+from utils.mining_efficiency import boost_haul
+from utils.mining_affinity import convert_gems
+from utils.production_ledger import record_mined
 
 log = logging.getLogger("dragonhoard")
 
@@ -92,6 +96,46 @@ def drill_short_label(drill_row) -> str:
     return f"{drill_name(drill_row)} Lv.{drill_row['level']}"
 
 
+# What a drill being unavailable is CALLED, per column that can make it so.
+# The order is the order a player would want to hear about: a lock is temporary
+# and resolves on its own, a listing is something they chose and can undo.
+_UNAVAILABLE_REASONS = (
+    ("locked_job_id", "upgrading"),
+    ("listed_id", "listed"),
+)
+
+
+def drill_unavailable_reason(drill_row) -> str | None:
+    """Why this drill can't be acted on right now - "upgrading" while a job
+    holds it, "listed" while it's on the player market - or None if it's free.
+
+    ONE function rather than a condition per command, for the reason
+    bank_infrastructure_fee is one function: the rule had been spelled out at
+    six call sites (cogs/mining.py's place, retract, attach and detach,
+    cogs/factory.py's upgrade, cogs/scrapper.py's drill) plus two SQL filters,
+    and 1.4 was about to make that eight places to remember a second column in.
+    A drill that can be placed out from under its own listing is the bug this
+    prevents, and it would only show up on whichever command got forgotten.
+
+    Returns the WORD, not a boolean, so the caller's rejection can name what is
+    actually happening - "that drill is listed" and "that drill is upgrading"
+    send a player to two different places to fix it.
+    """
+    for column, reason in _UNAVAILABLE_REASONS:
+        if drill_row[column] is not None:
+            return reason
+    return None
+
+
+# The SQL half of the same rule, for queries that filter rather than inspect.
+# Kept beside it so the two cannot drift: a column added to
+# _UNAVAILABLE_REASONS has to appear here too, and this is the only place that
+# is true of.
+DRILL_AVAILABLE_SQL = " AND ".join(
+    f"{column} IS NULL" for column, _ in _UNAVAILABLE_REASONS
+)
+
+
 def drill_label(drill_row, location: str | None = None, *, with_emoji: bool = False) -> str:
     """One line describing a drill: which one it is, how far it's been
     upgraded, what it's carrying and where it lives. `location` is the server
@@ -113,13 +157,40 @@ def drill_label(drill_row, location: str | None = None, *, with_emoji: bool = Fa
         if location:
             parts.append(location)
 
-    if drill_row["locked_job_id"] is not None:
-        parts.append("upgrading")
+    unavailable = drill_unavailable_reason(drill_row)
+    if unavailable is not None:
+        parts.append(unavailable)
 
     label = " · ".join(parts)
     if with_emoji:
         label = f"{drill_emoji(drill_row)} {label}"
     return label[:_MAX_CHOICE_NAME]
+
+
+def drill_unavailable_message(drill_row, action: str) -> str | None:
+    """The rejection a command should send when it can't act on this drill, or
+    None when it can. `action` is what the caller was trying to do, as a verb
+    phrase that fits both sentences below ("place it", "fit the container").
+
+    The wording lives here rather than at each command for the same reason
+    drill_unavailable_reason does: there are two ways a drill can be busy and
+    six commands that have to say so, and the pairing is what would rot.
+
+    Note "a machine" rather than "the factory", which is what five of these
+    six call sites used to say. locked_job_id is set by a /factory upgrade AND
+    by a /scrapper drill (cogs/scrapper.py), so naming the factory was already
+    wrong for half the drills it described.
+    """
+    reason = drill_unavailable_reason(drill_row)
+    if reason is None:
+        return None
+    label = drill_label(drill_row)
+    if reason == "listed":
+        return (
+            f"**{label}** is listed on the player market - cancel it with "
+            f"`/market cancel` before you {action}."
+        )
+    return f"**{label}** is busy at a machine - {action} once that finishes."
 
 
 async def fetch_drill(db: Database, drill_id: int, owner_id: int):
@@ -167,12 +238,18 @@ async def drill_choices(
     *,
     scope: DrillScope = DrillScope.ANY,
     guild_id: int | None = None,
-    exclude_locked: bool = True,
+    exclude_unavailable: bool = True,
     require_container: bool = False,
-    guild_names: dict[int, str] | None = None,
+    bot=None,
 ) -> list[app_commands.Choice[int]]:
     """Builds the drill list for an autocomplete callback, restricted to
-    `scope` (see DrillScope)."""
+    `scope` (see DrillScope).
+
+    Pass `bot` and each placed drill's label says which server it is in. The
+    names are looked up from the rows this function fetches anyway: an
+    autocomplete callback fires on every keystroke, and until 1.4 the callers
+    that wanted names ran a second, identical query just to feed
+    guild_name_map."""
     if scope in (DrillScope.PLACED_HERE, DrillScope.LOCAL) and guild_id is None:
         raise ValueError(f"DrillScope.{scope.name} needs a guild_id")
 
@@ -188,8 +265,8 @@ async def drill_choices(
         conditions.append("(guild_id IS NULL OR guild_id = ?)")
         params.append(guild_id)
 
-    if exclude_locked:
-        conditions.append("locked_job_id IS NULL")
+    if exclude_unavailable:
+        conditions.append(DRILL_AVAILABLE_SQL)
     if require_container:
         conditions.append("container_type IS NOT NULL")
 
@@ -199,10 +276,11 @@ async def drill_choices(
         tuple(params),
     )
 
+    guild_names = guild_name_map(bot, rows) if bot is not None else {}
     search = current.strip().lower()
     choices = []
     for row in rows:
-        location = (guild_names or {}).get(row["guild_id"])
+        location = guild_names.get(row["guild_id"])
         label = drill_label(row, location)
         if search and search not in label.lower():
             continue
@@ -320,7 +398,7 @@ def material_breakdown_lines(breakdown: dict[str, int], totals: dict[str, int] |
         info = get_material_info(material_id)
         if not info:
             continue
-        line = f"{info['emoji']} **{quantity:,} {info['name']}**"
+        line = f"{info['emoji']} **{quantity:,} {material_name(info, quantity)}**"
         if totals and material_id in totals:
             line += f" ({totals[material_id]:,} total)"
         lines.append(line)
@@ -354,9 +432,18 @@ async def retract_drill(tx, drill_row) -> dict[str, int] | None:
 
     The unplace runs BEFORE the contents are read, so a racing command that
     already emptied this drill leaves nothing to read and nothing to credit.
-    The player's mining focus is applied on the way out, exactly as /collect
-    applies it - pulling a drill early is a collection, and shouldn't be a way
-    to receive ore the focus says you no longer mine.
+    All three mining enhancements are applied on the way out, in the order
+    /collect applies them (focus, then efficiency, then affinity) - pulling a
+    drill early IS a collection, and which command emptied a drill should not
+    change what comes out of it.
+
+    That cuts both ways and both directions matter. A focus and an affinity are
+    applied so this isn't a route around them: a way to receive ore the focus
+    says you no longer mine, or to keep rubies an affinity says now arrive as
+    something else. An efficiency is applied because it is a bonus the player
+    has paid an obsidian for, and omitting it - which this path did until the
+    affinity was added and the three were compared - quietly made /mine remove
+    the worse way to empty a drill, for no reason anybody had written down.
     """
     changed = await tx.execute_changes(
         "UPDATE drills SET guild_id = NULL, stored_amount = 0, is_full = 0 "
@@ -368,10 +455,21 @@ async def retract_drill(tx, drill_row) -> dict[str, int] | None:
 
     breakdown = await take_drill_contents(tx, drill_row)
     breakdown = await convert_haul(tx, drill_row["owner_id"], breakdown)
+    breakdown = await boost_haul(tx, drill_row["owner_id"], breakdown)
+    breakdown = await convert_gems(tx, drill_row["owner_id"], breakdown)
     if breakdown:
         await ensure_user_row(tx, drill_row["owner_id"])
         for material_id, quantity in breakdown.items():
             await adjust_user_quantity(tx, drill_row["owner_id"], material_id, quantity)
+        # The production ledger sees this for the same reason it sees /collect:
+        # pulling a drill early IS a collection, and a haul reaching an
+        # inventory unrecorded would be ore this server produced and got no
+        # credit for. Attribution needs no splitting here - one drill, one
+        # guild - and it is the DRILL's guild rather than whoever's command
+        # emptied it, which is what keeps the sweep that retracts every drill
+        # in a server the bot was removed from crediting that server
+        # (cogs/mining.py: _retract_guild_drills).
+        await record_mined(tx, drill_row["guild_id"], breakdown)
     return breakdown
 
 
@@ -385,16 +483,25 @@ async def set_container(db, drill_row, container_type: str | None):
     would sit in the loop's result set forever, doing nothing while /mine status
     called it "mining".
 
+    A full drill the new capacity frees up starts mining again NOW, so its
+    clock restarts with it (drills.mined_until) - otherwise its next tick would
+    pay for time it spent full. Every SET is evaluated against the row as it
+    was, so is_full in that CASE is the old value.
+
     The container_type guard makes the swap safe to race: if another command
     changed the container first, this matches nothing and its transaction rolls
     back rather than returning the wrong item."""
+    capacity = effective_capacity(container_type)
     return await db.execute_changes(
         "UPDATE drills SET container_type = ?, "
-        "is_full = CASE WHEN stored_amount >= ? THEN 1 ELSE 0 END "
+        "is_full = CASE WHEN stored_amount >= ? THEN 1 ELSE 0 END, "
+        "mined_until = CASE WHEN is_full = 1 AND stored_amount < ? "
+        "THEN datetime('now') ELSE mined_until END "
         "WHERE drill_id = ? AND container_type IS ?",
         (
             container_type,
-            effective_capacity(container_type),
+            capacity,
+            capacity,
             drill_row["drill_id"],
             drill_row["container_type"],
         ),

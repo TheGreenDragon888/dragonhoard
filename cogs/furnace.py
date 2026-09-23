@@ -6,8 +6,10 @@ Implements /furnace smelt <material> <quantity>, which:
   2. Charges the fee and deducts the raw materials immediately, then queues
      a production job
   3. A background loop processes queued jobs at the rate the server's
-     furnace_level buys (data/materials.py: furnace_rate, linear in the level
-     and uncapped), crediting completed items to the user.
+     furnace's fees buy (data/materials.py: furnace_rate at effective_level,
+     linear in the level and uncapped) times whatever Infrastructure
+     Enhancements or Bonanza it has (utils/db_helpers.py: run_level),
+     crediting completed items to the user.
 """
 import discord
 from discord import app_commands
@@ -22,21 +24,28 @@ from utils.embeds import (
     FURNACE_COLOR,
 )
 from utils.responses import respond
-from utils.formatting import format_currency
+from utils.formatting import format_currency, format_rate
 from utils.receipts import build_receipt_embed
 from utils.guild_helpers import human_member_count
+from utils.production_ledger import record_output, smelting_inputs
 from database.db import InsufficientQuantity
+from utils.government import charge_machine_fee
 from utils.db_helpers import (
-    bank_infrastructure_fee,
+    advance_job,
+    complete_job,
     ensure_server_row,
     get_user_quantity,
     adjust_user_quantity,
     deduct_user_quantity,
-    get_server_stock,
+    get_server_stocks,
     adjust_server_stock,
     deduct_server_stock,
     get_currency_balance,
-    charge_user_fee,
+    machine_fee,
+    run_level,
+    guilds_with_queued_work,
+    machine_speed_level,
+    ProductionClock,
     queue_room,
     queue_full_message,
 )
@@ -70,7 +79,7 @@ class FurnaceCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
-        self._production_progress: dict[int, float] = {}
+        self._production = ProductionClock(PROCESS_TICK_MINUTES)
         self.process_loop.start()
 
     def cog_unload(self):
@@ -118,10 +127,10 @@ class FurnaceCog(commands.Cog):
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
-                    "SELECT furnace_fee, currency_emoji FROM server_config WHERE guild_id = ?",
+                    "SELECT furnace_fee_multiplier, currency_emoji FROM server_config WHERE guild_id = ?",
                     (interaction.guild_id,),
                 )
-                fee_rate = cfg["furnace_fee"]
+                fee_rate = machine_fee("furnace", cfg["furnace_fee_multiplier"])
                 currency_emoji = cfg["currency_emoji"]
 
                 room = await queue_room(tx, interaction.guild_id, interaction.user.id, "furnace", quantity)
@@ -149,10 +158,7 @@ class FurnaceCog(commands.Cog):
                     await deduct_user_quantity(tx, interaction.user.id, input_id, needed)
 
                 if fee_total > 0:
-                    await charge_user_fee(tx, interaction.guild_id, interaction.user.id, fee_total)
-                    await bank_infrastructure_fee(
-                        tx, interaction.guild_id, "furnace", fee_total
-                    )
+                    await charge_machine_fee(tx, interaction.guild_id, interaction.user.id, "furnace", fee_total)
 
                 # Everything already waiting that will be smelted before this
                 # job. The server's own auto-smelt jobs are excluded because
@@ -171,14 +177,10 @@ class FurnaceCog(commands.Cog):
                     (interaction.guild_id, interaction.user.id, material.value, quantity),
                 )
 
-                # Re-read rather than reuse the level from cfg above: this
-                # job's own fee may have just upgraded the furnace, and the
-                # quoted wait should use the speed it will actually run at.
-                level_row = await tx.fetchone(
-                    "SELECT furnace_level FROM server_config WHERE guild_id = ?",
-                    (interaction.guild_id,),
-                )
-                level = level_row["furnace_level"]
+                # Read after the fee is banked rather than before: this job's
+                # own fee has just made the furnace faster, and the quoted wait
+                # should use the speed it will actually run at.
+                speed_level = await machine_speed_level(tx, interaction.guild_id, "furnace")
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -203,23 +205,23 @@ class FurnaceCog(commands.Cog):
             fee_total=fee_total,
             balance_after=balance_after,
             currency_emoji=currency_emoji,
-            eta_hours=(items_ahead + quantity) / furnace_rate(level),
+            eta_hours=(items_ahead + quantity) / furnace_rate(speed_level),
         )
         await respond(interaction, self.db, embed=embed)
 
     async def _furnace_status_impl(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
         cfg = await self.db.fetchone(
-            "SELECT furnace_level, furnace_fee, furnace_fees_collected, furnace_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
+            "SELECT furnace_level, furnace_fee_multiplier, furnace_fees_collected, furnace_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
         level = cfg["furnace_level"]
-        fee_rate = cfg["furnace_fee"]
+        fee_rate = machine_fee("furnace", cfg["furnace_fee_multiplier"])
         max_queue = cfg["furnace_max_queue"]
         fees_collected = cfg["furnace_fees_collected"]
         currency_emoji = cfg["currency_emoji"]
 
-        rate = furnace_rate(level)
+        rate = furnace_rate(await machine_speed_level(self.db, interaction.guild_id, "furnace"))
         upgrade_cost = upgrade_threshold(level + 1)
 
         jobs = await self.db.fetchall(
@@ -237,7 +239,7 @@ class FurnaceCog(commands.Cog):
             name="Furnace",
             color=FURNACE_COLOR,
             level=level,
-            speed_text=f"{rate} items/hour",
+            speed_text=f"{format_rate(rate, 'item')}/hour",
             fees_collected=fees_collected,
             upgrade_cost=upgrade_cost,
             currency_emoji=currency_emoji,
@@ -280,19 +282,20 @@ class FurnaceCog(commands.Cog):
 
     @tasks.loop(minutes=PROCESS_TICK_MINUTES)
     async def process_loop(self):
-        """Each tick, every guild's furnace processes its hourly rate spread
-        over time. The loop keeps a fractional accumulator per guild so rates
-        that don't divide evenly into whole items per tick never over- or
-        under-produce."""
-        ticks_per_hour = 60 / PROCESS_TICK_MINUTES
-        configs = await self.db.fetchall(
-            "SELECT guild_id, furnace_level FROM server_config"
-        )
-        for cfg in configs:
-            rate = furnace_rate(cfg["furnace_level"])
-            progress = self._production_progress.get(cfg["guild_id"], 0.0) + (rate / ticks_per_hour)
-            produced_units = int(progress)
-            self._production_progress[cfg["guild_id"]] = progress - produced_units
+        """Each tick, every guild's furnace that has work queued works through
+        as many items as the time since it last worked (or since the work was
+        queued, if the queue had been empty) pays for at its current speed -
+        see utils/db_helpers.py: ProductionClock, which also carries the
+        fraction of an item that doesn't divide evenly into a tick.
+
+        Only servers with a live furnace job are visited
+        (guilds_with_queued_work); an idle furnace costs nothing per tick.
+        Servers whose queue is empty get the auto-smelt check instead
+        (_auto_smelt_pass)."""
+        now = self._production.now()
+        for cfg in await guilds_with_queued_work(self.db, "furnace"):
+            rate = furnace_rate(run_level(cfg, now))
+            produced_units = self._production.earn(cfg["guild_id"], rate, cfg["work_started"], now)
 
             remaining_capacity = produced_units
             while remaining_capacity > 0:
@@ -326,25 +329,65 @@ class FurnaceCog(commands.Cog):
                     else:
                         await adjust_user_quantity(tx, job["user_id"], job["target_id"], produced)
 
-                    if new_quantity <= 0:
-                        await tx.execute(
-                            "UPDATE production_jobs SET status = 'complete', quantity = 0 WHERE job_id = ?",
-                            (job["job_id"],),
-                        )
-                    else:
-                        await tx.execute(
-                            "UPDATE production_jobs SET quantity = ?, status = 'in_progress' WHERE job_id = ?",
-                            (new_quantity, job["job_id"]),
-                        )
+                    # Smelting is the second stage the GDP figure counts, and
+                    # it counts only what this step ADDED - the bars' market
+                    # value less the ore and coal they ate. In the same
+                    # transaction as the credit above, so a row can never
+                    # describe output that was rolled back.
+                    #
+                    # The server's own auto-smelt is recorded exactly like a
+                    # player's job. A server processing its own surplus is
+                    # still production, and the ledger has no opinion about who
+                    # owned it - which is why SERVER_JOB_USER_ID needs no
+                    # special case here beyond the credit above.
+                    await record_output(
+                        tx, job["guild_id"], "furnace", job["target_id"], produced,
+                        smelting_inputs(job["target_id"], produced),
+                    )
 
-            # If nothing at all is queued for this guild's furnace, let the
-            # server consider queuing its own auto-smelt job(s).
-            pending = await self.db.fetchone(
-                "SELECT 1 FROM production_jobs WHERE guild_id = ? AND job_type = 'furnace' AND status != 'complete' LIMIT 1",
-                (cfg["guild_id"],),
+                    if new_quantity <= 0:
+                        await complete_job(tx, job["job_id"])
+                    else:
+                        await advance_job(tx, job["job_id"], new_quantity)
+
+        await self._auto_smelt_pass()
+
+    async def _auto_smelt_pass(self):
+        """Lets each server whose furnace queue is empty consider queueing its
+        own auto-smelt job (_try_auto_smelt), filtering with two queries
+        before doing any per-server work.
+
+        _try_auto_smelt only ever queues anything for a server holding at
+        least its target stock of an ore, so that is checked here first from
+        one read of every server's ore, and a server that can't pass it - the
+        overwhelmingly common case, every tick - costs nothing further. Until
+        1.4 every server got the full check every tick: a member count, five
+        stock reads and up to two job lookups each, idle or not, present or
+        not."""
+        busy = {
+            row["guild_id"]
+            for row in await self.db.fetchall(
+                "SELECT DISTINCT guild_id FROM production_jobs "
+                "WHERE job_type = 'furnace' AND status != 'complete'"
             )
-            if pending is None:
-                await self._try_auto_smelt(cfg["guild_id"])
+        }
+        rows = await self.db.fetchall(
+            "SELECT guild_id, material_id, quantity FROM server_material_storage "
+            "WHERE material_id IN ('iron_ore', 'copper_ore') AND quantity > 0"
+        )
+        ore_by_guild: dict[int, dict[str, int]] = {}
+        for row in rows:
+            ore_by_guild.setdefault(row["guild_id"], {})[row["material_id"]] = row["quantity"]
+
+        for guild_id, ore in ore_by_guild.items():
+            if guild_id in busy:
+                continue
+            guild = self.bot.get_guild(guild_id)
+            if guild is None or not guild.member_count:
+                continue
+            member_count = await human_member_count(guild)
+            if any(stock >= target_stock(member_count, ore_id) for ore_id, stock in ore.items()):
+                await self._try_auto_smelt(guild_id, member_count)
 
     async def _pending_server_job(self, guild_id: int, target_ids: tuple[str, ...]):
         """Gates the one-item-at-a-time auto-smelt jobs below: looks for any
@@ -380,33 +423,32 @@ class FurnaceCog(commands.Cog):
         )
         return job, blocked_by_user, servers_item_still_in_flight
 
-    async def _try_auto_smelt(self, guild_id: int):
+    async def _try_auto_smelt(self, guild_id: int, member_count: int):
         """Queues the server's own furnace job(s) against its own material
-        storage - only called when the furnace queue is completely empty.
+        storage - only called when the furnace queue is completely empty and
+        the server holds at least its target of an ore (_auto_smelt_pass,
+        which also supplies the member count the targets scale with).
         Follows the normal recipe cost + coal tax, but skips the furnace fee
         entirely (the server isn't paying itself). Only touches ore that's
         above the market's target stock for that ore, so it never eats into
         the reserve the market's buy-price curve is centered on. Every
         recipe here is queued one item at a time (see _pending_server_job)
         rather than as a single large batch."""
-        guild = self.bot.get_guild(guild_id)
-        if guild is None or not guild.member_count:
-            return
-        member_count = await human_member_count(guild)
-
-        coal_stock = await get_server_stock(self.db, guild_id, "coal")
+        # One read for the five materials this looks at, rather than one each.
+        stocks = await get_server_stocks(self.db, guild_id)
+        coal_stock = stocks.get("coal", 0)
         jobs_to_queue: list[tuple[str, int, dict[str, int]]] = []
 
         iron_ore_target = target_stock(member_count, "iron_ore")
-        iron_ore_stock = await get_server_stock(self.db, guild_id, "iron_ore")
+        iron_ore_stock = stocks.get("iron_ore", 0)
         if iron_ore_stock >= iron_ore_target:
             surplus = iron_ore_stock - iron_ore_target
             pending_job, blocked_by_user, servers_item_still_in_flight = await self._pending_server_job(
                 guild_id, ("iron", "steel")
             )
             if pending_job is None:
-                iron_stock = await get_server_stock(self.db, guild_id, "iron")
-                steel_stock = await get_server_stock(self.db, guild_id, "steel")
+                iron_stock = stocks.get("iron", 0)
+                steel_stock = stocks.get("steel", 0)
                 # Steer the stockpile towards an iron:steel 4:1 ratio -
                 # produce whichever one is currently under-represented.
                 recipe_id = "steel" if steel_stock < iron_stock / SERVER_IRON_TO_STEEL_RATIO else "iron"
@@ -421,7 +463,7 @@ class FurnaceCog(commands.Cog):
                 pass  # unexpected job shape - leave it alone, see _pending_server_job
 
         copper_ore_target = target_stock(member_count, "copper_ore")
-        copper_ore_stock = await get_server_stock(self.db, guild_id, "copper_ore")
+        copper_ore_stock = stocks.get("copper_ore", 0)
         if copper_ore_stock >= copper_ore_target:
             surplus = copper_ore_stock - copper_ore_target
             pending_job, blocked_by_user, servers_item_still_in_flight = await self._pending_server_job(
