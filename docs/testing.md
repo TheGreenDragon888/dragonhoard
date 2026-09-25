@@ -319,6 +319,11 @@ git add -A
 git commit -m "Rework mining pool top-up rates"
 ```
 
+These are one command per line on purpose: the PowerShell that comes with
+Windows (5.1) rejects `&&` between commands, which Linux's shell and newer
+PowerShell 7 both accept. Every command for your computer in this document
+works in either.
+
 A commit stays on your computer until you push, so commit as often as you like.
 
 ### Send it to beta
@@ -390,8 +395,10 @@ Release only when all three hold:
 On your computer:
 
 ```bash
-git switch beta && git pull        # make sure you have the newest beta...
-git switch main && git pull        # ...and the newest main
+git switch beta
+git pull                           # make sure you have the newest beta...
+git switch main
+git pull                           # ...and the newest main
 git merge --ff-only beta           # make main exactly equal to beta
 git push
 ```
@@ -435,7 +442,8 @@ step by step and how to undo it.
 starts from `main` instead:
 
 ```bash
-git switch main && git pull
+git switch main
+git pull
 git switch -c hotfix-market-cancel
 # ... fix it, run the tests ...
 git add -A
@@ -451,7 +459,8 @@ the next release will refuse (see `--ff-only` above) - and worse, beta would be
 testing code without it:
 
 ```bash
-git switch beta && git pull
+git switch beta
+git pull
 git merge main                     # the one merge commit this workflow expects
 git push
 git branch -d hotfix-market-cancel
