@@ -49,7 +49,7 @@ Tests: `tests/test_government.py`.
 
 | Setting | Values | Default |
 | --- | --- | --- |
-| Fee multiplier, per machine | x0.25, x0.5, x1, x2, x4 | x1 |
+| Fee multiplier, per machine | x0.25, x0.5, x0.625, x0.8, x1, x1.25, x1.6, x2, x4 | x1 |
 | Tax rate | 0-100% | 0% |
 | Bond rate (a one-time premium) | 0-5% | 0% |
 
@@ -58,6 +58,12 @@ A machine's fee is its `config.py` default times its multiplier
 default, so retuning a default moves every server at once. The defaults are
 the ungoverned server, so a server that never elects anyone plays exactly as it
 did before 1.4.
+
+The steps between x0.5 and x2 split each doubling in three: x1.25 and x1.6
+multiply to x2, and x0.8 and x0.625 are their exact inverses. They were added
+after 1.4 because going straight from x1 to x2 was too big a move for most
+servers, and a cut that exactly undoes each raise keeps the ladder symmetric.
+The extremes stay whole doublings.
 
 Each setting (each machine's multiplier separately) may change **once per game
 day**. Without that, a Treasurer could set x0.25, queue their own jobs - fees

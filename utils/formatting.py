@@ -71,6 +71,52 @@ def format_currency(amount: float, emoji: str | None = None, round_up: bool = Fa
     return f"{emoji or DEFAULT_CURRENCY_EMOJI} {format_price(amount, round_up)}"
 
 
+# The most decimals a machine's per-unit fee can have: its default is whole
+# cents and the Treasurer's multipliers have at most three decimals (x0.625,
+# utils/government.py: FEE_MULTIPLIERS). tests/test_formatting.py checks every
+# fee on the ladder against it.
+EXACT_PRICE_DECIMALS = 5
+
+
+def format_exact_price(amount: float) -> str:
+    """A per-unit fee in full, for the "Fee" lines that quote what a machine
+    charges per item. format_price floors to the cent, which is right for a
+    total but would show a furnace at x1.25 (1.25 cents an item) as 0.01 -
+    less than it charges. Shows at least two decimals, and past the cent only
+    the digits the fee actually has."""
+    whole, _, fraction = f"{amount:,.{EXACT_PRICE_DECIMALS}f}".partition(".")
+    return f"{whole}.{fraction.rstrip('0').ljust(2, '0')}"
+
+
+def format_exact_currency(amount: float, emoji: str | None = None) -> str:
+    """The server's currency emoji preceding format_exact_price's value."""
+    return f"{emoji or DEFAULT_CURRENCY_EMOJI} {format_exact_price(amount)}"
+
+
+# Below this, a receipt shows the fraction of a cent it moved.
+RECEIPT_FINE_BELOW = 0.10
+RECEIPT_FINE_DECIMALS = 4
+
+
+def format_receipt_price(amount: float, round_up: bool = False) -> str:
+    """The amount a receipt says was paid or received. Under ten cents it
+    shows up to four decimals when there is something past the cent to show:
+    seven items at a furnace on x0.625 take 0.04375, which reads 0.0438
+    rather than 0.05. Trailing zeros past the cent are trimmed, so a
+    whole-cent amount still reads 0.07. From ten cents up it is format_price.
+    Rounds in the same direction format_price would, and at the fourth
+    decimal: up for money taken, down for money paid out."""
+    scale = 10 ** RECEIPT_FINE_DECIMALS
+    if round_up:
+        units = math.ceil(amount * scale - 1e-9)
+    else:
+        units = math.floor(amount * scale + 1e-9)
+    cent = scale // 100
+    if units % cent == 0 or units >= RECEIPT_FINE_BELOW * scale:
+        return format_price(amount, round_up)
+    return f"{units / scale:.{RECEIPT_FINE_DECIMALS}f}".rstrip("0")
+
+
 def format_duration(hours: float) -> str:
     """How long something takes, in the largest two units that fit: "45m",
     "2h 15m", "3d 4h".

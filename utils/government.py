@@ -69,7 +69,15 @@ OFFICE_LABELS = {MAYOR: "Mayor", TREASURER: "Treasurer"}
 # The multipliers the Treasurer may put on a machine's default fee
 # (utils/db_helpers.py: MACHINE_DEFAULT_FEES). Fixed steps rather than any
 # number, which is what the design specified.
-FEE_MULTIPLIERS = (0.25, 0.5, 1.0, 2.0, 4.0)
+#
+# Between x0.5 and x2 each doubling is split in three (x1.25 then x1.6, since
+# 1.25 * 1.6 == 2), because going straight from x1 to x2 was judged too
+# extreme a move for most servers. Every raise keeps an exact inverse cut
+# (1.25 * 0.8 == 1, 1.6 * 0.625 == 1), which is what the ladder was chosen
+# for. Only the middle is fine-grained; the extremes keep whole doublings.
+# x0.625 is the one step with three decimals, so a fee can carry five, which
+# utils/formatting.py: format_exact_price shows in full.
+FEE_MULTIPLIERS = (0.25, 0.5, 0.625, 0.8, 1.0, 1.25, 1.6, 2.0, 4.0)
 
 MAX_TAX_PERCENT = 100
 # The ceiling on the bond premium. It is the only currency this whole feature

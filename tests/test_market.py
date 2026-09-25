@@ -333,6 +333,11 @@ class MarketReceiptEmbedTests(unittest.TestCase):
         )
         self.assertIn("**10.01**", value)
 
+    def test_a_sub_ten_cent_trade_shows_its_fraction_of_a_cent(self):
+        # Player prices are ten-thousandths, so a small trade can move one.
+        value = self._field(self._embed(currency_amount=0.0137, round_up_currency=False), "Received")
+        self.assertIn("**0.0137**", value)
+
 
 if __name__ == "__main__":
     unittest.main()

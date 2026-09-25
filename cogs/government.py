@@ -52,7 +52,7 @@ from utils.db_helpers import (
     mining_slot_status,
 )
 from utils.embeds import GOVERNMENT_COLOR, make_embed
-from utils.formatting import format_currency
+from utils.formatting import format_currency, format_exact_currency
 from utils.government import (
     BOND_DENOMINATIONS_CENTS,
     DEBT_CAP_DAYS,
@@ -238,7 +238,7 @@ class GovernmentCog(commands.Cog):
         )
 
         fee_lines = [
-            f"{machine_label(m).capitalize()}: {format_currency(machine_fee(m, status.multipliers[m]), emoji)} "
+            f"{machine_label(m).capitalize()}: {format_exact_currency(machine_fee(m, status.multipliers[m]), emoji)} "
             f"per {FEE_UNITS.get(m, 'item')} (x{status.multipliers[m]:g})"
             for m in MACHINES
         ]
@@ -314,7 +314,7 @@ class GovernmentCog(commands.Cog):
             interaction,
             lambda tx: set_fee_multiplier(tx, interaction.guild_id, interaction.user.id, machine.value, value),
             f"The {machine_label(machine.value)} now charges "
-            f"**{format_currency(machine_fee(machine.value, value), emoji)}** per "
+            f"**{format_exact_currency(machine_fee(machine.value, value), emoji)}** per "
             f"{FEE_UNITS.get(machine.value, 'item')} (x{value:g} its default).",
         )
 

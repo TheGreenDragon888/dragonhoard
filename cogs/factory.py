@@ -28,7 +28,7 @@ from utils.embeds import (
     FACTORY_COLOR,
 )
 from utils.responses import respond
-from utils.formatting import format_currency, format_rate
+from utils.formatting import format_currency, format_exact_currency, format_rate
 from utils.receipts import build_receipt_embed
 from utils.production_ledger import record_output
 from database.db import InsufficientQuantity
@@ -158,7 +158,7 @@ class FactoryCog(commands.Cog):
                     balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
                     if balance < fee_total:
                         await interaction.response.send_message(
-                            f"This would cost {format_currency(fee_total, currency_emoji)} up front, but you only have {format_currency(balance, currency_emoji)}.",
+                            f"This would cost {format_currency(fee_total, currency_emoji, round_up=True)} up front, but you only have {format_currency(balance, currency_emoji)}.",
                             ephemeral=True,
                         )
                         return
@@ -312,7 +312,7 @@ class FactoryCog(commands.Cog):
                     balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
                     if balance < fee_total:
                         await interaction.response.send_message(
-                            f"This would cost {format_currency(fee_total, currency_emoji)} up front, but you only have {format_currency(balance, currency_emoji)}.",
+                            f"This would cost {format_currency(fee_total, currency_emoji, round_up=True)} up front, but you only have {format_currency(balance, currency_emoji)}.",
                             ephemeral=True,
                         )
                         return
@@ -438,7 +438,7 @@ class FactoryCog(commands.Cog):
             upgrade_cost=upgrade_cost,
             currency_emoji=currency_emoji,
         )
-        embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
+        embed.add_field(name="Fee", value=f"{format_exact_currency(fee_rate, currency_emoji)} per item", inline=True)
         embed.add_field(name="Queue Limit", value=queue_limit_field_value(max_queue, level), inline=True)
 
         lines = []

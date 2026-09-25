@@ -42,6 +42,7 @@ from utils.db_helpers import (
     machine_fee,
     slot_progress,
 )
+from utils.formatting import format_exact_price
 from utils.job_board import job_board_today
 from utils.production_ledger import (
     GDP_DAY_HOURS,
@@ -417,7 +418,7 @@ def build_payload(
                 "banked": _m(banked),
                 "pct": min(100, round(banked / nxt * 100)) if nxt else 100,
                 "next": f"{_m(min(banked, nxt))} / {_m(nxt)}",
-                "fee": _m(machine_fee(m, cfg[f"{m}_fee_multiplier"])),
+                "fee": format_exact_price(machine_fee(m, cfg[f"{m}_fee_multiplier"])),
             })
 
         pool_comp_rows = [

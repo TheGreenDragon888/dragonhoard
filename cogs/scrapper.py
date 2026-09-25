@@ -46,8 +46,10 @@ from utils.embeds import (
 from utils.responses import respond
 from utils.formatting import (
     format_currency,
+    format_exact_currency,
     format_price,
     format_rate,
+    format_receipt_price,
     format_relative_timestamp,
     DEFAULT_CURRENCY_EMOJI,
 )
@@ -187,7 +189,7 @@ class ScrapperCog(commands.Cog):
                     balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
                     if balance < fee_total:
                         await interaction.response.send_message(
-                            f"This would cost {format_currency(fee_total, currency_emoji)} up front, "
+                            f"This would cost {format_currency(fee_total, currency_emoji, round_up=True)} up front, "
                             f"but you only have {format_currency(balance, currency_emoji)}.",
                             ephemeral=True,
                         )
@@ -288,7 +290,7 @@ class ScrapperCog(commands.Cog):
                     balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
                     if balance < fee_total:
                         await interaction.response.send_message(
-                            f"This would cost {format_currency(fee_total, currency_emoji)} up front, "
+                            f"This would cost {format_currency(fee_total, currency_emoji, round_up=True)} up front, "
                             f"but you only have {format_currency(balance, currency_emoji)}.",
                             ephemeral=True,
                         )
@@ -362,7 +364,7 @@ class ScrapperCog(commands.Cog):
                 name="Fee Paid",
                 value=(
                     f"{currency_emoji or DEFAULT_CURRENCY_EMOJI} "
-                    f"**{format_price(fee_total, round_up=True)}** "
+                    f"**{format_receipt_price(fee_total, round_up=True)}** "
                     f"({format_price(balance_after)} remaining)"
                 ),
                 inline=False,
@@ -427,7 +429,7 @@ class ScrapperCog(commands.Cog):
             upgrade_cost=upgrade_threshold(level + 1),
             currency_emoji=currency_emoji,
         )
-        embed.add_field(name="Fee", value=f"{format_currency(fee_rate, currency_emoji)} per item", inline=True)
+        embed.add_field(name="Fee", value=f"{format_exact_currency(fee_rate, currency_emoji)} per item", inline=True)
         embed.add_field(name="Queue Limit", value=queue_limit_field_value(max_queue, level), inline=True)
 
         lines = []

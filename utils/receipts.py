@@ -20,6 +20,7 @@ from utils.formatting import (
     format_currency,
     format_relative_timestamp,
     format_price,
+    format_receipt_price,
     DEFAULT_CURRENCY_EMOJI,
 )
 
@@ -114,7 +115,7 @@ def build_receipt_embed(
             name="Fee Paid",
             value=(
                 f"{currency_emoji or DEFAULT_CURRENCY_EMOJI} "
-                f"**{format_price(fee_total, round_up=True)}** "
+                f"**{format_receipt_price(fee_total, round_up=True)}** "
                 f"({format_price(balance_after)} remaining)"
             ),
             inline=False,
@@ -179,7 +180,7 @@ def build_market_receipt_embed(
         name=currency_field,
         value=(
             f"{currency_emoji or DEFAULT_CURRENCY_EMOJI} "
-            f"**{format_price(currency_amount, round_up=round_up_currency)}** "
+            f"**{format_receipt_price(currency_amount, round_up=round_up_currency)}** "
             f"({format_price(balance_after)} {'balance' if currency_gained else 'remaining'})"
         ),
         inline=False,

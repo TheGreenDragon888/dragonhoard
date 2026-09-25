@@ -9,12 +9,16 @@ import re
 import unittest
 from datetime import datetime, timezone
 
+from utils.db_helpers import MACHINES, machine_fee
 from utils.formatting import (
     format_compact_price,
     format_duration,
+    format_exact_price,
     format_price,
+    format_receipt_price,
     format_relative_timestamp,
 )
+from utils.government import FEE_MULTIPLIERS
 
 TIMESTAMP = re.compile(r"^<t:(?P<epoch>\d+):R>$")
 
@@ -54,6 +58,73 @@ class FormatPriceTests(unittest.TestCase):
 
     def test_thousands_are_separated(self):
         self.assertEqual(format_price(11458.0), "11,458.00")
+
+
+class FormatReceiptPriceTests(unittest.TestCase):
+    """What a receipt says moved. Under ten cents, anything past the cent is
+    shown to four decimals rather than rounded into a whole cent."""
+
+    def test_a_sub_cent_charge_shows_four_decimals_rounded_up(self):
+        # 7 items at a furnace on x0.625: 0.04375 taken.
+        self.assertEqual(format_receipt_price(0.04375, round_up=True), "0.0438")
+        self.assertEqual(format_receipt_price(0.0125, round_up=True), "0.0125")
+        self.assertEqual(format_receipt_price(0.00625, round_up=True), "0.0063")
+
+    def test_a_payout_rounds_down_at_the_fourth_decimal(self):
+        self.assertEqual(format_receipt_price(0.04375), "0.0437")
+        # Too small to reach the fourth decimal: format_price's own sub-cent
+        # extension, not a fraction of a cent to show.
+        self.assertEqual(format_receipt_price(0.00001), format_price(0.00001))
+
+    def test_trailing_zeros_past_the_cent_are_trimmed(self):
+        self.assertEqual(format_receipt_price(0.013, round_up=True), "0.013")
+
+    def test_whole_cents_still_read_as_cents(self):
+        # 0.07 is 0.07000000000000001 as a float; that is not a fraction of a
+        # cent to show.
+        for amount in (0.01 * 7, 0.05, 0.09):
+            for round_up in (True, False):
+                with self.subTest(amount=amount, round_up=round_up):
+                    self.assertEqual(format_receipt_price(amount, round_up), format_price(amount, round_up))
+
+    def test_ten_cents_and_over_is_format_price(self):
+        for amount in (0.10, 0.1234, 1.2345, 10.004):
+            for round_up in (True, False):
+                with self.subTest(amount=amount, round_up=round_up):
+                    self.assertEqual(format_receipt_price(amount, round_up), format_price(amount, round_up))
+
+    def test_a_charge_that_rounds_up_to_ten_cents_reads_as_cents(self):
+        self.assertEqual(format_receipt_price(0.09999, round_up=True), "0.10")
+
+
+class FormatExactPriceTests(unittest.TestCase):
+    """The "Fee" lines quote a machine's per-unit fee, and the Treasurer's
+    x1.25, x1.6 and x0.625 steps put fees between whole cents."""
+
+    def test_every_fee_on_the_ladder_is_shown_exactly(self):
+        # What EXACT_PRICE_DECIMALS promises: no fee any Treasurer can set
+        # loses a digit on screen.
+        for machine in MACHINES:
+            for multiplier in FEE_MULTIPLIERS:
+                fee = machine_fee(machine, multiplier)
+                with self.subTest(machine=machine, multiplier=multiplier):
+                    shown = float(format_exact_price(fee).replace(",", ""))
+                    self.assertAlmostEqual(shown, fee, places=12)
+
+    def test_it_shows_the_fraction_of_a_cent_that_format_price_floors_away(self):
+        self.assertEqual(format_price(0.0125), "0.01")
+        self.assertEqual(format_exact_price(0.0125), "0.0125")
+        self.assertEqual(format_exact_price(0.01 * 0.625), "0.00625")
+        self.assertEqual(format_exact_price(0.25 * 0.625), "0.15625")
+        self.assertEqual(format_exact_price(5.0 * 0.625), "3.125")
+
+    def test_whole_cents_keep_two_decimals(self):
+        for amount, expected in ((0.01, "0.01"), (0.1 * 0.8, "0.08"), (1.6, "1.60"), (20.0, "20.00"), (0.0, "0.00")):
+            with self.subTest(amount=amount):
+                self.assertEqual(format_exact_price(amount), expected)
+
+    def test_thousands_are_separated(self):
+        self.assertEqual(format_exact_price(1234.5), "1,234.50")
 
 
 class FormatDurationTests(unittest.TestCase):

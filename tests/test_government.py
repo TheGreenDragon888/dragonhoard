@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, patch
 
 from discord import app_commands
 
+from cogs.furnace import FurnaceCog
 from cogs.government import GovernmentCog
 from database.db import Database
 from data.materials import (
@@ -27,15 +28,20 @@ from data.materials import (
 )
 from utils.db_helpers import (
     adjust_currency_balance,
+    adjust_user_quantity,
+    ensure_user_row,
     circulating_currency_for,
     ensure_server_row,
     get_currency_balance,
+    get_user_quantity,
+    machine_fee,
     machine_fee_rate,
     machine_speed_level,
     mining_slot_status,
     sqlite_timestamp,
 )
 from utils.government import (
+    FEE_MULTIPLIERS,
     MAYOR,
     TREASURER,
     GovernmentError,
@@ -184,6 +190,36 @@ class FeeTaxTests(_GovernmentTestCase):
         default = await machine_fee_rate(self.db, GUILD, "press")
         await self.set(press_fee_multiplier=4.0)
         self.assertAlmostEqual(await machine_fee_rate(self.db, GUILD, "press"), default * 4)
+
+    async def test_a_sub_cent_fee_is_collected_split_and_banked_in_full(self):
+        # x0.625 on the furnace is 0.625 of a cent an item; nothing may round
+        # it to a whole cent on the way through.
+        await self.set(furnace_fee_multiplier=0.625, tax_percent=20)
+        rate = await machine_fee_rate(self.db, GUILD, "furnace")
+        self.assertAlmostEqual(rate, 0.00625)
+        for _ in range(3):
+            await self.fee(rate * 7, now=THURSDAY)
+        total = rate * 21
+        cfg = await self.cfg()
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), STARTING_BALANCE - total)
+        self.assertAlmostEqual(cfg["treasury"], total * 0.2)
+        self.assertAlmostEqual(cfg["currency_burned_total"], total * 0.8)
+        self.assertAlmostEqual(cfg["furnace_fees_collected"], total * 0.8)
+
+
+class FeeLadderTests(unittest.TestCase):
+    def test_every_raise_has_an_exact_inverse_cut(self):
+        for multiplier in FEE_MULTIPLIERS:
+            with self.subTest(multiplier=multiplier):
+                self.assertIn(1 / multiplier, FEE_MULTIPLIERS)
+
+    def test_the_small_steps_compose_into_a_doubling(self):
+        self.assertEqual(1.25 * 1.6, 2.0)
+        self.assertEqual(0.8 * 0.625, 0.5)
+
+    def test_the_ladder_is_ascending_and_centred_on_the_default(self):
+        self.assertEqual(list(FEE_MULTIPLIERS), sorted(FEE_MULTIPLIERS))
+        self.assertEqual(FEE_MULTIPLIERS[len(FEE_MULTIPLIERS) // 2], 1.0)
 
 
 class SupplyTests(_GovernmentTestCase):
@@ -640,6 +676,54 @@ class FakeInteraction:
         return embeds[0] if embeds else call.kwargs.get("embed")
 
 
+class SubCentFurnaceTests(_GovernmentTestCase):
+    """A sub-cent fee through the real /furnace command: charged in full,
+    quoted exactly on the status page, and rounded up where it is a charge."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.cog = FurnaceCog.__new__(FurnaceCog)
+        self.cog.db = self.db
+        await self.set(furnace_fee_multiplier=0.625)
+        await ensure_user_row(self.db, ALICE)
+        await adjust_user_quantity(self.db, ALICE, "iron_ore", 70)
+        await adjust_user_quantity(self.db, ALICE, "coal", 7)
+
+    async def smelt(self, quantity):
+        i = FakeInteraction(ALICE)
+        await FurnaceCog.furnace_smelt.callback(
+            self.cog, i, app_commands.Choice(name="Iron", value="iron"), quantity,
+        )
+        return i
+
+    async def test_the_fee_is_charged_and_banked_to_the_fraction_of_a_cent(self):
+        i = await self.smelt(7)
+        self.assertIsNone(i.refusal)
+        fee = machine_fee("furnace", 0.625) * 7
+        self.assertAlmostEqual(fee, 0.04375)
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), STARTING_BALANCE - fee)
+        self.assertAlmostEqual((await self.cfg())["furnace_fees_collected"], fee)
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "iron_ore"), 0)
+        # Under ten cents the receipt shows four decimals, still rounded up.
+        fee_paid = next(f.value for f in i.embed.fields if f.name == "Fee Paid")
+        self.assertIn("**0.0438**", fee_paid)
+
+    async def test_the_status_page_quotes_the_exact_rate(self):
+        i = FakeInteraction(ALICE)
+        await self.cog._furnace_status_impl(i)
+        fee = next(f.value for f in i.embed.fields if f.name == "Fee")
+        self.assertEqual(fee, "\U0001F4B0 0.00625 per item")
+
+    async def test_a_player_just_short_is_quoted_the_rounded_up_cost(self):
+        await self.db.execute(
+            "UPDATE server_currency_balances SET balance = 0.04 WHERE guild_id = ? AND user_id = ?",
+            (GUILD, ALICE),
+        )
+        i = await self.smelt(7)
+        self.assertEqual(i.refusal, "This would cost \U0001F4B0 0.05 up front, but you only have \U0001F4B0 0.04.")
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "iron_ore"), 70)
+
+
 class CogTests(_GovernmentTestCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
@@ -671,6 +755,34 @@ class CogTests(_GovernmentTestCase):
         )
         self.assertIsNone(i.refusal)
         self.assertEqual((await self.cfg())["furnace_fee_multiplier"], 2.0)
+
+    async def test_every_step_can_be_chosen_through_the_command(self):
+        # The choice travels as str(multiplier) and comes back through float();
+        # every step has to survive that and pass the membership check.
+        for multiplier in FEE_MULTIPLIERS:
+            with self.subTest(multiplier=multiplier):
+                await self.set(furnace_fee_changed=None)
+                i = FakeInteraction(TREASURER_ID)
+                await GovernmentCog.treasurer_fee.callback(
+                    self.cog, i,
+                    app_commands.Choice(name="furnace", value="furnace"),
+                    app_commands.Choice(name=f"x{multiplier:g}", value=str(multiplier)),
+                )
+                self.assertIsNone(i.refusal)
+                self.assertEqual((await self.cfg())["furnace_fee_multiplier"], multiplier)
+
+    async def test_a_sub_cent_fee_is_quoted_exactly(self):
+        i = FakeInteraction(TREASURER_ID)
+        await GovernmentCog.treasurer_fee.callback(
+            self.cog, i,
+            app_commands.Choice(name="furnace", value="furnace"),
+            app_commands.Choice(name="x1.25", value="1.25"),
+        )
+        self.assertIn("0.0125** per item (x1.25 its default)", i.embed.description)
+        i = FakeInteraction(ALICE)
+        await GovernmentCog.government_status_command.callback(self.cog, i)
+        fees = "".join(field.value for field in i.embed.fields)
+        self.assertIn("0.0125 per item (x1.25)", fees)
 
     async def test_the_mayor_funds_slots_and_a_bond_is_bought(self):
         await self.set(treasury=10.0)
