@@ -15,9 +15,10 @@ See README.md for the full player-facing rundown of the loop and command list.
 **Code is written on a development machine, on the `beta` branch or a branch
 that merges into it — never on the server.** The server's two checkouts are
 deployment targets that only pull from GitHub: `/opt/dragonhoard-beta` follows
-`beta` (a timer runs `update-beta.sh` every two minutes) and `/opt/dragonhoard`
-follows `main` (`update.sh`, by hand). So a push to `beta` is a deploy to the
-beta bot: push only when asked. `main` only ever moves by a fast-forward
+`beta` (`update-beta.sh`, by hand, or by an optional two-minute timer) and
+`/opt/dragonhoard` follows `main` (`update.sh`, by hand). A push to `beta` is
+what the beta bot runs next, and with the timer on it is the deploy: push only
+when asked. `main` only ever moves by a fast-forward
 release from `beta` or a hotfix, and `beta` is never squashed or rebased into
 it. See docs/testing.md for the full workflow, backups, and rollback.
 
@@ -266,7 +267,7 @@ before adding a new embed or a sixth machine's status command.
 
 Two completely separate installations share no code checkout, database, or
 Discord application — see `docs/testing.md` for the full day-to-day
-workflow (commit on `beta` → push, which the beta bot picks up by itself →
+workflow (commit on `beta` → push → `update-beta.sh` on the server →
 fast-forward `main` to `beta` → `/opt/dragonhoard/update.sh` to ship; hotfixes
 branch from `main` and are merged back into `beta`), backup/rollback
 procedure, and how to copy live data into beta for testing against real data.

@@ -4,10 +4,10 @@
 #
 # Usage:  /opt/dragonhoard-beta/update-beta.sh
 #
-# You rarely need to run this yourself: the dragonhoard-beta-update timer runs
-# it every couple of minutes, so pushing to beta is the whole deploy. Running it
-# by hand does the same thing immediately. See docs/testing.md Part 6 for each
-# step explained, and Part 1e for installing the timer.
+# Run it over SSH after pushing to beta. Or install the optional timer
+# (docs/testing.md Part 1e), which runs it every two minutes so that pushing
+# to beta is the whole deploy. See docs/testing.md Part 6 for each step
+# explained.
 
 # Stop at the first failing command, the same as update.sh.
 set -e
@@ -43,9 +43,9 @@ main() {
     new=$(git rev-parse origin/beta)
 
     if [ "$old" = "$new" ]; then
-        # The usual case. Only say so when a person ran this in a terminal; the
-        # timer runs it every couple of minutes and the journal doesn't need a
-        # line for each one.
+        # Only say so when a person ran this in a terminal; the optional timer
+        # runs it every two minutes and the journal doesn't need a line for
+        # each one.
         if [ -t 1 ]; then
             echo "Already up to date: $(git --no-pager log --oneline -1)"
         fi
@@ -96,8 +96,9 @@ restart_unless_stopped() {
     if [ "$state" = "inactive" ]; then
         echo "    $unit is stopped - leaving it stopped. It runs the new code when you start it."
     else
-        # Allowed without a password by /etc/sudoers.d/dragonhoard-beta
-        # (docs/testing.md Part 1e) - these two commands and nothing else.
+        # Run by hand, this asks for your password. Under the optional timer,
+        # /etc/sudoers.d/dragonhoard-beta (docs/testing.md Part 1e) allows
+        # these two commands, and nothing else, without one.
         sudo systemctl restart "$unit"
         echo "    restarted $unit"
     fi

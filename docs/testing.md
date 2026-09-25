@@ -9,7 +9,7 @@ database, not the Discord application.
 |---|---|---|---|
 | Directory | `/opt/dragonhoard` | `/opt/dragonhoard-beta` | wherever you cloned it |
 | Git branch | `main` | `beta` | `beta`, or a branch of it |
-| Gets new code by | `update.sh`, run by hand | `update-beta.sh`, run by a timer every two minutes | you writing it |
+| Gets new code by | `update.sh`, run by hand | `update-beta.sh`, run by hand (or by a timer - 1e) | you writing it |
 | Discord app | Dragonhoard | Dragonhoard Beta | none - see 1f |
 | Database | `data/dragonhoard.db` | `data/dragonhoard-beta.db` | none - each test builds its own |
 | systemd service | `dragonhoard` | `dragonhoard-beta` | - |
@@ -25,7 +25,7 @@ branch on GitHub: `/opt/dragonhoard` of `main`, `/opt/dragonhoard-beta` of
 only by going through GitHub:
 
 ```
-your computer --git push--> GitHub: beta --(within a few minutes, by itself)--> /opt/dragonhoard-beta
+your computer --git push--> GitHub: beta --(update-beta.sh, by hand)--> /opt/dragonhoard-beta
                                    |
                          release, when beta has passed QA (Part 2)
                                    v
@@ -112,8 +112,8 @@ To fix one:
 3. Copy the new emoji's id (right-click it in Discord once it's usable
    somewhere, or read it back from the Developer Portal) and, on your own
    computer, fill it into that item's `beta_id` in `data/materials.py`.
-4. Commit and push to `beta` (Part 2). Beta restarts on its own within a few
-   minutes; check the icon renders where you'd expect.
+4. Commit and push to `beta`, then run `update-beta.sh` on the server (Part 2).
+   Check the icon renders where you'd expect.
 
 `config.IS_BETA` (from `BOT_ENVIRONMENT` in `.env`) is what picks `beta_id`
 over `live_id` - that's also how the bot tells which of the two applications
@@ -173,12 +173,19 @@ If the addresses start with `git@github.com:`, switch them to HTTPS:
 git remote set-url origin https://github.com/TheGreenDragon888/dragonhoard.git
 ```
 
-The repository is public, so fetching over HTTPS needs no key and no password -
-which matters because the timer in 1e fetches with nobody around to unlock an
-SSH key. It also means this checkout can no longer push, and it shouldn't need
+The repository is public, so fetching over HTTPS needs no key and no password
+(and if you ever turn on the timer in 1e, it fetches with nobody around to
+unlock an SSH key). It also means this checkout can no longer push, and it shouldn't need
 to: code only arrives here.
 
-### 1e. Turn on automatic beta updates
+### 1e. Optional, for later: automatic beta updates
+
+**Skip this for now.** Running `update-beta.sh` yourself after a push (Part 2)
+is the simpler setup, and it's the one the rest of this document assumes. Come
+back here only if SSH-ing in to run it gets tedious: this sets up a timer that
+runs the same script every two minutes, so a `git push` alone updates beta -
+even one made from somewhere you can't SSH from, like merging a branch on
+GitHub from your phone. Nothing else in the workflow changes.
 
 Three files in `deploy/` do this. They are copied out of the checkout into the
 system, so if one of them ever changes in git, copy it again.
@@ -315,20 +322,30 @@ A commit stays on your computer until you push, so commit as often as you like.
 git push
 ```
 
-That's the whole deploy. Within a few minutes the timer notices the new commit,
-pulls it into `/opt/dragonhoard-beta` and restarts the beta bot. Meanwhile
-GitHub runs the test suite on it (`.github/workflows/tests.yml`): a green tick
+That sends your commits to GitHub's `beta` branch. Then SSH into the server and
+pull them into the beta bot:
+
+```bash
+ssh isaac@<server-ip>                    # log in to the server
+/opt/dragonhoard-beta/update-beta.sh     # pull beta and restart the beta bot
+```
+
+`ssh` opens a terminal on the server over your network. The script pulls the
+new commits into `/opt/dragonhoard-beta`, installs new requirements if any
+changed, and restarts the beta bot. It asks for your password when it
+restarts the bot - restarting a service needs `sudo`. Part 6 explains each
+step. (If you've set up the timer in 1e, skip the SSH: the timer does this
+within two minutes of the push.)
+
+Meanwhile GitHub runs the test suite on it (`.github/workflows/tests.yml`): a green tick
 or red cross appears next to the commit on GitHub, and the **Actions** tab has
 the details.
 
-To watch it land, over SSH on the server:
+To watch the beta bot boot:
 
 ```bash
-journalctl -u dragonhoard-beta-update -n 30   # what the updater did
-journalctl -u dragonhoard-beta -f             # the beta bot booting; Ctrl+C stops watching
+journalctl -u dragonhoard-beta -f             # Ctrl+C stops watching
 ```
-
-Or run `/opt/dragonhoard-beta/update-beta.sh` yourself to skip the wait.
 
 Then go poke at it in your test server. Because `DEV_GUILD_ID` is set, any new
 or renamed slash command shows up the moment the bot finishes booting.
@@ -574,9 +591,10 @@ otherwise be left behind referring to a database that no longer exists.)
 
 ## Part 6: What `update-beta.sh` actually does
 
-The timer from 1e runs `/opt/dragonhoard-beta/update-beta.sh` every two minutes,
-as `isaac`. Almost every run finds nothing new and ends silently. When there is
-something new, step by step:
+You run `/opt/dragonhoard-beta/update-beta.sh` over SSH after a push (or the
+timer from 1e runs it every two minutes, as `isaac`). If there's nothing new it
+says `Already up to date` and stops. When there is something new, step by
+step:
 
 ```bash
 cd /opt/dragonhoard-beta
@@ -631,7 +649,7 @@ up the new code whenever you start it.
 The script does **not** run the tests - GitHub does that on every push, which
 is what keeps them off the server.
 
-Where to look:
+If you've set up the timer (1e), here is where to look:
 
 ```bash
 journalctl -u dragonhoard-beta-update -n 30          # what recent runs did
@@ -656,8 +674,7 @@ live and beta is which name you type.
 
 | Task | Production | Beta |
 |---|---|---|
-| Deploy new code | `/opt/dragonhoard/update.sh` | `git push` to `beta`, from your computer |
-| Deploy right now | - | `/opt/dragonhoard-beta/update-beta.sh` |
+| Deploy new code | `/opt/dragonhoard/update.sh` | `git push` to `beta` from your computer, then `/opt/dragonhoard-beta/update-beta.sh` |
 | Start | `sudo systemctl start dragonhoard` | `sudo systemctl start dragonhoard-beta` |
 | Stop | `sudo systemctl stop dragonhoard` | `sudo systemctl stop dragonhoard-beta` |
 | Restart | `sudo systemctl restart dragonhoard` | `sudo systemctl restart dragonhoard-beta` |
@@ -665,5 +682,5 @@ live and beta is which name you type.
 | Live logs | `journalctl -u dragonhoard -f` | `journalctl -u dragonhoard-beta -f` |
 | Recent logs | `journalctl -u dragonhoard -n 50` | `journalctl -u dragonhoard-beta -n 50` |
 | Errors only | `journalctl -u dragonhoard -p err` | `journalctl -u dragonhoard-beta -p err` |
-| Updater log | - | `journalctl -u dragonhoard-beta-update -n 30` |
-| Pause auto-updates | - | `sudo systemctl stop dragonhoard-beta-update.timer` |
+| Updater log (timer only) | - | `journalctl -u dragonhoard-beta-update -n 30` |
+| Pause auto-updates (timer only) | - | `sudo systemctl stop dragonhoard-beta-update.timer` |
