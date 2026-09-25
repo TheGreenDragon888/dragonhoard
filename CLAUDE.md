@@ -12,17 +12,24 @@ in the furnace/blast furnace/factory/press/scrapper to produce better
 materials and upgrade drills, with production fees burning currency back out.
 See README.md for the full player-facing rundown of the loop and command list.
 
-**This directory (`/opt/dragonhoard-beta`) is the only place to edit code.**
-`/opt/dragonhoard` is a separate, unrelated checkout that only ever runs
-`git pull` from GitHub's `main` — never edit it directly (see docs/testing.md
-for the full beta/production workflow, backups, and rollback).
+**Code is written on a development machine, on the `beta` branch or a branch
+that merges into it — never on the server.** The server's two checkouts are
+deployment targets that only pull from GitHub: `/opt/dragonhoard-beta` follows
+`beta` (a timer runs `update-beta.sh` every two minutes) and `/opt/dragonhoard`
+follows `main` (`update.sh`, by hand). So a push to `beta` is a deploy to the
+beta bot: push only when asked. `main` only ever moves by a fast-forward
+release from `beta` or a hotfix, and `beta` is never squashed or rebased into
+it. See docs/testing.md for the full workflow, backups, and rollback.
 
 ## Commands
 
 ```bash
-# Run the full test suite (~15s). tests/conftest.py puts the temporary
-# databases on tmpfs: on this host's disk the same run takes about nine
-# minutes, every second of it SQLite fsyncs. Set TMPDIR to override.
+# Run the full test suite (~15s on the server). tests/conftest.py puts the
+# temporary databases on tmpfs: on the server's disk the same run takes about
+# nine minutes, every second of it SQLite fsyncs. Set TMPDIR to override.
+# Needs Python 3.12+ and DISCORD_BOT_TOKEN set to anything (config.py refuses
+# to import without one; a placeholder in .env does). On Windows the venv's
+# interpreter is venv\Scripts\python instead of venv/bin/python.
 venv/bin/python -m pytest tests/ -q
 # (unittest discover also works, but reads no conftest, so it runs on the
 # disk: TMPDIR=/dev/shm python -m unittest discover tests)
@@ -37,8 +44,9 @@ python bot.py
 ```
 
 There is no separate lint/build step; `pytest` is the thing to run before
-calling anything done. Most cogs' logic is covered by tests that construct a
-temporary SQLite database directly (`unittest.IsolatedAsyncioTestCase`), not
+calling anything done. GitHub Actions runs the same suite on every push
+(`.github/workflows/tests.yml`). Most cogs' logic is covered by tests that
+construct a temporary SQLite database directly (`unittest.IsolatedAsyncioTestCase`), not
 by spinning up Discord — no gateway connection is needed to test game logic.
 
 ## Architecture
@@ -258,11 +266,13 @@ before adding a new embed or a sixth machine's status command.
 
 Two completely separate installations share no code checkout, database, or
 Discord application — see `docs/testing.md` for the full day-to-day
-workflow (branch → test in beta → merge to `main` → `/opt/dragonhoard/
-update.sh` to ship), backup/rollback procedure, and how to copy live data
-into beta for testing against real data. Key point: `BOT_ENVIRONMENT=beta`
-in `.env` is what flips `config.IS_BETA`, which selects `beta_id` emoji and
-syncs commands to `DEV_GUILD_ID` instead of globally.
+workflow (commit on `beta` → push, which the beta bot picks up by itself →
+fast-forward `main` to `beta` → `/opt/dragonhoard/update.sh` to ship; hotfixes
+branch from `main` and are merged back into `beta`), backup/rollback
+procedure, and how to copy live data into beta for testing against real data.
+Key point: `BOT_ENVIRONMENT=beta` in `.env` is what flips `config.IS_BETA`,
+which selects `beta_id` emoji and syncs commands to `DEV_GUILD_ID` instead of
+globally.
 
 ## Writing comments
 

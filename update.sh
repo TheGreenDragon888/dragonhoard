@@ -21,8 +21,8 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
     echo "ERROR: /opt/dragonhoard has uncommitted local changes."
     echo "       Production should be a clean copy of main. Review them with:"
     echo "           cd /opt/dragonhoard && git status && git diff"
-    echo "       Then either move the work to /opt/dragonhoard-beta and commit"
-    echo "       it there, or discard it with: git reset --hard origin/main"
+    echo "       Then either redo the work on your own computer and push it to"
+    echo "       beta, or discard it with: git reset --hard origin/main"
     exit 1
 fi
 

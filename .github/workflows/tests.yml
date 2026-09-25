@@ -1,0 +1,29 @@
+# Runs the test suite on GitHub's machines on every push to any branch, so the
+# server never has to. A pushed commit gets a green tick or a red cross on
+# GitHub; check for the tick on beta before releasing it to main
+# (docs/testing.md Part 2).
+name: Tests
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          # 3.12 is the oldest Python the code parses under: cogs/mining.py
+          # puts a backslash inside an f-string expression, which 3.11 rejects.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      # requirements-web.txt too, because tests/test_ops_dashboard.py imports web/.
+      - run: pip install -r requirements-dev.txt -r requirements-web.txt
+      - run: python -m pytest tests/ -q
+        env:
+          # config.py refuses to import without a token. The tests never
+          # connect to Discord, so any value will do.
+          DISCORD_BOT_TOKEN: not-a-real-token
