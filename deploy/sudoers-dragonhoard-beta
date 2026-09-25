@@ -1,0 +1,7 @@
+# Lets update-beta.sh, which runs as isaac from a timer with nobody there to
+# type a password, restart the two beta services - and do nothing else.
+#
+# Installed as /etc/sudoers.d/dragonhoard-beta by docs/testing.md Part 1e.
+# That file name has no dot in it on purpose: sudo skips any file in
+# /etc/sudoers.d whose name contains a "." (see `man sudoers`).
+isaac ALL=(root) NOPASSWD: /usr/bin/systemctl restart dragonhoard-beta, /usr/bin/systemctl restart dragonhoard-beta-web

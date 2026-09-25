@@ -1,0 +1,12 @@
+# Starts dragonhoard-beta-update.service every two minutes, which is what
+# makes a push to beta reach the beta bot on its own.
+# Installed by docs/testing.md Part 1e.
+
+[Unit]
+Description=Check GitHub's beta branch for new Dragonhoard commits
+
+[Timer]
+OnCalendar=*:0/2
+
+[Install]
+WantedBy=timers.target

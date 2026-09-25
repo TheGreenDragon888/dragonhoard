@@ -1,0 +1,5 @@
+# These run on the Linux server, where a Windows line ending breaks them: bash
+# fails on a CRLF script with "/bin/bash^M: bad interpreter". Forcing LF here
+# keeps them runnable even when they are edited on a Windows computer.
+*.sh      text eol=lf
+deploy/*  text eol=lf

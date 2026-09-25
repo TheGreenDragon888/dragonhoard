@@ -1,0 +1,13 @@
+# Runs update-beta.sh once. Started by dragonhoard-beta-update.timer, not by
+# hand and not at boot, which is why there is no [Install] section.
+# Installed by docs/testing.md Part 1e.
+
+[Unit]
+Description=Update /opt/dragonhoard-beta from GitHub's beta branch
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=isaac
+ExecStart=/opt/dragonhoard-beta/update-beta.sh

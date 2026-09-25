@@ -1,5 +1,4 @@
 .env
-.env.example
 data/*.db
 # SQLite WAL sidecars, created since db.py enables journal_mode = WAL
 data/*.db-shm
@@ -9,6 +8,9 @@ __pycache__/
 .venv/
 venv/
 *.service
+# ...except the beta auto-update unit, which docs/testing.md Part 1e installs
+# straight from this checkout.
+!deploy/*.service
 
 # Hand-maintained guild/user/channel display-name lookup for the ops
 # dashboard (web/directory.py) - not secret, just personal to one operator's
