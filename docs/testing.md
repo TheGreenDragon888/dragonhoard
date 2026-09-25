@@ -271,8 +271,13 @@ venv/bin/python -m pip install -r requirements-dev.txt -r requirements-web.txt
 `requirements-web.txt` is there because `tests/test_ops_dashboard.py` tests the
 dashboard in `web/`.
 
-Last, create a file called `.env` in the `dragonhoard` folder (in VS Code:
-**File -> New File**, save it as `.env`) containing one line:
+Last, make your own `.env` from the template:
+
+```bash
+cp .env.example .env           # Windows PowerShell: copy .env.example .env
+```
+
+Open `.env` in VS Code and fill in the token line with any placeholder:
 
 ```
 DISCORD_BOT_TOKEN=placeholder-for-tests
