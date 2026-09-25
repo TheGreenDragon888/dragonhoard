@@ -142,6 +142,7 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         await self.db.init_schema()
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def test_scrapper_jobs_are_accepted_afterwards(self):
@@ -503,6 +504,7 @@ class JobBoardClaimsMigrationTests(unittest.IsolatedAsyncioTestCase):
         await self.db.init_schema()
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def claims_paid(self, user_id):
@@ -530,7 +532,9 @@ class JobBoardClaimsMigrationTests(unittest.IsolatedAsyncioTestCase):
         await self.db.execute(
             "UPDATE daily_job_progress SET claims_paid = 6 WHERE user_id = ?", (self.CLAIMED,)
         )
-        await Database(self.path).init_schema()
+        reopened = Database(self.path)
+        await reopened.init_schema()
+        reopened.close()
         row = await self.claims_paid(self.CLAIMED)
         self.assertEqual(row["claims_paid"], 6)
 
@@ -546,6 +550,7 @@ class FreshDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.db.init_schema()
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def test_it_accepts_every_machines_jobs(self):

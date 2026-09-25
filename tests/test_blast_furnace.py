@@ -221,6 +221,7 @@ class BlastFurnaceTestCase(unittest.IsolatedAsyncioTestCase):
         self.cog._production = ProductionClock(PROCESS_TICK_MINUTES, now=lambda: self.now)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def tick(self, times=1):

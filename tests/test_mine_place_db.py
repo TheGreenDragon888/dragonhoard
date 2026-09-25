@@ -46,6 +46,7 @@ class FreeDrillFillTests(unittest.IsolatedAsyncioTestCase):
         self.cog.db = self.db
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def place(self):

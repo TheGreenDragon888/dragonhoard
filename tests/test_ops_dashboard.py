@@ -74,6 +74,7 @@ class PoolPayloadTests(unittest.IsolatedAsyncioTestCase):
             await refill_pool(tx, GUILD)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     def payload(self):
@@ -117,6 +118,7 @@ class EscrowPayloadTests(unittest.IsolatedAsyncioTestCase):
         await adjust_currency_balance(self.db, GUILD, USER, 1_000.0)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     def payload(self):
@@ -189,6 +191,7 @@ class GdpPayloadTests(unittest.IsolatedAsyncioTestCase):
         await ensure_user_row(self.db, USER)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     def payload(self):

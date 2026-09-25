@@ -55,6 +55,7 @@ class JobBoardTestCase(unittest.IsolatedAsyncioTestCase):
         await ensure_user_row(self.db, OTHER_USER)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def post(self):

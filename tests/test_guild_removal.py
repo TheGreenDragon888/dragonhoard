@@ -40,6 +40,7 @@ class GuildTestCase(unittest.IsolatedAsyncioTestCase):
         await ensure_server_row(self.db, KEPT)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def add_drill(self, owner_id, guild_id, stored_amount=0, **columns):

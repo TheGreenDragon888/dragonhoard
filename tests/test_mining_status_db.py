@@ -55,6 +55,7 @@ class MineStatusTestCase(unittest.IsolatedAsyncioTestCase):
         self.cog.db = self.db
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def add_drill(self, owner_id, drill_type="iron_drill", level=1, is_full=0,

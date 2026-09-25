@@ -199,6 +199,7 @@ class AffinityDatabaseTestCase(unittest.IsolatedAsyncioTestCase):
         await ensure_user_row(self.db, USER)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def set_to(self, affinity_id, day="2026-09-20"):

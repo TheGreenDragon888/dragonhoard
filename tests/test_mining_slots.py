@@ -100,6 +100,7 @@ class MiningSlotStatusTestCase(unittest.IsolatedAsyncioTestCase):
         await ensure_server_row(self.db, GUILD)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def set_fees(self, **per_machine):
@@ -251,6 +252,7 @@ class MiningSlotsFullMessageTests(unittest.IsolatedAsyncioTestCase):
         await ensure_server_row(self.db, GUILD)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def test_the_rejection_names_the_cap_and_what_lifts_it(self):
@@ -302,6 +304,7 @@ class MinePlaceSlotEnforcementTestCase(unittest.IsolatedAsyncioTestCase):
         self.cog.db = self.db
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def add_drill(self, user_id, guild_id):

@@ -54,6 +54,7 @@ class InventoryTestCase(unittest.IsolatedAsyncioTestCase):
         self.cog.bot = FakeBot()
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def add_drill(self, level, locked_job_id=None):

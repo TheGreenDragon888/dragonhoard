@@ -189,6 +189,7 @@ class FurnaceLoopTests(unittest.IsolatedAsyncioTestCase):
         self.cog._production = ProductionClock(PROCESS_TICK_MINUTES, now=lambda: self.now)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def queue(self, quantity, queued_at):
@@ -236,6 +237,7 @@ class WorkListTests(unittest.IsolatedAsyncioTestCase):
         await ensure_server_row(self.db, GUILD)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def queue(self, queued_at, status="queued"):

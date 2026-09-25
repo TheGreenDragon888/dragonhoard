@@ -40,6 +40,7 @@ class DrillTestCase(unittest.IsolatedAsyncioTestCase):
         await self.db.init_schema()
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def add_drill(self, guild_id=HERE, owner_id=OWNER, stored_amount=0, **columns):

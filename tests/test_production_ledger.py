@@ -76,6 +76,7 @@ class _LedgerTestCase(unittest.IsolatedAsyncioTestCase):
         await ensure_user_row(self.db, USER)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def totals(self, guild_id=GUILD, hours=DAY):

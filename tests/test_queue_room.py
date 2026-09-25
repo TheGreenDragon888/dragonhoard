@@ -51,6 +51,7 @@ class QueueRoomTestCase(unittest.IsolatedAsyncioTestCase):
         await ensure_server_row(self.db, GUILD)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def set_machine(self, machine, base, level):

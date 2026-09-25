@@ -39,6 +39,7 @@ class DonateTestCase(unittest.IsolatedAsyncioTestCase):
             await ensure_user_row(self.db, user_id)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def credit(self, user_id, amount):

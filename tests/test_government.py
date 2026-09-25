@@ -96,6 +96,7 @@ class _GovernmentTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def cfg(self):

@@ -39,6 +39,7 @@ class CollectQueryTests(unittest.IsolatedAsyncioTestCase):
         await self.add_drill(OTHER_USER, HERE, 300)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def add_drill(self, owner_id, guild_id, stored_amount):

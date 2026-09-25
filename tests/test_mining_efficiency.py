@@ -357,6 +357,7 @@ class EfficiencyDatabaseTests(unittest.IsolatedAsyncioTestCase):
         await ensure_user_row(self.db, USER)
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def test_no_row_reads_as_the_default_and_not_unlocked(self):

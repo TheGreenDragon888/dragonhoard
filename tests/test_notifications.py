@@ -55,6 +55,7 @@ class NotificationTestCase(unittest.IsolatedAsyncioTestCase):
         await self.db.init_schema()
 
     async def asyncTearDown(self):
+        self.db.close()
         self._dir.cleanup()
 
     async def add_global(self, key, title="Notice", body="Body"):
