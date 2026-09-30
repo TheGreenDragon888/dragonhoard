@@ -272,8 +272,7 @@ class BlastFurnaceCog(commands.Cog):
         # counted in, items are what the player is waiting for, and quoting one
         # without the other invites reading the wrong one.
         embed = make_infrastructure_embed(
-            emoji="♨️",
-            name="Blast Furnace",
+            machine="blast_furnace",
             color=BLAST_FURNACE_COLOR,
             level=level,
             speed_text=(

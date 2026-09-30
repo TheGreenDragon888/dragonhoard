@@ -260,9 +260,14 @@ beta bots are separate Discord applications with separately uploaded icons
 
 **Embeds** (`utils/embeds.py`): every embed goes through `make_embed()`
 (palette color + standard footer) or, for the five machine status commands,
-`make_infrastructure_embed()`. See `docs/stylization.md` for the full color
-table (each feature area owns a fully-saturated color) and layout rules
-before adding a new embed or a sixth machine's status command.
+`make_infrastructure_embed()`. Anything that moves goods or currency answers
+with a receipt from `utils/receipts.py` - `build_action_receipt` for whatever
+is not a machine job or a trade - whose lines say `remaining` after a spend and
+`total` after a gain. A machine is named through `MACHINE_DISPLAY` wherever a
+player reads it. Embeds carry figures; what they mean goes on the feature's
+`/help` page (1.4.1). See `docs/stylization.md` for the full color table (each
+feature area owns a fully-saturated color) and layout rules before adding a new
+embed or a sixth machine's status command.
 
 ## Beta vs. production
 

@@ -420,8 +420,7 @@ class ScrapperCog(commands.Cog):
         pending_items = sum(job["quantity"] for job in jobs)
 
         embed = make_infrastructure_embed(
-            emoji="♻️",
-            name="Scrapper",
+            machine="scrapper",
             color=SCRAPPER_COLOR,
             level=level,
             speed_text=f"{format_rate(rate, 'item')}/hour",

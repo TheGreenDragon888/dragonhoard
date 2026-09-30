@@ -778,11 +778,40 @@ class CogTests(_GovernmentTestCase):
             app_commands.Choice(name="furnace", value="furnace"),
             app_commands.Choice(name="x1.25", value="1.25"),
         )
-        self.assertIn("0.0125** per item (x1.25 its default)", i.embed.description)
+        self.assertIn("0.0125** per item (x1.25)", i.embed.description)
         i = FakeInteraction(ALICE)
         await GovernmentCog.government_status_command.callback(self.cog, i)
         fees = "".join(field.value for field in i.embed.fields)
-        self.assertIn("0.0125 per item (x1.25)", fees)
+        self.assertIn("`0.0125`/item x1.25", fees)
+
+    async def test_refusals_quote_the_servers_own_currency(self):
+        """They used to name every sum in the default 💰 whatever the server's
+        currency was (utils/government.py: _money)."""
+        await self.set(currency_emoji="<:Scale:1>", treasury=1.0)
+        i = FakeInteraction(MAYOR_ID)
+        await GovernmentCog.mayor_enhance.callback(
+            self.cog, i, app_commands.Choice(name="Furnace", value="furnace"),
+        )
+        self.assertIn("<:Scale:1>", i.refusal)
+        self.assertNotIn("💰", i.refusal)
+
+    async def test_a_mayors_receipt_shows_what_the_treasury_has_left(self):
+        await self.set(treasury=100.0)
+        i = FakeInteraction(MAYOR_ID)
+        await GovernmentCog.mayor_fund.callback(
+            self.cog, i, app_commands.Choice(name="Furnace", value="furnace"), 40.0,
+        )
+        spent = next(f for f in i.embed.fields if f.name == "Spent")
+        self.assertIn("**40.00**", spent.value)
+        self.assertIn("(60.00 left in the treasury)", spent.value)
+
+    async def test_the_status_page_names_each_machine_once(self):
+        i = FakeInteraction(ALICE)
+        await GovernmentCog.government_status_command.callback(self.cog, i)
+        machines = next(f for f in i.embed.fields if f.name.startswith("Machines")).value
+        self.assertEqual(len(machines.splitlines()), 5)
+        self.assertIn("Hydraulic Press", machines)
+        self.assertTrue(i.embed.title.startswith("Tax "))
 
     async def test_the_mayor_funds_slots_and_a_bond_is_bought(self):
         await self.set(treasury=10.0)
@@ -798,7 +827,7 @@ class CogTests(_GovernmentTestCase):
         self.assertIsNone(i.refusal)
         i = FakeInteraction(BOB)
         await GovernmentCog.bonds_holdings.callback(self.cog, i)
-        self.assertIn("10.00", i.embed.description)
+        self.assertIn("`10.00`", i.embed.fields[0].value)
 
     async def test_the_loop_pays_bondholders(self):
         await self.db.execute(

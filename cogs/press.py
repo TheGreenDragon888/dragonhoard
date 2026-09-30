@@ -285,8 +285,7 @@ class PressCog(commands.Cog):
         queue_hours = max(0.0, press_days_queued - cfg["press_progress"]) / rate_per_day * 24
 
         embed = make_infrastructure_embed(
-            emoji="⚙️",
-            name="Hydraulic Press",
+            machine="press",
             color=PRESS_COLOR,
             level=level,
             # The one machine whose speed isn't items per hour: a press-day is

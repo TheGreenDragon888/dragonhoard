@@ -294,7 +294,7 @@ class MarketReceiptEmbedTests(unittest.TestCase):
     def test_currency_field_names_the_amount_moved_and_new_balance(self):
         value = self._field(self._embed(), "Received")
         self.assertIn("💰 **10.00**", value)
-        self.assertIn("(25.00 balance)", value)
+        self.assertIn("(25.00 total)", value)
 
     def test_a_missing_currency_emoji_falls_back_to_the_default(self):
         value = self._field(self._embed(currency_emoji=None), "Received")
@@ -310,12 +310,12 @@ class MarketReceiptEmbedTests(unittest.TestCase):
         )
         self.assertIn("(25.00 remaining)", value)
 
-    def test_the_material_side_gained_says_held_not_remaining(self):
+    def test_the_material_side_gained_says_total_not_remaining(self):
         value = self._field(
             self._embed(material_field="Bought", material_gained=True),
             "Bought",
         )
-        self.assertIn("(42 held)", value)
+        self.assertIn("(42 total)", value)
 
     def test_round_up_currency_false_rounds_a_sale_payout_down(self):
         # A sale must never look more generous than it was.

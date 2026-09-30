@@ -35,6 +35,27 @@ PERSONAL_NOTICE_COLOR = discord.Color(0x2200FF)  # indigo
 
 FOOTER_TEXT = f"Dragonhoard by Isaac Day · Version {config.VERSION}"
 
+# How each machine is shown to players: the unicode emoji and the proper name
+# its own status page's author line carries. One table, so a machine named in
+# /government status or on /economy status's queue reads exactly as it does on
+# its own page - they used to disagree ("Press" beside "Hydraulic Press").
+# Unicode rather than custom emoji because author lines render no custom emoji
+# (docs/stylization.md). Keyed on utils/db_helpers.py: MACHINES, which
+# tests/test_production_ledger.py pins it to.
+MACHINE_DISPLAY: dict[str, tuple[str, str]] = {
+    "furnace": ("\U0001F525", "Furnace"),
+    "blast_furnace": ("\u2668\ufe0f", "Blast Furnace"),
+    "factory": ("\U0001F3ED", "Factory"),
+    "press": ("\u2699\ufe0f", "Hydraulic Press"),
+    "scrapper": ("\u267B\ufe0f", "Scrapper"),
+}
+
+
+def machine_display(machine: str) -> str:
+    """A machine's emoji and name, as a line leads with it."""
+    emoji, name = MACHINE_DISPLAY[machine]
+    return f"{emoji} {name}"
+
 
 def footer_with(note: str) -> str:
     """The standard footer with one short note appended.
@@ -62,8 +83,7 @@ def make_embed(title: str, color: discord.Color = DEFAULT_COLOR, **kwargs) -> di
 
 def make_infrastructure_embed(
     *,
-    emoji: str,
-    name: str,
+    machine: str,
     color: discord.Color,
     level: int,
     speed_text: str,
@@ -81,12 +101,13 @@ def make_infrastructure_embed(
     next level is one sentence of description. That leaves the fields for the
     two settings a server manager actually changes, and the queue.
 
-    `emoji` has to be a unicode glyph, not a custom <:Name:ID> - Discord
-    renders custom emoji in descriptions and field values but not in author
-    lines. Same constraint rules out a relative timestamp in the title.
+    The author line is MACHINE_DISPLAY's emoji and name, which is why that
+    table's emoji are unicode: Discord renders custom <:Name:ID> emoji in
+    descriptions and field values but not in author lines. Same constraint
+    rules out a relative timestamp in the title.
     """
     embed = discord.Embed(title=speed_text, color=color)
-    embed.set_author(name=f"{emoji} {name} • Level {level}")
+    embed.set_author(name=f"{machine_display(machine)} • Level {level}")
     # Levels are unbounded - each threshold is UPGRADE_THRESHOLD_STEP times the
     # last, which is what keeps them in check - so there is always a next one to
     # show. The collected

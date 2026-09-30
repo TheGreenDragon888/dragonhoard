@@ -18,7 +18,9 @@ unicode ones either. A footer that needs to refer to a material has to NAME
 it. A just-unlocked `/focus` or `/efficiency` appends what the unlock cost, as
 "· unlocked for 1 Ruby" rather than as the gem's icon; an open `/bet` appends
 "· odds move as people bet", and drops it once the bet is settled and they
-cannot.
+cannot. A receipt whose next step is another command names it there -
+"· /market cancel takes it back", "· /help Economy explains GDP" - rather than
+spending a sentence of the embed on it.
 
 Every one of those goes through `utils/embeds.py: footer_with()`, which is the
 only place the footer is extended. Build the string anywhere else and a release
@@ -77,15 +79,70 @@ Two constraints the layout depends on:
   `format_relative_timestamp` is for descriptions and field values — which is
   where the queue receipts use it.
 
+## Receipts
+
+Anything that moves goods or currency answers with a receipt, laid out the same
+way whichever command sent it:
+
+```
+title:       🏷️ Listed
+description: Listed <:Wiring:…> **30x Wiring**. It comes off the market in 7 days if it hasn't sold.
+
+Listed   <:Wiring:…> **30 Wiring** (10 remaining)
+Asking   💰 0.72 each (21.60 for all)
+footer:  … · /market cancel takes it back
+```
+
+The title says what happened, not which command or office did it (`Machine
+Funded`, not `Mayor`). The description is one sentence. Then one field per thing
+that moved: emoji, the bolded amount, and what the player has now in
+parentheses. That last word is **`remaining` after something was taken and
+`total` after something was gained** - one word per direction, everywhere
+(`utils/receipts.py: SPENT, GAINED`). 1.4 had grown four for the two meanings.
+When the figure in brackets is not the player's own - the treasury, on a Mayor's
+receipt - it says whose (`(362.55 left in the treasury)`).
+
+Machine jobs use `build_receipt_embed`, trades `build_market_receipt_embed`,
+and everything else `build_action_receipt`; the three share `material_line`
+and `currency_line`. Until 1.4.1 every 1.4 command that was not a machine job or
+a trade answered with a paragraph of prose instead.
+
+## Figures, not explanations
+
+A status page or receipt carries figures. What they mean - how GDP is counted,
+where tax goes, how bonds are repaid - is written once, on the feature's page
+of `/help` (`data/manual.py`), and a footer note points there when a reader
+might need it. Repeating the explanation on the embed made every reader pay
+for it on every command, and 1.4's embeds had grown sentences for each.
+
+## One separator inside a line
+
+Parts of one line are separated with ` · `. ` • ` is kept for author lines and
+queue headings (`🔥 Furnace • Level 3`, `Queue • 12 items`), and ` - ` and
+` — ` are prose, not separators.
+
+## Machine names
+
+A machine is named by `utils/embeds.py: MACHINE_DISPLAY` wherever a player
+reads it - its own status page's author line, `/government status`, the
+`/economy status` queue, the Mayor's and Treasurer's receipts - so it is
+`♨️ Blast Furnace` and `⚙️ Hydraulic Press` everywhere rather than
+"Blast furnace" in one place and "Press" in another.
+
 ## Market book lines
 
-`/market status` and `/market entries` render a book row the same way, so a
-player reads one page having learned the other:
+`/market status` and `/market entries` render a book row the same way, and call
+the two books by the same names - **Listings** and **Orders** - so a player
+reads one page having learned the other:
 
 ```
-`#3` <:Steel:…> `0.7200` · 100 · `72.000` held     (entries: id first)
-      <:Steel:…> `0.7200` · 100 · 1 seller          (status: no id to lead with)
+`#3` <:Wiring:…> `0.7200` · 100 · `72.000` held · expires in 3 days   (entries: id first)
+      <:Wiring:…> `0.7200` · 100 · 1 seller                            (status: no id)
+      <:IronOre:…> `0.01` `0.02` · 9,000                               (status: the server's row)
 ```
+
+The server's own rows follow the same grammar - emoji, its two prices, then its
+stock after the ` · ` - rather than a bracketed "(9,000 in stock)".
 
 An id column where there is one, then the item's **emoji**, then a
 fixed-width price from `format_compact_price`, then the counts.
@@ -101,10 +158,12 @@ worth and a bare "1" would not say which drill was on offer.
 ## Currency emoji in a repeated column
 
 A field whose every line carries a price names the currency **once in the
-field's own name**, not on each line - `Item · Sell · Buy · {emoji} each`
-rather than the emoji beside each of the six prices.
+field's own name**, not on each line - `Server · Sell · Buy · Stock · {emoji} each`
+rather than the emoji beside each of the six prices. It applies to every
+embed, not just the market: `/government status`'s machine list, `/bonds
+holdings` and `/economy gdp`'s breakdown all follow it as of 1.4.1.
 
-This is a budget rule, not an aesthetic one. A server's currency emoji can be
+It started as a budget rule. A server's currency emoji can be
 a custom or animated one, which is 38 to 53 characters of markup rather than a
 single glyph, and `/market status` has four price columns whose length grows
 with the number of materials and the size of the player books. Repeating it

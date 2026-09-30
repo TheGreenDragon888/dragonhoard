@@ -49,8 +49,8 @@ from discord.ext import commands
 from database.db import InsufficientQuantity
 from utils.responses import respond, register_notice_action
 from utils.embeds import make_embed, footer_with, BET_COLOR
-from utils.formatting import format_currency, format_relative_timestamp
-from utils.notifications import post_server_notification, post_user_notification
+from utils.formatting import format_currency, format_price, format_relative_timestamp
+from utils.notifications import mark_seen, post_server_notification, post_user_notification
 from utils.db_helpers import ensure_server_row, ensure_user_row, get_currency_balance
 from utils.betting import (
     AGAINST,
@@ -245,44 +245,65 @@ class StakeModal(discord.ui.Modal, title="Place your bet"):
 # ---------------------------------------------------------------------------
 
 
+# How a side of a finished bet came out, for _odds_line.
+WON, LOST, RETURNED = "won", "lost", "returned"
+
+
 def _odds_line(
-    pools: Pools, side: str, currency_emoji: str | None, settled: bool = False
+    pools: Pools, side: str, currency_emoji: str | None, result: str | None = None
 ) -> str:
-    """One side's pool and what it pays.
+    """One side's pool and what it pays - or, once the bet is over, what
+    became of it (`result`: WON, LOST or RETURNED; None while it runs).
 
     The multiple is a TOTAL RETURN - stake included - so there is one number on
     screen and nothing has to say whether the stake is in it. See
     utils/betting.py: return_multiple.
 
-    `settled` only changes the tense. A resolved bet's card is a record of what
-    happened, and "returned if this wins" on it reads as though the bet were
-    still running.
+    A finished bet's card is a record: the winning side shows what it was paid,
+    the losing side that it lost. Until 1.4.1 both sides read "returned to this
+    side", which on the losing side said the opposite of what happened.
     """
     staked = pools.side_cents(side)
     backers = pools.backers(side)
     if staked <= 0:
-        return f"{format_currency(0, currency_emoji)} - nobody yet"
-    other = pools.side_cents(FOR if side == AGAINST else AGAINST)
+        return f"{format_currency(0, currency_emoji)} · nobody yet"
     people = f"{backers:,} player{'' if backers == 1 else 's'}"
+    head = f"{format_currency(from_cents(staked), currency_emoji)} · {people}"
+    if result == LOST:
+        return f"{head}\nlost"
+    if result == RETURNED:
+        return f"{head}\nevery stake returned"
+    other = pools.side_cents(FOR if side == AGAINST else AGAINST)
     if other <= 0:
         # Nothing is being bet against this side, so the "odds" would be 1.00x -
         # a true figure that reads as though the bet were a bad one rather than
         # an unopposed one.
-        return (
-            f"{format_currency(from_cents(staked), currency_emoji)} · {people}\n"
-            f"Nothing staked against this yet"
-        )
+        return f"{head}\nnothing against it yet"
     multiple = return_multiple(pools, side)
-    outcome = "returned to this side" if settled else "returned if this wins"
-    return (
-        f"{format_currency(from_cents(staked), currency_emoji)} · {people}\n"
-        f"**{multiple:,.2f}x** {outcome}"
-    )
+    outcome = "paid out" if result == WON else "if it wins"
+    return f"{head}\n**{multiple:,.2f}x** {outcome}"
+
+
+def _results(bet, pools: Pools, status: str) -> dict[str, str | None]:
+    """What each side's line should say about how the bet ended."""
+    if status == "cancelled":
+        return {FOR: RETURNED, AGAINST: RETURNED}
+    if status != "resolved":
+        return {FOR: None, AGAINST: None}
+    if pools.backers(bet["outcome"]) == 0:
+        # Called toward a side nobody took, so the bet was voided.
+        return {FOR: RETURNED, AGAINST: RETURNED}
+    loser = FOR if bet["outcome"] == AGAINST else AGAINST
+    return {bet["outcome"]: WON, loser: LOST}
 
 
 def build_bet_embed(bet, pools: Pools, status: str, currency_emoji: str | None) -> discord.Embed:
     """A bet as it stands. The same card for /bet status, for the confirmation
-    after a wager, and for the settled record afterwards."""
+    after a wager, and for the settled record afterwards.
+
+    Two inline fields, one per side; a reply about the caller's own wager adds
+    a third, "Your stake", so the row stays one row. The pot was a field of its
+    own until 1.4.1 - it is the two sides added up."""
     embed = make_embed(f"🎲 Bet #{bet['bet_id']}", BET_COLOR)
     embed.description = f"> {_clean(bet['prediction'])}\n\nProposed by <@{bet['creator_id']}>."
 
@@ -293,7 +314,7 @@ def build_bet_embed(bet, pools: Pools, status: str, currency_emoji: str | None) 
     elif status == "closed":
         embed.description += "\nClosed to new wagers, waiting on an admin to call it."
     elif status == "cancelled":
-        embed.description += "\nCancelled. Every stake was handed back."
+        embed.description += "\nCancelled."
     else:
         won = SIDE_LABELS[bet["outcome"]]
         if pools.backers(bet["outcome"]) == 0:
@@ -302,28 +323,37 @@ def build_bet_embed(bet, pools: Pools, status: str, currency_emoji: str | None) 
             # bet paid out nothing and every stake went home.
             embed.description += (
                 f"\nCalled **{won}** by <@{bet['resolved_by']}>, but nobody had taken that "
-                f"side - so the bet was voided and every stake went back."
+                f"side, so the bet was voided."
             )
         else:
             embed.description += f"\nResolved **{won}** by <@{bet['resolved_by']}>."
 
-    settled = status in ("resolved", "cancelled")
+    results = _results(bet, pools, status)
     embed.add_field(
-        name="✅ For", value=_odds_line(pools, FOR, currency_emoji, settled), inline=True
+        name="✅ For", value=_odds_line(pools, FOR, currency_emoji, results[FOR]), inline=True
     )
     embed.add_field(
-        name="❌ Against", value=_odds_line(pools, AGAINST, currency_emoji, settled), inline=True
-    )
-    embed.add_field(
-        name="Pot",
-        value=format_currency(from_cents(pools.pot_cents), currency_emoji),
-        inline=True,
+        name="❌ Against", value=_odds_line(pools, AGAINST, currency_emoji, results[AGAINST]), inline=True
     )
     if status == "open":
         # Only while it can still change. On a closed or settled bet the odds
         # are whatever they ended up as, and saying they move would be wrong.
         embed.set_footer(text=footer_with("odds move as people bet"))
     return embed
+
+
+def _stake_field(pools: Pools, side: str, staked_cents: int, balance: float, currency_emoji) -> str:
+    """The caller's own position, for the third inline field: what they have
+    on which side, what it returns at the odds right now, and what their
+    balance is down to."""
+    line = f"{format_currency(from_cents(staked_cents), currency_emoji)} **{SIDE_LABELS[side].lower()}**"
+    multiple = return_multiple(pools, side)
+    # Only once somebody is on the other side: before that the "return" is the
+    # stake itself, which the line above already says.
+    other = pools.side_cents(FOR if side == AGAINST else AGAINST)
+    if multiple is not None and other > 0:
+        line += f"\npays {format_currency(from_cents(staked_cents) * multiple, currency_emoji)} now"
+    return f"{line}\n({format_price(balance)} remaining)"
 
 
 # ---------------------------------------------------------------------------
@@ -370,24 +400,26 @@ async def _stake(interaction: discord.Interaction, bet, side: str, amount: float
         return
 
     embed = build_bet_embed(bet, pools, "open", currency_emoji)
-    multiple = return_multiple(pools, side)
-    summary = (
-        f"You have {format_currency(from_cents(staked), currency_emoji)} **"
-        f"{SIDE_LABELS[side].lower()}** this."
-    )
-    if multiple is not None:
-        summary += (
-            f" At the odds right now that returns "
-            f"{format_currency(from_cents(staked) * multiple, currency_emoji)} if it wins - "
-            f"but the odds move every time somebody else bets."
-        )
-    embed.insert_field_at(0, name="Your position", value=summary, inline=False)
     embed.add_field(
-        name="Your balance",
-        value=format_currency(balance, currency_emoji),
+        name="Your stake",
+        value=_stake_field(pools, side, staked, balance, currency_emoji),
         inline=True,
     )
     await respond(interaction, db, embed=embed)
+
+
+async def _already_seen_by(tx, user_id: int, guild_id: int, notice_id: int) -> None:
+    """Marks a server notice the player's own command just raised as read by
+    that player, so their reply isn't followed by the server telling them what
+    they did (1.4.1). Everyone else still gets it.
+
+    Safe because a server's feed only ever shows its newest notice
+    (utils/notifications.py: fetch_unseen) and this one is the newest: marking
+    it read hides it and nothing older, which the feed had already superseded.
+    """
+    await mark_seen(
+        tx, user_id, [{"scope": "server", "guild_id": guild_id, "notification_id": notice_id}]
+    )
 
 
 async def _currency_emoji(db, guild_id: int) -> str | None:
@@ -472,7 +504,7 @@ class BettingCog(commands.Cog):
                 # The notice and the bet commit together: a notice announcing a
                 # bet that rolled back would send a server chasing a bet id
                 # that was never created.
-                await post_server_notification(
+                notice_id = await post_server_notification(
                     tx,
                     interaction.guild_id,
                     f"🎲 New bet: {prediction}",
@@ -482,6 +514,8 @@ class BettingCog(commands.Cog):
                     f"side with the buttons below, or with `/bet place bet:{bet_id}`.",
                     action_key=f"{ACTION_KIND}:{bet_id}",
                 )
+                await _already_seen_by(tx, interaction.user.id, interaction.guild_id, notice_id)
+                balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
         except BetUnavailable as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
@@ -495,14 +529,10 @@ class BettingCog(commands.Cog):
             return
 
         embed = build_bet_embed(bet, pools, "open", currency_emoji)
-        embed.insert_field_at(
-            0,
-            name="Opened",
-            value=(
-                "Everyone in the server will see this on their next command, with buttons to "
-                f"take either side. They can also use `/bet place bet:{bet_id}`."
-            ),
-            inline=False,
+        embed.add_field(
+            name="Your stake",
+            value=_stake_field(pools, FOR, stake_cents, balance, currency_emoji),
+            inline=True,
         )
         view = discord.ui.View(timeout=None)
         for button in _buttons(bet_id):
@@ -647,6 +677,7 @@ class BettingCog(commands.Cog):
                 )
                 await self._announce_settlement(
                     tx, current, settlement, currency_emoji,
+                    actor_id=interaction.user.id,
                     headline=(
                         f"🎲 Bet #{bet} was voided"
                         if settlement.voided
@@ -691,6 +722,7 @@ class BettingCog(commands.Cog):
                 settlement = await cancel_bet(tx, current)
                 await self._announce_settlement(
                     tx, current, settlement, currency_emoji,
+                    actor_id=interaction.user.id,
                     headline=f"🎲 Bet #{bet} was cancelled",
                 )
         except BetUnavailable as exc:
@@ -703,9 +735,8 @@ class BettingCog(commands.Cog):
             0,
             name="Refunded",
             value=(
-                f"{format_currency(from_cents(settlement.pot_cents), currency_emoji)} went back "
-                f"to the {len(settlement.payouts)} player"
-                f"{'' if len(settlement.payouts) == 1 else 's'} who staked it."
+                f"{format_currency(from_cents(settlement.pot_cents), currency_emoji)} back to "
+                f"{len(settlement.payouts)} player{'' if len(settlement.payouts) == 1 else 's'}"
             ),
             inline=False,
         )
@@ -714,21 +745,17 @@ class BettingCog(commands.Cog):
         )
 
     def _settlement_text(self, settlement, outcome: str, currency_emoji: str | None) -> str:
+        pot = format_currency(from_cents(settlement.pot_cents), currency_emoji)
         if settlement.voided:
-            return (
-                f"Nobody had taken the **{SIDE_LABELS[outcome].lower()}** side, so there was no "
-                f"winner to pay. Every stake went back to whoever put it up - "
-                f"{format_currency(from_cents(settlement.pot_cents), currency_emoji)} in total."
-            )
+            return f"{pot} back to whoever staked it · nobody took **{SIDE_LABELS[outcome]}**"
         winners = len(settlement.payouts)
         return (
-            f"{format_currency(from_cents(settlement.pot_cents), currency_emoji)} split between "
-            f"{winners} player{'' if winners == 1 else 's'} on the "
-            f"**{SIDE_LABELS[outcome].lower()}** side."
+            f"{pot} to {winners} player{'' if winners == 1 else 's'} on "
+            f"**{SIDE_LABELS[outcome]}**"
         )
 
     async def _announce_settlement(
-        self, tx, bet, settlement, currency_emoji: str | None, *, headline: str
+        self, tx, bet, settlement, currency_emoji: str | None, *, headline: str, actor_id: int
     ):
         """Tells the server how a bet ended, and each winner what they got.
 
@@ -740,12 +767,13 @@ class BettingCog(commands.Cog):
         idempotent per player per bet: a resolve that somehow ran twice would
         insert nothing the second time.
         """
-        await post_server_notification(
+        notice_id = await post_server_notification(
             tx,
             bet["guild_id"],
             headline,
             f"The bet was: {bet['prediction']}",
         )
+        await _already_seen_by(tx, actor_id, bet["guild_id"], notice_id)
         for user_id, paid in settlement.payouts.items():
             if paid <= 0:
                 continue

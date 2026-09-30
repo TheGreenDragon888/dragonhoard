@@ -235,8 +235,7 @@ class FurnaceCog(commands.Cog):
         pending_items = sum(job["quantity"] for job in jobs)
 
         embed = make_infrastructure_embed(
-            emoji="🔥",
-            name="Furnace",
+            machine="furnace",
             color=FURNACE_COLOR,
             level=level,
             speed_text=f"{format_rate(rate, 'item')}/hour",

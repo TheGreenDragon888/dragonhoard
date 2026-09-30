@@ -415,6 +415,15 @@ async def debt_cap_cents(db: _Executor, guild_id: int, now: datetime | None = No
     return int(await tax_collected(db, guild_id, DEBT_CAP_DAYS, now) * 100 + _EPSILON)
 
 
+async def _money(tx: _Executor, guild_id: int, amount: float) -> str:
+    """An amount in this server's own currency, for a refusal. Every
+    GovernmentError that names a sum goes through this: they used to call
+    format_currency with no emoji, so a server with its own currency saw its
+    refusals quoted in the default 💰."""
+    row = await tx.fetchone("SELECT currency_emoji FROM server_config WHERE guild_id = ?", (guild_id,))
+    return format_currency(amount, row["currency_emoji"] if row else None)
+
+
 async def open_bond_sale(
     tx: _Executor, guild_id: int, actor_id: int, total_cents: int, now: datetime | None = None,
 ) -> None:
@@ -427,7 +436,7 @@ async def open_bond_sale(
     smallest = min(BOND_DENOMINATIONS_CENTS)
     if total_cents < 0 or total_cents % smallest:
         raise GovernmentError(
-            f"A bond sale has to be a whole number of {format_currency(smallest / 100)} bonds."
+            f"A bond sale has to be a whole number of {await _money(tx, guild_id, smallest / 100)} bonds."
         )
     if total_cents:
         cfg = await tx.fetchone(
@@ -439,7 +448,7 @@ async def open_bond_sale(
             raise GovernmentError(
                 f"Selling that much would leave the server owing more than it collected in "
                 f"tax over the last {DEBT_CAP_DAYS} days. It has room for "
-                f"{format_currency(max(0, room) / 100)} more debt, interest included."
+                f"{await _money(tx, guild_id, max(0, room) / 100)} more debt, interest included."
             )
     await tx.execute(
         "UPDATE server_config SET bond_sale_cents = ? WHERE guild_id = ?", (total_cents, guild_id)
@@ -469,21 +478,21 @@ async def buy_bond(
         if cfg["bond_sale_cents"] == 0:
             raise GovernmentError("The Mayor isn't selling any bonds right now.")
         raise GovernmentError(
-            f"Only {format_currency(cfg['bond_sale_cents'] / 100)} of bonds are left for sale."
+            f"Only {await _money(tx, guild_id, cfg['bond_sale_cents'] / 100)} of bonds are left for sale."
         )
     owed = bond_owed_cents(denomination_cents, cfg["bond_rate_percent"])
     room = await debt_cap_cents(tx, guild_id, now) - await outstanding_debt_cents(tx, guild_id)
     if owed > room:
         raise GovernmentError(
             f"The server can't take on that much debt: it may owe no more than its tax over "
-            f"the last {DEBT_CAP_DAYS} days, and has room for {format_currency(max(0, room) / 100)}, "
+            f"the last {DEBT_CAP_DAYS} days, and has room for {await _money(tx, guild_id, max(0, room) / 100)}, "
             f"interest included."
         )
     try:
         await deduct_currency_balance(tx, guild_id, buyer_id, denomination_cents / 100)
     except InsufficientQuantity:
         raise GovernmentError(
-            f"A {format_currency(denomination_cents / 100)} bond costs more than your balance."
+            f"A {await _money(tx, guild_id, denomination_cents / 100)} bond costs more than your balance."
         )
     await tx.execute(
         "UPDATE server_config SET treasury = treasury + ?, bond_sale_cents = bond_sale_cents - ? "
@@ -919,8 +928,8 @@ async def spend_treasury(tx: _Executor, guild_id: int, amount: float, slot_credi
     if not changed:
         row = await tx.fetchone("SELECT treasury FROM server_config WHERE guild_id = ?", (guild_id,))
         raise GovernmentError(
-            f"That costs {format_currency(amount)}, and the treasury holds "
-            f"{format_currency(row['treasury'] if row else 0.0)}."
+            f"That costs {await _money(tx, guild_id, amount)}, and the treasury holds "
+            f"{await _money(tx, guild_id, row['treasury'] if row else 0.0)}."
         )
     await record_burned(tx, guild_id, amount)
     if slot_credit:

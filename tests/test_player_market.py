@@ -671,8 +671,8 @@ class EntryLimitTests(MarketTestCase):
         kwargs = interaction.response.send_message.call_args.kwargs
         embed = (kwargs.get("embeds") or [kwargs["embed"]])[0]
         names = [field.name for field in embed.fields]
-        self.assertTrue(any(name.startswith("Selling · 3/5") for name in names), names)
-        self.assertTrue(any(name.startswith("Buying · 1/5") for name in names), names)
+        self.assertTrue(any(name.startswith("Listings · 3/5") for name in names), names)
+        self.assertTrue(any(name.startswith("Orders · 1/5") for name in names), names)
 
 
 class ExpiryTests(MarketTestCase):
@@ -819,7 +819,7 @@ class ExpiryTests(MarketTestCase):
         await EconomyCog.market_entries.callback(self.cog, interaction)
         kwargs = interaction.response.send_message.call_args.kwargs
         embed = (kwargs.get("embeds") or [kwargs["embed"]])[0]
-        selling = next(f for f in embed.fields if f.name.startswith("Selling"))
+        selling = next(f for f in embed.fields if f.name.startswith("Listings"))
         self.assertIn("expires <t:", selling.value)
 
 
@@ -1294,7 +1294,7 @@ class EmbedBudgetTests(MarketTestCase):
         await self.build_maximal_book(None)
         embed = await self.render()
         book = "\n".join(
-            f.value for f in embed.fields if f.name.startswith("Market Listings")
+            f.value for f in embed.fields if f.name.startswith("Listings")
         )
         for material_id in LISTABLE:
             with self.subTest(material_id):
@@ -1309,7 +1309,7 @@ class EmbedBudgetTests(MarketTestCase):
             await self.list_item(BOB, "wiring", round(0.95 - i * 0.01, 4), 50)
         embed = await self.render()
         book = "\n".join(
-            f.value for f in embed.fields if f.name.startswith("Market Listings")
+            f.value for f in embed.fields if f.name.startswith("Listings")
         )
         wiring = [ln for ln in book.splitlines() if ALL_MATERIALS["wiring"]["emoji"] in ln]
         self.assertEqual(len(wiring), 1, "one line per material, however many sellers")
@@ -1324,9 +1324,9 @@ class EmbedBudgetTests(MarketTestCase):
         await adjust_user_quantity(self.db, ALICE, "wiring", 50)
         await self.list_item(ALICE, "wiring", 0.72, 50)
         names = [f.name for f in (await self.render()).fields]
-        self.assertTrue(any(n.startswith("Item") for n in names))
-        self.assertTrue(any(n.startswith("Market Listings") for n in names))
-        self.assertTrue(any(n.startswith("Market Orders") for n in names))
+        self.assertTrue(any(n.startswith("Server") for n in names))
+        self.assertTrue(any(n.startswith("Listings") for n in names))
+        self.assertTrue(any(n.startswith("Orders") for n in names))
         self.assertFalse(
             any("Your" in n or "Entries" in n for n in names),
             f"status should carry no per-viewer field, got {names}",
@@ -1367,7 +1367,7 @@ class MarketEntriesTests(MarketTestCase):
         await adjust_user_quantity(self.db, ALICE, "wiring", 50)
         await self.list_item(ALICE, "wiring", 0.72, 50)
         row = await self.db.fetchone("SELECT listing_id FROM market_listings")
-        selling = self.field(await self.entries(), "Selling")
+        selling = self.field(await self.entries(), "Listings")
         self.assertIn(f"#{row['listing_id']}", selling.value)
         # The material's EMOJI, not its name. Asserting on "Wiring" would pass
         # whether or not the line named the material, because the custom emoji
@@ -1383,7 +1383,7 @@ class MarketEntriesTests(MarketTestCase):
         them out for the same reason."""
         await adjust_user_quantity(self.db, ALICE, "drill_chassis", 500)
         await self.list_item(ALICE, "drill_chassis", 0.0155, 500)
-        selling = self.field(await self.entries(), "Selling")
+        selling = self.field(await self.entries(), "Listings")
         emoji = ALL_MATERIALS["drill_chassis"]["emoji"]
         self.assertNotIn("Drill Chassis", selling.value.replace(emoji, ""))
 
@@ -1394,13 +1394,13 @@ class MarketEntriesTests(MarketTestCase):
         await adjust_user_quantity(self.db, ALICE, "wiring", 50)
         await self.list_item(ALICE, "wiring", 0.72, 50)
 
-        entry = self.field(await self.entries(), "Selling").value.splitlines()[0]
+        entry = self.field(await self.entries(), "Listings").value.splitlines()[0]
         status = FakeInteraction(ALICE)
         await EconomyCog.market_status.callback(self.cog, status)
         kwargs = status.response.send_message.call_args.kwargs
         embed = (kwargs.get("embeds") or [kwargs["embed"]])[0]
         book = next(
-            f for f in embed.fields if f.name.startswith("Market Listings")
+            f for f in embed.fields if f.name.startswith("Listings")
         ).value.splitlines()[0]
 
         emoji = ALL_MATERIALS["wiring"]["emoji"]
@@ -1417,7 +1417,7 @@ class MarketEntriesTests(MarketTestCase):
         await self.order(ALICE, "iron_drill_bit", 500, 0.05)
         embed = await self.entries()
         self.assertIn("Held in bids", embed.description)
-        buying = self.field(embed, "Buying")
+        buying = self.field(embed, "Orders")
         self.assertIn("500", buying.value)
         self.assertIn("25.000", buying.value, "500 x 0.05 = 25.00 escrowed")
 
@@ -1427,7 +1427,7 @@ class MarketEntriesTests(MarketTestCase):
             "VALUES (NULL, ?, 'ruby_drill', 3, 'steel_container')", (ALICE,)
         )
         await self.list_item(ALICE, f"drill:{drill_id}", 900.0)
-        selling = self.field(await self.entries(), "Selling")
+        selling = self.field(await self.entries(), "Listings")
         self.assertIn("Lv.3", selling.value)
         self.assertIn("Steel Container", selling.value)
 
@@ -1439,7 +1439,7 @@ class MarketEntriesTests(MarketTestCase):
 
         embed = await self.entries(ALICE)
         self.assertIsNotNone(self.field(embed, "Nothing on the market"))
-        self.assertIsNone(self.field(embed, "Selling"))
+        self.assertIsNone(self.field(embed, "Listings"))
 
     async def test_the_balance_shown_excludes_what_bids_are_holding(self):
         await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
@@ -1472,4 +1472,4 @@ class MarketEntriesTests(MarketTestCase):
         for field in embed.fields:
             with self.subTest(field=field.name):
                 self.assertLessEqual(len(field.value), 1024)
-        self.assertIn("more", self.field_text(embed, "Selling"))
+        self.assertIn("more", self.field_text(embed, "Listings"))

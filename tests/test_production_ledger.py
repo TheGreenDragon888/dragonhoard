@@ -26,7 +26,8 @@ import discord
 
 import utils.embeds as embeds
 from cogs.blastfurnace import BlastFurnaceCog, PROCESS_TICK_MINUTES as BLAST_TICK_MINUTES
-from cogs.economy import EconomyCog, GDP_SOURCE_LABEL, MACHINE_EMOJI
+from cogs.economy import EconomyCog, GDP_SOURCE_LABEL
+from utils.embeds import MACHINE_DISPLAY
 from cogs.furnace import (
     PROCESS_TICK_MINUTES as FURNACE_TICK_MINUTES,
     SERVER_JOB_USER_ID,
@@ -472,7 +473,7 @@ class EmbedTests(_LedgerTestCase):
 
     async def test_every_machine_has_an_icon_and_every_gdp_source_a_label(self):
         """A sixth machine turning up with no icon is what this catches."""
-        self.assertEqual(set(MACHINE_EMOJI), set(MACHINES))
+        self.assertEqual(set(MACHINE_DISPLAY), set(MACHINES))
         self.assertEqual(set(GDP_SOURCE_LABEL), set(GDP_SOURCES))
 
     async def test_reading_the_economy_changes_no_balance_stock_or_fee(self):

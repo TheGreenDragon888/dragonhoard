@@ -40,22 +40,31 @@ from discord.ext import commands, tasks
 from database.db import InsufficientQuantity
 from data.materials import (
     BLAST_FURNACE_BATCH_SIZE,
+    BONANZA_HOURS,
     MINING_SLOT_ENHANCEMENT_MULTIPLIER,
     enhancement_price,
     enhancement_speed,
 )
+from utils.betting import hours_until
 from utils.db_helpers import (
     MACHINES,
     ensure_server_row,
+    get_currency_balance,
     machine_fee,
-    machine_label,
     mining_slot_status,
 )
-from utils.embeds import GOVERNMENT_COLOR, make_embed
-from utils.formatting import format_currency, format_exact_currency
+from utils.embeds import GOVERNMENT_COLOR, MACHINE_DISPLAY, add_multi_field, machine_display, make_embed
+from utils.formatting import (
+    DEFAULT_CURRENCY_EMOJI,
+    format_currency,
+    format_exact_currency,
+    format_exact_price,
+    format_price,
+    format_relative_timestamp,
+)
+from utils.receipts import build_action_receipt, currency_line
 from utils.government import (
     BOND_DENOMINATIONS_CENTS,
-    DEBT_CAP_DAYS,
     FEE_MULTIPLIERS,
     MAX_BOND_RATE_PERCENT,
     MAX_TAX_PERCENT,
@@ -95,7 +104,7 @@ from utils.responses import respond
 log = logging.getLogger("dragonhoard")
 
 MACHINE_CHOICES = [
-    app_commands.Choice(name=machine_label(machine), value=machine) for machine in MACHINES
+    app_commands.Choice(name=MACHINE_DISPLAY[machine][1], value=machine) for machine in MACHINES
 ]
 # Strings rather than floats on the wire, so the value that reaches
 # set_fee_multiplier is exactly one of FEE_MULTIPLIERS and not a float Discord
@@ -115,6 +124,12 @@ FEE_UNITS = {"press": "press-day", "blast_furnace": f"batch of {BLAST_FURNACE_BA
 
 def _cents(cents: int, emoji: str | None) -> str:
     return format_currency(cents / 100, emoji)
+
+
+def _units(cents: int) -> str:
+    """A sum of cents as a bare figure, for a line whose heading already
+    names the currency."""
+    return format_price(cents / 100)
 
 
 class GovernmentCog(commands.Cog):
@@ -190,10 +205,12 @@ class GovernmentCog(commands.Cog):
             await self._refuse(interaction, str(exc))
             return
         closes = int(game_midnight(next_voting_day()).timestamp()) + 24 * 3600
-        embed = make_embed("🗳️ Vote Cast", GOVERNMENT_COLOR)
-        embed.description = (
-            f"You voted for {member.mention} as **{OFFICE_LABELS[office]}**. Voting closes "
-            f"<t:{closes}:R>; you can change your vote until then, and only your latest counts."
+        embed = build_action_receipt(
+            "🗳️ Vote Cast", GOVERNMENT_COLOR,
+            f"You voted for {member.mention} as **{OFFICE_LABELS[office]}**. "
+            f"Voting closes <t:{closes}:R>.",
+            [],
+            footer_note="only your latest vote counts",
         )
         await respond(interaction, self.db, embed=embed)
 
@@ -217,9 +234,17 @@ class GovernmentCog(commands.Cog):
         await self._count_if_due(interaction.guild, interaction.guild_id)
         status = await government_status(self.db, interaction.guild_id)
         quote = await bonanza_quote(self.db, interaction.guild_id)
-        emoji = status.currency_emoji
+        emoji = status.currency_emoji or DEFAULT_CURRENCY_EMOJI
 
-        embed = make_embed("🏛️ Government", GOVERNMENT_COLOR)
+        # Laid out the way a machine status page is (docs/stylization.md): the
+        # header says whose government, the title carries the Treasurer's two
+        # headline settings, the description says who holds office, and the
+        # fields are figures. Until 1.4.1 the title repeated the header and the
+        # fees and projects were two five-line lists naming every machine twice.
+        embed = make_embed(
+            f"Tax {status.tax_percent}% · Bond rate {status.bond_rate_percent}%",
+            GOVERNMENT_COLOR,
+        )
         if interaction.guild is not None:
             embed.set_author(name=f"🏛️ Government • {interaction.guild.name}")
 
@@ -228,60 +253,67 @@ class GovernmentCog(commands.Cog):
 
         if voting_open():
             closes = int(game_midnight(next_voting_day()).timestamp()) + 24 * 3600
-            election = f"🗳️ **Voting is open** until <t:{closes}:t> - `/vote mayor`, `/vote treasurer`"
+            election = f"🗳️ **Voting is open** until <t:{closes}:t> · `/vote mayor`, `/vote treasurer`"
         else:
             opens = int(game_midnight(next_voting_day()).timestamp())
             election = f"Next vote opens <t:{opens}:R>"
         embed.description = (
-            f"**Mayor:** {holder(status.mayor)}\n"
-            f"**Treasurer:** {holder(status.treasurer)}\n{election}"
+            f"**Mayor** {holder(status.mayor)} · **Treasurer** {holder(status.treasurer)}\n"
+            f"{election}"
         )
 
-        fee_lines = [
-            f"{machine_label(m).capitalize()}: {format_exact_currency(machine_fee(m, status.multipliers[m]), emoji)} "
-            f"per {FEE_UNITS.get(m, 'item')} (x{status.multipliers[m]:g})"
-            for m in MACHINES
-        ]
+        # Money, named once per heading rather than on every figure.
         embed.add_field(
-            name=f"Treasurer's Settings • tax {status.tax_percent}% • bond rate {status.bond_rate_percent}%",
-            value="\n".join(fee_lines),
+            name=f"Treasury · {emoji}", value=f"**{format_price(status.treasury)}**", inline=True,
+        )
+        embed.add_field(
+            name=f"Owed to bondholders · {emoji}",
+            value=f"`{_units(status.debt_cents)}` of `{_units(status.cap_cents)}` cap",
+            inline=True,
+        )
+        if status.sale_cents:
+            embed.add_field(
+                name=f"Bonds for sale · {emoji}",
+                value=f"**{_units(status.sale_cents)}** at {status.bond_rate_percent}% · `/bonds buy`",
+                inline=True,
+            )
+        if status.repayment_pool > 0:
+            embed.add_field(
+                name=f"Repaying this hour · {emoji}",
+                value=f"`{format_price(status.repayment_pool)}`",
+                inline=True,
+            )
+        if status.frozen_debt_cents:
+            embed.add_field(
+                name=f"Frozen · {emoji}",
+                value=f"`{_units(status.frozen_debt_cents)}` owed to members who left",
+                inline=True,
+            )
+
+        # One line per machine: its fee and multiplier, then its enhancement
+        # and what the next one costs.
+        machine_lines = []
+        for m in MACHINES:
+            level = status.enhancements[m]
+            fee = format_exact_price(machine_fee(m, status.multipliers[m]))
+            machine_lines.append(
+                f"{machine_display(m)} `{fee}`/{FEE_UNITS.get(m, 'item')} "
+                f"x{status.multipliers[m]:g} · enh. {level} (x{enhancement_speed(level):g}) · "
+                f"next `{format_price(enhancement_price(level))}`"
+            )
+        embed.add_field(
+            name=f"Machines · fee · enhancement · {emoji}",
+            value="\n".join(machine_lines),
             inline=False,
         )
 
-        treasury_lines = [
-            f"Treasury: **{format_currency(status.treasury, emoji)}**",
-            f"Owed to bondholders: {_cents(status.debt_cents, emoji)} of a "
-            f"{_cents(status.cap_cents, emoji)} cap ({DEBT_CAP_DAYS} days' tax)",
-        ]
-        if status.repayment_pool > 0:
-            treasury_lines.append(
-                f"Waiting to be repaid: {format_currency(status.repayment_pool, emoji)} (paid hourly)"
-            )
-        if status.frozen_debt_cents:
-            treasury_lines.append(
-                f"Frozen (owed to members who left): {_cents(status.frozen_debt_cents, emoji)}"
-            )
-        if status.sale_cents:
-            treasury_lines.append(
-                f"**Bonds for sale:** {_cents(status.sale_cents, emoji)} at "
-                f"{status.bond_rate_percent}% - `/bonds buy`"
-            )
-        embed.add_field(name="Treasury", value="\n".join(treasury_lines), inline=False)
-
-        project_lines = []
-        for m in MACHINES:
-            level = status.enhancements[m]
-            project_lines.append(
-                f"{machine_label(m).capitalize()}: enhancement {level} "
-                f"(x{enhancement_speed(level):g}) - next {format_currency(enhancement_price(level), emoji)}"
-            )
         if quote.running_until:
-            project_lines.append(f"🎉 **Bonanza running** - everything at double speed")
+            bonanza = f"🎉 **Running** · double speed until {format_relative_timestamp(hours_until(quote.running_until))}"
         elif quote.available_from is not None:
-            project_lines.append("Bonanza: available once this server has a week of production")
+            bonanza = "Available once this server has a week of production"
         else:
-            project_lines.append(f"Bonanza: {format_currency(quote.price, emoji)} for 48 hours at double speed")
-        embed.add_field(name="Projects", value="\n".join(project_lines), inline=False)
+            bonanza = f"{format_currency(quote.price, emoji)} for {BONANZA_HOURS} hours of double speed"
+        embed.add_field(name="Bonanza", value=bonanza, inline=False)
 
         await respond(interaction, self.db, embed=embed)
 
@@ -289,7 +321,7 @@ class GovernmentCog(commands.Cog):
     # /treasurer
     # -----------------------------------------------------------------------
 
-    async def _treasurer_action(self, interaction: discord.Interaction, action, confirmation: str):
+    async def _treasurer_action(self, interaction: discord.Interaction, action, title: str, summary: str):
         await ensure_server_row(self.db, interaction.guild_id)
         await self._count_if_due(interaction.guild, interaction.guild_id)
         try:
@@ -298,7 +330,7 @@ class GovernmentCog(commands.Cog):
         except GovernmentError as exc:
             await self._refuse(interaction, str(exc))
             return
-        embed = make_embed("🏛️ Treasurer", GOVERNMENT_COLOR, description=confirmation)
+        embed = build_action_receipt(title, GOVERNMENT_COLOR, summary, [])
         await respond(interaction, self.db, embed=embed)
 
     @treasurer_group.command(name="fee", description="Set a machine's fee as a multiple of its default (once a day)")
@@ -313,9 +345,10 @@ class GovernmentCog(commands.Cog):
         await self._treasurer_action(
             interaction,
             lambda tx: set_fee_multiplier(tx, interaction.guild_id, interaction.user.id, machine.value, value),
-            f"The {machine_label(machine.value)} now charges "
+            "🏛️ Fee Set",
+            f"{machine_display(machine.value)} now charges "
             f"**{format_exact_currency(machine_fee(machine.value, value), emoji)}** per "
-            f"{FEE_UNITS.get(machine.value, 'item')} (x{value:g} its default).",
+            f"{FEE_UNITS.get(machine.value, 'item')} (x{value:g}).",
         )
 
     @treasurer_group.command(name="tax", description="Set the share of every machine fee the government keeps (once a day)")
@@ -327,8 +360,8 @@ class GovernmentCog(commands.Cog):
         await self._treasurer_action(
             interaction,
             lambda tx: set_tax(tx, interaction.guild_id, interaction.user.id, percent),
-            f"The tax is now **{percent}%** of every machine fee. That share goes to the "
-            f"treasury - or to bondholders while the server owes any - instead of being burned.",
+            "🏛️ Tax Set",
+            f"The tax is now **{percent}%** of every machine fee.",
         )
 
     @treasurer_group.command(name="bondrate", description="Set the premium new bonds repay (once a day)")
@@ -340,8 +373,8 @@ class GovernmentCog(commands.Cog):
         await self._treasurer_action(
             interaction,
             lambda tx: set_bond_rate(tx, interaction.guild_id, interaction.user.id, percent),
-            f"Bonds sold from now on repay **{percent}%** on top of what they cost. Bonds "
-            f"already sold keep the rate they were sold at.",
+            "🏛️ Bond Rate Set",
+            f"New bonds repay **{percent}%** on top of what they cost.",
         )
 
     # -----------------------------------------------------------------------
@@ -349,16 +382,29 @@ class GovernmentCog(commands.Cog):
     # -----------------------------------------------------------------------
 
     async def _mayor_action(self, interaction: discord.Interaction, action):
-        """Runs `action(tx)`, which returns the confirmation text, as the Mayor."""
+        """Runs `action(tx)` as the Mayor. It returns (title, summary, spent,
+        fields): what the receipt says, what it took from the treasury (None
+        for a project that spends nothing), and any further fields. The spend
+        is shown with what the treasury holds afterwards, read in the same
+        transaction."""
         await ensure_server_row(self.db, interaction.guild_id)
         await self._count_if_due(interaction.guild, interaction.guild_id)
+        emoji = await self._currency_emoji(interaction.guild_id)
         try:
             async with self.db.transaction() as tx:
-                confirmation = await action(tx)
+                title, summary, spent, fields = await action(tx)
+                row = await tx.fetchone(
+                    "SELECT treasury FROM server_config WHERE guild_id = ?", (interaction.guild_id,)
+                )
         except GovernmentError as exc:
             await self._refuse(interaction, str(exc))
             return
-        embed = make_embed("🏛️ Mayor", GOVERNMENT_COLOR, description=confirmation)
+        if spent is not None:
+            fields = [(
+                "Spent",
+                currency_line(spent, row["treasury"], emoji, gained=False, after_label="left in the treasury"),
+            )] + fields
+        embed = build_action_receipt(title, GOVERNMENT_COLOR, summary, fields)
         await respond(interaction, self.db, embed=embed)
 
     @mayor_group.command(name="fund", description="Pay treasury money into a machine's upgrade fund")
@@ -368,14 +414,12 @@ class GovernmentCog(commands.Cog):
         self, interaction: discord.Interaction,
         machine: app_commands.Choice[str], amount: app_commands.Range[float, 0.01],
     ):
-        emoji = await self._currency_emoji(interaction.guild_id)
-
         async def action(tx):
             level = await fund_machine(tx, interaction.guild_id, interaction.user.id, machine.value, amount)
             return (
-                f"Put **{format_currency(amount, emoji)}** of the treasury into the "
-                f"{machine_label(machine.value)}, which is at level {level:,}. It counts toward "
-                f"mining slots too."
+                "🏛️ Machine Funded",
+                f"Funded the {machine_display(machine.value)}, now at level **{level:,}**.",
+                amount, [],
             )
 
         await self._mayor_action(interaction, action)
@@ -389,10 +433,11 @@ class GovernmentCog(commands.Cog):
         async def action(tx):
             level, price = await buy_enhancement(tx, interaction.guild_id, interaction.user.id, machine.value)
             return (
-                f"Spent **{format_currency(price, emoji)}** enhancing the "
-                f"{machine_label(machine.value)} to level {level:,}: it now runs at "
-                f"**x{enhancement_speed(level):g}** the speed its own level gives it. The next "
-                f"enhancement costs {format_currency(enhancement_price(level), emoji)}."
+                "🏛️ Enhancement Bought",
+                f"{machine_display(machine.value)} is at enhancement **{level:,}**: "
+                f"**x{enhancement_speed(level):g}** the speed its own level gives it.",
+                price,
+                [("Next enhancement", format_currency(enhancement_price(level), emoji))],
             )
 
         await self._mayor_action(interaction, action)
@@ -406,24 +451,28 @@ class GovernmentCog(commands.Cog):
             credit = await fund_mining_slots(tx, interaction.guild_id, interaction.user.id, amount)
             slots = await mining_slot_status(tx, interaction.guild_id)
             return (
-                f"Spent **{format_currency(amount, emoji)}** for "
-                f"**{format_currency(credit, emoji)}** of mining slot progress. The server is at "
-                f"{format_currency(slots.progress, emoji)} of the "
-                f"{format_currency(slots.next_threshold, emoji)} its next slot needs, with "
-                f"{slots.slots:,} per player now."
+                "🏛️ Mining Slots Funded",
+                f"Bought **{format_currency(credit, emoji)}** of mining slot progress.",
+                amount,
+                [(
+                    "Mining slots",
+                    f"{format_currency(slots.progress, emoji)} / "
+                    f"{format_currency(slots.next_threshold, emoji)} to the next · "
+                    f"**{slots.slots:,}** per player",
+                )],
             )
 
         await self._mayor_action(interaction, action)
 
     @mayor_group.command(name="bonanza", description="Start a Server Bonanza - 48 hours of double-speed drills and machines")
     async def mayor_bonanza(self, interaction: discord.Interaction):
-        emoji = await self._currency_emoji(interaction.guild_id)
-
         async def action(tx):
             quote = await start_bonanza(tx, interaction.guild_id, interaction.user.id)
             return (
-                f"Spent **{format_currency(quote.price, emoji)}** on a Server Bonanza. For the next "
-                f"48 hours every drill and every machine here runs at double speed."
+                "🎉 Bonanza Started",
+                "Every drill and machine here runs at double speed until "
+                f"{format_relative_timestamp(BONANZA_HOURS)}.",
+                quote.price, [],
             )
 
         await self._mayor_action(interaction, action)
@@ -436,12 +485,13 @@ class GovernmentCog(commands.Cog):
         async def action(tx):
             await open_bond_sale(tx, interaction.guild_id, interaction.user.id, amount * 100)
             if not amount:
-                return "Withdrew the bond sale."
+                return "🏛️ Bond Sale Withdrawn", "No bonds are for sale now.", None, []
             status = await government_status(tx, interaction.guild_id)
             return (
-                f"Put **{format_currency(amount, emoji)}** of bonds up for sale at a "
-                f"{status.bond_rate_percent}% premium. Players buy them with `/bonds buy`, and "
-                f"the server repays them out of tax, hourly."
+                "🏛️ Bonds Offered",
+                f"**{format_currency(amount, emoji)}** of bonds are for sale at a "
+                f"**{status.bond_rate_percent}%** premium. Players buy them with `/bonds buy`.",
+                None, [],
             )
 
         await self._mayor_action(interaction, action)
@@ -460,33 +510,39 @@ class GovernmentCog(commands.Cog):
         try:
             async with self.db.transaction() as tx:
                 bond = await buy_bond(tx, interaction.guild_id, interaction.user.id, denomination.value)
+                balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
         except (GovernmentError, InsufficientQuantity) as exc:
             await self._refuse(interaction, str(exc))
             return
-        embed = make_embed("🏛️ Bond Bought", GOVERNMENT_COLOR)
-        embed.description = (
-            f"You lent the server **{_cents(bond.principal_cents, emoji)}**. It will repay you "
-            f"**{_cents(bond.owed_cents, emoji)}** ({bond.rate_percent}% on top) out of its tax, "
-            f"a share every hour, straight to your balance."
+        embed = build_action_receipt(
+            "🏛️ Bond Bought", GOVERNMENT_COLOR,
+            f"You lent the server **{_cents(bond.principal_cents, emoji)}**.",
+            [
+                ("Lent", currency_line(bond.principal_cents / 100, balance, emoji, gained=False)),
+                ("Repays", f"{_cents(bond.owed_cents, emoji)} · {bond.rate_percent}% on top, hourly from tax"),
+            ],
+            footer_note="/bonds holdings shows what is still owed",
         )
         await respond(interaction, self.db, embed=embed)
 
     @bonds_group.command(name="holdings", description="The bonds this server still owes you")
     async def bonds_holdings(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
-        emoji = await self._currency_emoji(interaction.guild_id)
+        emoji = await self._currency_emoji(interaction.guild_id) or DEFAULT_CURRENCY_EMOJI
         bonds = await bonds_held(self.db, interaction.guild_id, interaction.user.id)
         embed = make_embed("🏛️ Your Bonds", GOVERNMENT_COLOR)
         if not bonds:
             embed.description = "This server owes you nothing."
         else:
+            # The id leads in code format, as /market entries' rows do, and the
+            # currency is named once in the heading.
             lines = [
-                f"#{bond['bond_id']} · lent {_cents(bond['principal_cents'], emoji)} · "
-                f"{_cents(bond['remaining_cents'], emoji)} of {_cents(bond['owed_cents'], emoji)} "
-                f"still to come" + (" · frozen" if bond["frozen"] else "")
+                f"`#{bond['bond_id']}` lent `{_units(bond['principal_cents'])}` · "
+                f"`{_units(bond['remaining_cents'])}` of `{_units(bond['owed_cents'])}` still to come"
+                + (" · frozen" if bond["frozen"] else "")
                 for bond in bonds
             ]
-            embed.description = "\n".join(lines)
+            add_multi_field(embed, f"Bonds · {emoji}", lines)
         await respond(interaction, self.db, embed=embed)
 
     # -----------------------------------------------------------------------

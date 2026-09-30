@@ -15,7 +15,7 @@ costs no extra queries.
 import discord
 
 from data.materials import get_material_info, material_name
-from utils.embeds import make_embed, add_multi_field
+from utils.embeds import make_embed, add_multi_field, footer_with
 from utils.formatting import (
     format_currency,
     format_relative_timestamp,
@@ -25,14 +25,19 @@ from utils.formatting import (
 )
 
 
-def _material_line(material_id: str, amount: int, total_after: int, label: str = "remaining") -> str:
-    """One consumed-material row: what came out of the inventory, and what
-    that material is down to now.
+# The word after the figure in a receipt line's parentheses: what the player
+# has now. One word per direction, everywhere (docs/stylization.md, Receipts):
+# "remaining" after something was taken, "total" after something was gained.
+# 1.4 had grown four ("remaining", "balance", "held", "total") for two meanings.
+SPENT = "remaining"
+GAINED = "total"
 
-    label defaults to "remaining" for the queue receipts below, where the
-    material is always consumed. build_market_receipt_embed overrides it for
-    a /market buy's material line, which gains rather than loses stock, so
-    "remaining" would misdescribe a total that just went up.
+
+def _material_line(material_id: str, amount: int, total_after: int, label: str = SPENT) -> str:
+    """One material row: how much moved, and what that material is at now.
+
+    label is SPENT for the queue receipts below, where the material is always
+    consumed, and GAINED for a line where the player's stock went up.
 
     Thousands separators because the blast furnace consumes in the thousands
     (2,000 iron ore for one batch of steel), and an unseparated 540000 in a
@@ -41,6 +46,57 @@ def _material_line(material_id: str, amount: int, total_after: int, label: str =
     emoji = info["emoji"] if info else "❓"
     name = material_name(info, amount) if info else material_id
     return f"{emoji} **{amount:,} {name}** ({total_after:,} {label})"
+
+
+def material_line(material_id: str, amount: int, total_after: int, *, gained: bool) -> str:
+    """A receipt's material row, with the one word for its direction."""
+    return _material_line(material_id, amount, total_after, GAINED if gained else SPENT)
+
+
+def currency_line(
+    amount: float, balance_after: float, currency_emoji: str | None, *, gained: bool,
+    after_label: str | None = None,
+) -> str:
+    """A receipt's currency row, in the same shape as a material row: emoji,
+    the bolded amount that moved, and what is there now in parentheses.
+
+    Rounded up when the amount was taken and down when it was paid, so a
+    receipt never makes a charge look smaller or a payment look bigger than it
+    was. `after_label` replaces the direction word when the figure in brackets
+    is not the player's own balance (the treasury, on a Mayor's receipt).
+    """
+    word = after_label or (GAINED if gained else SPENT)
+    return (
+        f"{currency_emoji or DEFAULT_CURRENCY_EMOJI} "
+        f"**{format_receipt_price(amount, round_up=not gained)}** "
+        f"({format_price(balance_after)} {word})"
+    )
+
+
+def build_action_receipt(
+    title: str,
+    color: discord.Color,
+    summary: str,
+    fields: list[tuple[str, str]],
+    *,
+    footer_note: str | None = None,
+) -> discord.Embed:
+    """A receipt for anything that is not a machine job: a one-line summary of
+    what happened, then one field per thing that moved or changed.
+
+    The shape build_receipt_embed and build_market_receipt_embed already give
+    production and trade, for everything else that moves goods or money -
+    listings, orders, cancellations, the Mayor's projects, bonds - which had
+    each been a paragraph of prose since 1.4 (docs/stylization.md, Receipts).
+    `footer_note` is where a pointer to the next command goes, via
+    footer_with, so it does not cost a line of the embed.
+    """
+    embed = make_embed(title, color, description=summary)
+    for name, value in fields:
+        embed.add_field(name=name, value=value, inline=False)
+    if footer_note:
+        embed.set_footer(text=footer_with(footer_note))
+    return embed
 
 
 def build_receipt_embed(
@@ -155,11 +211,9 @@ def build_market_receipt_embed(
     reads the same way a production job's receipt does.
 
     Exactly one of material_gained/currency_gained is True per call - a trade
-    always gives up one side and gains the other. "remaining" only fits the
-    side given up (what's left after losing some); the side gained just went
-    up, so material_gained/currency_gained swap that line's word to one that
-    doesn't imply depletion ("held"/"balance") instead of mislabeling a
-    total that just grew.
+    always gives up one side and gains the other. SPENT ("remaining") only fits
+    the side given up; the side gained just went up, so it takes GAINED
+    ("total") instead of mislabeling a total that just grew.
 
     round_up_currency mirrors Fee Paid's round_up=True: round up when the
     amount is being taken from the user (a purchase must never look cheaper
@@ -170,10 +224,7 @@ def build_market_receipt_embed(
 
     embed.add_field(
         name=material_field,
-        value=_material_line(
-            material_id, quantity, material_remaining,
-            label="held" if material_gained else "remaining",
-        ),
+        value=material_line(material_id, quantity, material_remaining, gained=material_gained),
         inline=False,
     )
     embed.add_field(
@@ -181,7 +232,7 @@ def build_market_receipt_embed(
         value=(
             f"{currency_emoji or DEFAULT_CURRENCY_EMOJI} "
             f"**{format_receipt_price(currency_amount, round_up=round_up_currency)}** "
-            f"({format_price(balance_after)} {'balance' if currency_gained else 'remaining'})"
+            f"({format_price(balance_after)} {GAINED if currency_gained else SPENT})"
         ),
         inline=False,
     )

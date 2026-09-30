@@ -53,6 +53,7 @@ from discord.ext import commands, tasks
 
 from utils.responses import respond
 from utils.embeds import (
+    MACHINE_DISPLAY,
     footer_with,
     make_embed,
     add_multi_field,
@@ -64,12 +65,19 @@ from utils.formatting import (
     format_currency,
     format_duration,
     format_compact_price,
+    format_exact_currency,
     format_price,
     format_relative_timestamp,
     plural,
     DEFAULT_CURRENCY_EMOJI,
 )
-from utils.receipts import build_market_receipt_embed, fill_lines
+from utils.receipts import (
+    build_action_receipt,
+    build_market_receipt_embed,
+    currency_line,
+    fill_lines,
+    material_line,
+)
 from utils.guild_helpers import human_member_count
 from utils.market_book import (
     SERVER,
@@ -130,7 +138,6 @@ from database.db import InsufficientQuantity
 from utils.db_helpers import (
     MACHINES,
     circulating_currency_for,
-    machine_label,
     run_level,
     slot_progress,
     ensure_user_row,
@@ -290,18 +297,6 @@ ORDERABLE_MATERIALS: tuple[str, ...] = TRADEABLE_ORDER + tuple(
 )
 
 
-# What each machine shows as on /economy's queue lines. The emoji are the ones
-# each machine's own status embed already uses (docs/stylization.md), so a
-# player recognises the machine here before reading the label. Keyed on
-# MACHINES, and tests/test_production_ledger.py pins that it covers all of them
-# - a sixth machine appearing with no icon is the failure this catches.
-MACHINE_EMOJI = {
-    "furnace": "\U0001F525",
-    "blast_furnace": "\u2668\ufe0f",
-    "factory": "\U0001F3ED",
-    "press": "\u2699\ufe0f",
-    "scrapper": "\u267B\ufe0f",
-}
 
 # Where a machine's throughput comes from. The press is deliberately absent:
 # it is the one machine whose queue is measured in press-days rather than
@@ -1183,11 +1178,11 @@ class EconomyCog(commands.Cog):
             )
             return
 
-        embed = make_embed("\U0001F6D2 Purchase Receipt", MARKET_COLOR, description=(
-            f"Bought **{drill_label(row)}** from <@{listing['seller_id']}> for "
-            f"{format_currency(cost, currency_emoji, True)}.\n"
-            f"Your balance is {format_currency(balance_after, currency_emoji)}."
-        ))
+        embed = build_action_receipt(
+            "\U0001F6D2 Purchase Receipt", MARKET_COLOR,
+            f"Bought {drill_emoji(row)} **{drill_label(row)}** from <@{listing['seller_id']}>.",
+            [("Spent", currency_line(cost, balance_after, currency_emoji, gained=False))],
+        )
         await respond(interaction, self.db, embed=embed)
 
     async def _list_drill(self, interaction: discord.Interaction, item: str, price_units: int):
@@ -1251,12 +1246,13 @@ class EconomyCog(commands.Cog):
             )
             return
 
-        embed = make_embed("🏷️ Listed", MARKET_COLOR, description=(
-            f"**{drill_label(row)}** is up for sale at "
-            f"{format_currency(player_price_total(price_units, 1), currency_emoji)}.\n"
-            f"It comes off the market {entry_expiry_text()} if it hasn't sold; "
-            "`/market cancel` takes it back sooner."
-        ))
+        embed = build_action_receipt(
+            "🏷️ Listed", MARKET_COLOR,
+            f"Listed {drill_emoji(row)} **{drill_label(row)}**. It comes off the market "
+            f"{entry_expiry_text()} if it hasn't sold.",
+            [("Asking", f"{format_exact_currency(player_price_total(price_units, 1), currency_emoji)}")],
+            footer_note="/market cancel takes it back",
+        )
         await respond(interaction, self.db, embed=embed)
 
     async def _list_material(
@@ -1311,14 +1307,20 @@ class EconomyCog(commands.Cog):
             )
             return
 
-        embed = make_embed("🏷️ Listed", MARKET_COLOR, description=(
-            f"{info['emoji']} **{quantity:,}x {info['name']}** is up for sale at "
-            f"{format_currency(player_price_total(price_units, 1), currency_emoji)} each "
-            f"({format_currency(player_price_total(price_units, quantity), currency_emoji)} the lot).\n"
-            f"You have **{remaining:,}** left. It comes off the market "
-            f"{entry_expiry_text()} if it hasn't sold; take it back sooner with "
-            "`/market cancel`."
-        ))
+        embed = build_action_receipt(
+            "🏷️ Listed", MARKET_COLOR,
+            f"Listed {info['emoji']} **{quantity:,}x {material_name(info, quantity)}**. It comes "
+            f"off the market {entry_expiry_text()} if it hasn't sold.",
+            [
+                ("Listed", material_line(item, quantity, remaining, gained=False)),
+                ("Asking", (
+                    f"{format_exact_currency(player_price_total(price_units, 1), currency_emoji)} each"
+                    + (f" ({format_price(player_price_total(price_units, quantity))} for all)"
+                       if quantity > 1 else "")
+                )),
+            ],
+            footer_note="/market cancel takes it back",
+        )
         await respond(interaction, self.db, embed=embed)
 
     @market_group.command(name="order", description="Bid for anything, at a price you set")
@@ -1404,13 +1406,17 @@ class EconomyCog(commands.Cog):
             )
             return
 
-        embed = make_embed("📋 Order Placed", MARKET_COLOR, description=(
-            f"Bidding {format_currency(player_price_total(price_units, 1), currency_emoji)} each for "
-            f"{info['emoji']} **{quantity:,}x {info['name']}**.\n"
-            f"{format_currency(total, currency_emoji, True)} is held until it fills; "
-            f"your balance is {format_currency(balance_after, currency_emoji)}.\n"
-            f"It expires {entry_expiry_text()}; `/market cancel` withdraws it sooner."
-        ))
+        # Not the job board's clipboard, which /jobboard's title uses.
+        embed = build_action_receipt(
+            "📥 Order Placed", MARKET_COLOR,
+            f"Bidding for {info['emoji']} **{quantity:,}x {material_name(info, quantity)}**. "
+            f"It expires {entry_expiry_text()}.",
+            [
+                ("Bid", f"{format_exact_currency(player_price_total(price_units, 1), currency_emoji)} each"),
+                ("Held", currency_line(total, balance_after, currency_emoji, gained=False)),
+            ],
+            footer_note="/market cancel withdraws it",
+        )
         await respond(interaction, self.db, embed=embed)
 
     async def _cancellable_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -1490,14 +1496,14 @@ class EconomyCog(commands.Cog):
                     cancel = self._cancel_order
                 # The refusal is sent after the transaction closes, never
                 # inside it: a Discord call would hold the write lock.
-                description = await cancel(tx, row, currency_emoji) if row else None
+                receipt = await cancel(tx, row, currency_emoji) if row else None
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "That filled while this was going through - nothing was cancelled.",
                 ephemeral=True,
             )
             return
-        if description is None:
+        if receipt is None:
             await interaction.response.send_message(
                 f"You have no {kind} numbered {row_id} in this server - it may "
                 "already have filled.",
@@ -1505,30 +1511,38 @@ class EconomyCog(commands.Cog):
             )
             return
 
-        embed = make_embed("↩️ Withdrawn", MARKET_COLOR, description=description)
+        summary, fields = receipt
+        embed = build_action_receipt("↩️ Withdrawn", MARKET_COLOR, summary, fields)
         await respond(interaction, self.db, embed=embed)
 
-    async def _cancel_listing(self, tx, listing, currency_emoji) -> str:
-        """Returns a listing's escrowed goods and deletes it."""
+    async def _cancel_listing(self, tx, listing, currency_emoji):
+        """Returns a listing's escrowed goods and deletes it, and describes
+        that as (summary, fields) for the receipt."""
         await return_listing(tx, listing)
         if listing["drill_id"] is not None:
             row = await fetch_drill(tx, listing["drill_id"], listing["seller_id"])
-            return f"**{drill_label(row)}** is back in your inventory."
-
-        info = get_material_info(listing["material_id"])
+            return (
+                "Your listing is off the market.",
+                [("Returned", f"{drill_emoji(row)} **{drill_label(row)}**")],
+            )
+        total = await get_user_quantity(tx, listing["seller_id"], listing["material_id"])
         return (
-            f"{info['emoji']} **{listing['quantity']:,}x {info['name']}** is back in your "
-            f"inventory."
+            "Your listing is off the market.",
+            [("Returned", material_line(
+                listing["material_id"], listing["quantity"], total, gained=True,
+            ))],
         )
 
-    async def _cancel_order(self, tx, order, currency_emoji) -> str:
+    async def _cancel_order(self, tx, order, currency_emoji):
         """Returns an order's escrowed currency and deletes it
-        (utils/market_book.py: refund_order)."""
+        (utils/market_book.py: refund_order), as (summary, fields)."""
         refund = await refund_order(tx, order)
+        balance = await get_currency_balance(tx, order["guild_id"], order["buyer_id"])
         info = get_material_info(order["material_id"])
         return (
-            f"Your bid for {info['emoji']} **{order['quantity']:,}x {info['name']}** is "
-            f"withdrawn. {format_currency(refund, currency_emoji)} is back in your balance."
+            f"Your bid for {info['emoji']} **{order['quantity']:,}x "
+            f"{material_name(info, order['quantity'])}** is withdrawn.",
+            [("Refunded", currency_line(refund, balance, currency_emoji, gained=True))],
         )
 
     @market_group.command(name="status", description="Show the server's current market prices")
@@ -1576,15 +1590,15 @@ class EconomyCog(commands.Cog):
             current_stock = stocks.get(material_id, 0)
             # SELL = what you receive per unit selling to the server (/market sell).
             # BUY = what you pay per unit buying from the server (/market buy).
+            # The same row grammar as the player books below - emoji, prices,
+            # then counts after a " · " - so one page reads one way. With no
+            # stock there is nothing to buy, which the 0 already says.
             sell_str = f"`{format_price(sale_unit_price(material_id))}`"
-            if current_stock > 0:
-                buy_str = (
-                    f"`{format_price(purchase_unit_price(material_id))}` "
-                    f"({current_stock:,} in stock)"
-                )
-            else:
-                buy_str = "`N/A`"
-            lines.append(f"{info['emoji']} {sell_str} {buy_str}")
+            buy_str = (
+                f"`{format_price(purchase_unit_price(material_id))}`"
+                if current_stock > 0 else "`N/A`"
+            )
+            lines.append(f"{info['emoji']} {sell_str} {buy_str} · {current_stock:,}")
 
         embed = make_embed("Server Market", MARKET_COLOR)
         # What you can actually spend, next to what everything costs - the two
@@ -1593,7 +1607,7 @@ class EconomyCog(commands.Cog):
         embed.description = (
             f"Your balance: {format_currency(balance, currency_emoji)}"
         )
-        add_multi_field(embed, f"Item · Sell · Buy · {currency_emoji} each", lines)
+        add_multi_field(embed, f"Server · Sell · Buy · Stock · {currency_emoji} each", lines)
 
         # The player books. Aggregated per material rather than listed row by
         # row - see utils/market_book.py: listing_depth for why, and for why
@@ -1603,13 +1617,13 @@ class EconomyCog(commands.Cog):
         orders = await order_depth(self.db, interaction.guild_id)
 
         add_multi_field(
-            embed, f"Market Listings · {currency_emoji} each",
+            embed, f"Listings · {currency_emoji} each",
             self._depth_lines(listings, "seller")
             + self._drill_lines(drills),
             empty_text="Nobody is selling anything. `/market list` to be the first.",
         )
         add_multi_field(
-            embed, f"Market Orders · {currency_emoji} each",
+            embed, f"Orders · {currency_emoji} each",
             self._depth_lines(orders, "buyer"),
             empty_text="No open bids. `/market order` to place one.",
         )
@@ -1666,11 +1680,11 @@ class EconomyCog(commands.Cog):
         # MAX_OPEN_LISTINGS), so the limit is visible where a player manages
         # their entries rather than first met as a refusal.
         add_multi_field(
-            embed, f"Selling · {len(listings)}/{MAX_OPEN_LISTINGS} · {currency_emoji} each",
+            embed, f"Listings · {len(listings)}/{MAX_OPEN_LISTINGS} · {currency_emoji} each",
             self._own_listing_lines(listings), empty_text="Nothing listed.",
         )
         add_multi_field(
-            embed, f"Buying · {len(orders)}/{MAX_OPEN_ORDERS} · {currency_emoji} each",
+            embed, f"Orders · {len(orders)}/{MAX_OPEN_ORDERS} · {currency_emoji} each",
             self._own_order_lines(orders), empty_text="No open bids.",
         )
         await respond(interaction, self.db, embed=embed)
@@ -1837,7 +1851,7 @@ class EconomyCog(commands.Cog):
             unit = "batch" if machine == "blast_furnace" else "item"
             total_items += count * (BLAST_FURNACE_BATCH_SIZE if machine == "blast_furnace" else 1)
             lines.append(
-                f"{MACHINE_EMOJI[machine]} **{machine_label(machine).capitalize()}** "
+                f"{MACHINE_DISPLAY[machine][0]} **{MACHINE_DISPLAY[machine][1]}** "
                 f"{count:,} {plural(unit, count)} / {len(queued):,} {plural('job', len(queued))} "
                 f"({format_duration(wait)})"
             )
@@ -1959,7 +1973,11 @@ class EconomyCog(commands.Cog):
         week = await window_totals(self.db, interaction.guild_id, week_cutoff)
         gems = await gem_counts(self.db, interaction.guild_id, week_cutoff)
 
-        embed = make_embed(cfg["currency_name"] or "Currency", MARKET_COLOR)
+        # The title is the headline figure - the week's GDP, named with the
+        # currency's name since a title renders no custom emoji - where it was
+        # the bare currency name until 1.4.1.
+        unit = f" {cfg['currency_name']}" if cfg["currency_name"] else ""
+        embed = make_embed(f"GDP {format_price(week.gdp)}{unit}/week", MARKET_COLOR)
         # Unicode, not a custom <:Name:ID> - Discord renders those in
         # descriptions, field names and field values but NOT in an author line
         # (docs/stylization.md). The author line is also the only thing telling
@@ -1967,9 +1985,9 @@ class EconomyCog(commands.Cog):
         # yellow, so it names the command outright rather than only the server.
         embed.set_author(name=f"\U0001F4CA Economy \u2022 {guild_name}")
 
-        # The three figures that describe the whole server in one line each:
-        # the money its players hold, how far it has got toward its next
-        # mining slot, and what it produced this week. Slot progress is one
+        # The figures that describe the whole server in one line each: the
+        # money its players hold and how far it has got toward its next mining
+        # slot, under the title's week of production. Slot progress is one
         # figure rather than a per-machine breakdown because which machine
         # collected which fee is the machine's own status embed's business.
         # It was "Fees collected" until 1.4 added government purchases to it
@@ -1986,8 +2004,7 @@ class EconomyCog(commands.Cog):
         # read alongside every other server's.
         embed.description = (
             f"Server wealth: {format_currency(circulating, currency_emoji)}\n"
-            f"Mining slot progress: {format_currency(slot_progress(cfg), currency_emoji)}\n"
-            f"Weekly GDP: {format_currency(week.gdp, currency_emoji)}"
+            f"Mining slot progress: {format_currency(slot_progress(cfg), currency_emoji)}"
         )
 
         # Only the gems actually mined, and no field at all when there were

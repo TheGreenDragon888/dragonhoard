@@ -318,7 +318,8 @@ class PayoutTests(BettingTestCase):
 
         self.assertEqual(await self.balances(), before)
         self.assertEqual(interaction.embed.fields[0].name, "Voided")
-        self.assertIn("no winner to pay", interaction.embed.fields[0].value)
+        self.assertIn("back to whoever staked it", interaction.embed.fields[0].value)
+        self.assertIn("nobody took", interaction.embed.fields[0].value)
         # And the card does not claim the side that "won" won anything.
         self.assertIn("nobody had taken that side", interaction.embed.description)
         bet = await fetch_bet(self.db, bet_id)
@@ -797,6 +798,41 @@ class PermissionTests(unittest.TestCase):
         for command in (BettingCog.bet_open, BettingCog.bet_place, BettingCog.bet_status):
             with self.subTest(command=command.name):
                 self.assertFalse(self._checked(command))
+
+
+class CardTests(BettingTestCase):
+    """The bet card after 1.4.1's restyle (docs/stylization.md)."""
+
+    def side(self, embed, prefix):
+        return next(f.value for f in embed.fields if f.name.endswith(prefix))
+
+    async def test_a_wager_reply_is_one_row_of_three(self):
+        await self.open(ALICE, amount=50.0)
+        bet_id = await self.newest_bet_id()
+        interaction = await self.place(BOB, bet_id, AGAINST, 20.0)
+        embed = interaction.embed
+        self.assertEqual([f.name for f in embed.fields], ["✅ For", "❌ Against", "Your stake"])
+        self.assertTrue(all(f.inline for f in embed.fields))
+        self.assertIn("**against**", embed.fields[2].value)
+        self.assertIn("remaining", embed.fields[2].value)
+
+    async def test_the_losing_side_says_it_lost(self):
+        """Until 1.4.1 both sides of a settled bet read "returned to this side"."""
+        await self.open(ALICE, amount=50.0)
+        bet_id = await self.newest_bet_id()
+        await self.place(BOB, bet_id, AGAINST, 20.0)
+        embed = (await self.resolve(bet_id, AGAINST)).embed
+        self.assertIn("lost", self.side(embed, "For"))
+        self.assertIn("paid out", self.side(embed, "Against"))
+
+    async def test_the_proposer_is_not_shown_their_own_new_bet_notice(self):
+        interaction = await self.open(ALICE, amount=50.0)
+        embeds = interaction.response.send_message.call_args.kwargs.get("embeds") or []
+        self.assertFalse(any((e.title or "").startswith("🎲 New bet") for e in embeds))
+        # Everybody else still gets it.
+        from utils.notifications import fetch_unseen
+        self.assertEqual(len(await fetch_unseen(self.db, BOB, GUILD)), 1)
+        self.assertEqual(await fetch_unseen(self.db, ALICE, GUILD), [])
 
 
 if __name__ == "__main__":
