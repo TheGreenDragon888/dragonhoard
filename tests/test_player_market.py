@@ -42,7 +42,12 @@ from utils.db_helpers import (
 )
 from utils.drills import release_stale_drill_locks
 from utils.job_board import ensure_todays_job
-from utils.market_book import permanent_material_error, server_only_error
+from utils.market_book import (
+    MAX_OPEN_LISTINGS,
+    MAX_OPEN_ORDERS,
+    permanent_material_error,
+    server_only_error,
+)
 
 GUILD = 8080
 ALICE = 111
@@ -133,6 +138,42 @@ class MarketTestCase(unittest.IsolatedAsyncioTestCase):
         i = FakeInteraction(user)
         await EconomyCog.market_sell.callback(self.cog, i, material_id, quantity)
         return i
+
+    async def list_directly(self, user, material_id, quantity, price):
+        """A listing written straight into the book, escrow and all - for
+        building books bigger than one player's MAX_OPEN_LISTINGS allows through
+        /market list, like the ones players had before the limit existed."""
+        await self.db.execute(
+            "INSERT INTO market_listings (guild_id, seller_id, material_id, quantity, price_units) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (GUILD, user, material_id, quantity, player_price_units(price)),
+        )
+
+    async def list_drill_directly(self, user, price):
+        drill_id = await self.db.execute(
+            "INSERT INTO drills (guild_id, owner_id, drill_type, level, container_type) "
+            "VALUES (NULL, ?, 'diamond_drill', 5, 'diamond_container')", (user,)
+        )
+        listing_id = await self.db.execute(
+            "INSERT INTO market_listings (guild_id, seller_id, drill_id, quantity, price_units) "
+            "VALUES (?, ?, ?, 1, ?)",
+            (GUILD, user, drill_id, player_price_units(price)),
+        )
+        await self.db.execute(
+            "UPDATE drills SET listed_id = ? WHERE drill_id = ?", (listing_id, drill_id)
+        )
+
+    async def order_directly(self, user, material_id, quantity, price):
+        """The order-side twin of list_directly, escrow included."""
+        units = player_price_units(price)
+        await adjust_currency_balance(
+            self.db, GUILD, user, -player_price_total(units, quantity)
+        )
+        await self.db.execute(
+            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (GUILD, user, material_id, quantity, units),
+        )
 
     async def totals(self):
         row = await self.db.fetchone(
@@ -508,6 +549,128 @@ class EscrowTests(MarketTestCase):
         interaction = await self.order(ALICE, "wiring", 100, 0.60)
         self.assertIn("only have", interaction.sent or "")
         self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), 1.0)
+
+
+class EntryLimitTests(MarketTestCase):
+    """At most MAX_OPEN_LISTINGS listings and MAX_OPEN_ORDERS orders per
+    player per server (1.4.1). A refused entry takes nothing."""
+
+    OTHER_GUILD = GUILD + 1
+
+    async def fill_listings(self, user=ALICE, count=MAX_OPEN_LISTINGS):
+        await adjust_user_quantity(self.db, user, "wiring", count)
+        for _ in range(count):
+            interaction = await self.list_item(user, "wiring", 5.0, 1)
+            self.assertIsNone(interaction.sent, "each listing up to the limit is accepted")
+
+    async def fill_orders(self, user=ALICE, count=MAX_OPEN_ORDERS):
+        await adjust_currency_balance(self.db, GUILD, user, 1000.0)
+        for _ in range(count):
+            interaction = await self.order(user, "wiring", 1, 5.0)
+            self.assertIsNone(interaction.sent, "each order up to the limit is accepted")
+
+    async def listing_count(self):
+        return len(await self.db.fetchall("SELECT * FROM market_listings"))
+
+    async def test_the_limits_are_five_each(self):
+        self.assertEqual((MAX_OPEN_LISTINGS, MAX_OPEN_ORDERS), (5, 5))
+
+    async def test_a_sixth_listing_is_refused_and_takes_nothing(self):
+        await self.fill_listings()
+        await adjust_user_quantity(self.db, ALICE, "ruby", 1)
+        interaction = await self.list_item(ALICE, "ruby", 5000.0, 1)
+        self.assertIn("5 listings", interaction.sent or "")
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "ruby"), 1)
+        self.assertEqual(await self.listing_count(), MAX_OPEN_LISTINGS)
+
+    async def test_a_sixth_order_is_refused_and_holds_nothing(self):
+        await self.fill_orders()
+        before = await get_currency_balance(self.db, GUILD, ALICE)
+        interaction = await self.order(ALICE, "ruby", 1, 100.0)
+        self.assertIn("5 orders", interaction.sent or "")
+        self.assertEqual(await get_currency_balance(self.db, GUILD, ALICE), before)
+        self.assertEqual(
+            len(await self.db.fetchall("SELECT * FROM market_orders")), MAX_OPEN_ORDERS
+        )
+
+    async def test_the_two_limits_are_separate(self):
+        await self.fill_listings()
+        await self.fill_orders()
+
+    async def test_a_drill_listing_counts(self):
+        await self.fill_listings(count=MAX_OPEN_LISTINGS - 1)
+        drill_id = await self.db.execute(
+            "INSERT INTO drills (guild_id, owner_id, drill_type, level) "
+            "VALUES (NULL, ?, 'iron_drill', 1)", (ALICE,)
+        )
+        self.assertIsNone((await self.list_item(ALICE, f"drill:{drill_id}", 50.0)).sent)
+
+        other = await self.db.execute(
+            "INSERT INTO drills (guild_id, owner_id, drill_type, level) "
+            "VALUES (NULL, ?, 'iron_drill', 1)", (ALICE,)
+        )
+        interaction = await self.list_item(ALICE, f"drill:{other}", 50.0)
+        self.assertIn("5 listings", interaction.sent or "")
+        row = await self.db.fetchone("SELECT listed_id FROM drills WHERE drill_id = ?", (other,))
+        self.assertIsNone(row["listed_id"], "the refused drill is not escrowed")
+
+    async def test_cancelling_one_frees_a_slot(self):
+        await self.fill_listings()
+        row = await self.db.fetchone("SELECT listing_id FROM market_listings LIMIT 1")
+        await self.cancel(ALICE, f"listing:{row['listing_id']}")
+        await adjust_user_quantity(self.db, ALICE, "ruby", 1)
+        self.assertIsNone((await self.list_item(ALICE, "ruby", 5000.0, 1)).sent)
+
+    async def test_a_listing_that_sells_out_frees_a_slot(self):
+        await self.fill_listings()
+        await adjust_currency_balance(self.db, GUILD, BOB, 100.0)
+        await self.buy(BOB, "wiring", 1)
+        self.assertEqual(await self.listing_count(), MAX_OPEN_LISTINGS - 1)
+        await adjust_user_quantity(self.db, ALICE, "ruby", 1)
+        self.assertIsNone((await self.list_item(ALICE, "ruby", 5000.0, 1)).sent)
+
+    async def test_a_partly_filled_listing_still_counts(self):
+        await self.fill_listings(count=MAX_OPEN_LISTINGS - 1)
+        await adjust_user_quantity(self.db, ALICE, "ruby", 3)
+        await self.list_item(ALICE, "ruby", 5000.0, 3)
+        await adjust_currency_balance(self.db, GUILD, BOB, 10_000.0)
+        await self.buy(BOB, "ruby", 1)
+        await adjust_user_quantity(self.db, ALICE, "drill_chassis", 1)
+        interaction = await self.list_item(ALICE, "drill_chassis", 5.0, 1)
+        self.assertIn("5 listings", interaction.sent or "")
+
+    async def test_it_is_per_player(self):
+        await self.fill_listings(ALICE)
+        await self.fill_listings(BOB)
+
+    async def test_it_is_per_server(self):
+        await self.fill_listings()
+        await ensure_server_row(self.db, self.OTHER_GUILD)
+        await adjust_user_quantity(self.db, ALICE, "ruby", 1)
+        interaction = FakeInteraction(ALICE, guild_id=self.OTHER_GUILD)
+        await EconomyCog.market_list.callback(self.cog, interaction, "ruby", 5000.0, 1)
+        self.assertIsNone(interaction.response.send_message.call_args.args or None)
+
+    async def test_a_player_already_over_the_limit_keeps_their_entries(self):
+        """Entries were uncapped before 1.4.1. Nothing is taken away; they just
+        can't add another until they are under the limit."""
+        for _ in range(MAX_OPEN_LISTINGS + 3):
+            await self.list_directly(ALICE, "wiring", 1, 5.0)
+        await adjust_user_quantity(self.db, ALICE, "ruby", 1)
+        interaction = await self.list_item(ALICE, "ruby", 5000.0, 1)
+        self.assertIn("5 listings", interaction.sent or "")
+        self.assertEqual(await self.listing_count(), MAX_OPEN_LISTINGS + 3)
+
+    async def test_entries_shows_the_count_against_the_limit(self):
+        await self.fill_listings(count=3)
+        await self.fill_orders(count=1)
+        interaction = FakeInteraction(ALICE)
+        await EconomyCog.market_entries.callback(self.cog, interaction)
+        kwargs = interaction.response.send_message.call_args.kwargs
+        embed = (kwargs.get("embeds") or [kwargs["embed"]])[0]
+        names = [field.name for field in embed.fields]
+        self.assertTrue(any(name.startswith("Selling · 3/5") for name in names), names)
+        self.assertTrue(any(name.startswith("Buying · 1/5") for name in names), names)
 
 
 class RoutingTests(MarketTestCase):
@@ -941,18 +1104,14 @@ class EmbedBudgetTests(MarketTestCase):
             (currency_emoji, GUILD),
         )
         await adjust_currency_balance(self.db, GUILD, ALICE, 10 ** 9)
-        await adjust_currency_balance(self.db, GUILD, BOB, 10 ** 9)
+        # Written straight into the books: no one player may hold this many
+        # entries (MAX_OPEN_LISTINGS), but a server full of players can.
         for material_id in LISTABLE:
-            await adjust_user_quantity(self.db, BOB, material_id, 1000)
-            await self.list_item(BOB, material_id, 1000.0, 1000)
-            await self.order(ALICE, material_id, 50, 500.0)
+            await self.list_directly(BOB, material_id, 1000, 1000.0)
+            await self.order_directly(ALICE, material_id, 50, 500.0)
         # More drills than the field will name, so the "and N more" line is in.
         for _ in range(BOOK_DISPLAY_LIMIT + 5):
-            drill_id = await self.db.execute(
-                "INSERT INTO drills (guild_id, owner_id, drill_type, level, container_type) "
-                "VALUES (NULL, ?, 'diamond_drill', 5, 'diamond_container')", (BOB,)
-            )
-            await self.list_item(BOB, f"drill:{drill_id}", 50000.0)
+            await self.list_drill_directly(BOB, 50000.0)
 
     async def render(self):
         interaction = FakeInteraction(ALICE)
@@ -992,10 +1151,10 @@ class EmbedBudgetTests(MarketTestCase):
                 self.assertIn(ALL_MATERIALS[material_id]["emoji"], book)
 
     async def test_an_undercut_shows_the_best_price_and_the_depth_behind_it(self):
-        """Six sellers undercutting each other are one line, not six. Only the
-        cheapest is fillable - plan_buy takes it first - so the rest are not
+        """Five listings undercutting each other are one line, not five. Only
+        the cheapest is fillable - plan_buy takes it first - so the rest are not
         actionable, and what a buyer wants instead is how much is behind it."""
-        for i in range(6):
+        for i in range(5):
             await adjust_user_quantity(self.db, BOB, "wiring", 50)
             await self.list_item(BOB, "wiring", round(0.95 - i * 0.01, 4), 50)
         embed = await self.render()
@@ -1004,9 +1163,9 @@ class EmbedBudgetTests(MarketTestCase):
         )
         wiring = [ln for ln in book.splitlines() if ALL_MATERIALS["wiring"]["emoji"] in ln]
         self.assertEqual(len(wiring), 1, "one line per material, however many sellers")
-        self.assertIn("0.9000", wiring[0], "the cheapest ask, which is the fillable one")
-        self.assertIn("300", wiring[0], "the total depth behind it")
-        self.assertIn("1 seller", wiring[0], "all six listings are Bob's")
+        self.assertIn("0.9100", wiring[0], "the cheapest ask, which is the fillable one")
+        self.assertIn("250", wiring[0], "the total depth behind it")
+        self.assertIn("1 seller", wiring[0], "all five listings are Bob's")
 
     async def test_status_carries_only_the_market_not_your_own_entries(self):
         """/market status answers "what is the market doing". What the caller
@@ -1142,16 +1301,17 @@ class MarketEntriesTests(MarketTestCase):
 
     async def test_a_page_full_of_entries_still_fits(self):
         """The page lifts BOOK_DISPLAY_LIMIT to ENTRIES_DISPLAY_LIMIT because
-        it no longer shares an embed - so the larger cap has to fit too."""
+        it no longer shares an embed - so the larger cap has to fit too. Only a
+        player who had this many entries before MAX_OPEN_LISTINGS existed can
+        reach it, and they keep them, so it still has to render."""
         await self.db.execute(
             "UPDATE server_config SET currency_emoji = ? WHERE guild_id = ?",
             (EmbedBudgetTests.LONG_EMOJI, GUILD),
         )
         await adjust_currency_balance(self.db, GUILD, ALICE, 10 ** 9)
         for _ in range(ENTRIES_DISPLAY_LIMIT + 5):
-            await adjust_user_quantity(self.db, ALICE, "wiring", 10)
-            await self.list_item(ALICE, "wiring", 0.72, 10)
-            await self.order(ALICE, "iron_drill_bit", 10, 0.05)
+            await self.list_directly(ALICE, "wiring", 10, 0.72)
+            await self.order_directly(ALICE, "iron_drill_bit", 10, 0.05)
 
         embed = await self.entries()
         total = (

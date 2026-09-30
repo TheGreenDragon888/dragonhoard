@@ -232,6 +232,60 @@ def permanent_material_error(material_id: str) -> str | None:
     )
 
 
+# How many open entries one player may have on each of a server's books at
+# once (1.4.1). Per server, like the books themselves, and one limit per book
+# rather than one shared between them. An entry stops counting when it fills
+# completely or is cancelled - either way its row is deleted - so a partly
+# filled one still counts as one.
+MAX_OPEN_LISTINGS = 5
+MAX_OPEN_ORDERS = 5
+
+LISTINGS = "listings"
+ORDERS = "orders"
+
+_ENTRY_LIMITS = {
+    LISTINGS: (MAX_OPEN_LISTINGS, "market_listings", "seller_id"),
+    ORDERS: (MAX_OPEN_ORDERS, "market_orders", "buyer_id"),
+}
+
+
+class EntryLimitReached(Exception):
+    """Raised by check_entry_limit, carrying the refusal to show the player.
+
+    An exception rather than a return value because the check has to run
+    inside the transaction that inserts the entry - that is what stops two
+    commands sent at once both getting in as the fifth - and the refusal has to
+    be sent after it closes, since a Discord call must never be awaited while
+    the write lock is held (database/db.py: Database.transaction).
+    """
+
+
+async def open_entry_count(db, guild_id: int, user_id: int, book: str) -> int:
+    """How many entries this player has on one of this server's books."""
+    _, table, owner = _ENTRY_LIMITS[book]
+    row = await db.fetchone(
+        f"SELECT COUNT(*) AS n FROM {table} WHERE guild_id = ? AND {owner} = ?",
+        (guild_id, user_id),
+    )
+    return row["n"]
+
+
+async def check_entry_limit(tx, guild_id: int, user_id: int, book: str) -> None:
+    """Raises EntryLimitReached if this player already has as many entries on
+    `book` as it allows. Call it inside the transaction that inserts the new
+    one, before any escrow is taken.
+
+    A player who had more than the limit before it existed keeps what they
+    have; they simply can't add another until they are under it.
+    """
+    limit, _, _ = _ENTRY_LIMITS[book]
+    if await open_entry_count(tx, guild_id, user_id, book) >= limit:
+        raise EntryLimitReached(
+            f"You already have {limit} {book} on this server, which is the limit. "
+            f"`/market entries` shows them; `/market cancel` takes one back."
+        )
+
+
 async def consume_listing(tx, listing_id: int, quantity: int) -> None:
     """Takes `quantity` off a listing, deleting the row once it is empty.
 

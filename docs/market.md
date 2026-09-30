@@ -435,6 +435,14 @@ per-viewer database read, which `/market status` should not be paying for on a
 command everybody runs to check prices. It is also where the id `/market
 cancel` takes is looked up once the receipt has scrolled away.
 
+**Five of each per player.** A player may have at most five listings and five
+orders open on each server at once (1.4.1; `MAX_OPEN_LISTINGS` and
+`MAX_OPEN_ORDERS` in `utils/market_book.py`). The limit is per server, like the
+books themselves. An entry stops counting when it fills completely or is
+cancelled; a partly filled one still counts. Players who already had more when
+the limit arrived kept them, and simply cannot add another until they are under
+it. `/market entries` shows each count against its limit.
+
 **Escrow.** A listing holds its goods and an order holds its currency from the
 moment it is placed: the goods leave the seller's inventory, the currency
 leaves the buyer's balance. Without that, a player could list a stack and then

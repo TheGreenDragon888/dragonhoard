@@ -80,6 +80,12 @@ from utils.market_book import (
     fills_total,
     permanent_material_error,
     server_only_error,
+    EntryLimitReached,
+    LISTINGS,
+    MAX_OPEN_LISTINGS,
+    MAX_OPEN_ORDERS,
+    ORDERS,
+    check_entry_limit,
     plan_buy,
     plan_sell,
     server_quantity,
@@ -1115,6 +1121,8 @@ class EconomyCog(commands.Cog):
                     await interaction.response.send_message(unavailable, ephemeral=True)
                     return
 
+                await check_entry_limit(tx, interaction.guild_id, interaction.user.id, LISTINGS)
+
                 listing_id = await tx.execute(
                     "INSERT INTO market_listings "
                     "(guild_id, seller_id, drill_id, quantity, price_units) VALUES (?, ?, ?, 1, ?)",
@@ -1130,6 +1138,9 @@ class EconomyCog(commands.Cog):
                 )
                 if not claimed:
                     raise InsufficientQuantity(f"drill {drill_id} was taken while listing")
+        except EntryLimitReached as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "That drill was claimed by something else while this was going through - "
@@ -1164,6 +1175,8 @@ class EconomyCog(commands.Cog):
                 await ensure_user_row(tx, interaction.user.id)
                 await ensure_server_row(tx, interaction.guild_id)
 
+                await check_entry_limit(tx, interaction.guild_id, interaction.user.id, LISTINGS)
+
                 have = await get_user_quantity(tx, interaction.user.id, item)
                 if have < quantity:
                     await interaction.response.send_message(
@@ -1182,6 +1195,9 @@ class EconomyCog(commands.Cog):
                     (interaction.guild_id, interaction.user.id, item, quantity, price_units),
                 )
                 remaining = await get_user_quantity(tx, interaction.user.id, item)
+        except EntryLimitReached as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your inventory changed while that was going through - nothing was listed. "
@@ -1245,6 +1261,8 @@ class EconomyCog(commands.Cog):
                 await ensure_user_row(tx, interaction.user.id)
                 await ensure_server_row(tx, interaction.guild_id)
 
+                await check_entry_limit(tx, interaction.guild_id, interaction.user.id, ORDERS)
+
                 balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
                 if balance < total:
                     await interaction.response.send_message(
@@ -1267,6 +1285,9 @@ class EconomyCog(commands.Cog):
                     (interaction.guild_id, interaction.user.id, item, quantity, price_units),
                 )
                 balance_after = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
+        except EntryLimitReached as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your balance changed while that was going through - no order was placed. "
@@ -1543,12 +1564,15 @@ class EconomyCog(commands.Cog):
             await respond(interaction, self.db, embed=embed)
             return
 
+        # Each heading carries the count against its limit (utils/market_book.py:
+        # MAX_OPEN_LISTINGS), so the limit is visible where a player manages
+        # their entries rather than first met as a refusal.
         add_multi_field(
-            embed, f"Selling · {currency_emoji} each",
+            embed, f"Selling · {len(listings)}/{MAX_OPEN_LISTINGS} · {currency_emoji} each",
             self._own_listing_lines(listings), empty_text="Nothing listed.",
         )
         add_multi_field(
-            embed, f"Buying · {currency_emoji} each",
+            embed, f"Buying · {len(orders)}/{MAX_OPEN_ORDERS} · {currency_emoji} each",
             self._own_order_lines(orders), empty_text="No open bids.",
         )
         await respond(interaction, self.db, embed=embed)
