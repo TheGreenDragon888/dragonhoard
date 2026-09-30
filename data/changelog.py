@@ -26,6 +26,7 @@ from utils.embeds import (
     SCRAPPER_COLOR,
     BLAST_FURNACE_COLOR,
     GOVERNMENT_COLOR,
+    MARKET_COLOR,
 )
 
 
@@ -54,6 +55,55 @@ VERSIONS: dict[str, ChangelogVersion] = {}
 def _add(version: ChangelogVersion):
     VERSIONS[version.version] = version
 
+
+_add(ChangelogVersion(
+    version="1.4.1",
+    released="2026-09-30",
+    emoji="\U0001F4B0",
+    color=MARKET_COLOR,
+    summary="Ores and metals trade with the server only, 5+5 market entries, a week's expiry, tidier menus",
+    headline=(
+        "A market and menus patch. The player market now stays out of the job board's way, "
+        "keeps itself tidy, and the pages 1.4 added read like the rest of the game again."
+    ),
+    entries=(
+        ChangelogEntry(
+            "\U0001FA99 Ores And Metals Trade With The Server Only",
+            "Iron ore, copper ore, coal, iron, copper and steel can still be sold and bought "
+            "with `/market sell` and `/market buy`, but no longer listed or bid for. Player "
+            "bids for them were taking job board sales without paying any job progress. Any "
+            "listings or orders you had for them were handed back, with a notice saying what "
+            "came back.",
+        ),
+        ChangelogEntry(
+            "\U0001F4CB Five Of Each, For A Week",
+            "You can have up to **5 listings** and **5 orders** open on each server, and each "
+            "one lasts **7 days**. Whatever hasn't sold or filled by then comes back to you "
+            "automatically - goods, drills or money - with a notice. `/market entries` shows "
+            "your count and how long each entry has left. Entries already on the market got "
+            "their 7 days from this update.",
+        ),
+        ChangelogEntry(
+            "\U0001F9FE Receipts And Status Pages",
+            "Listing, ordering, cancelling, the Mayor's and Treasurer's commands and bonds now "
+            "answer with a receipt - what moved and what you have left - instead of a paragraph. "
+            "`/government status`, `/economy`, `/bet` and `/market` are shorter and name each "
+            "machine the way its own page does.",
+        ),
+        ChangelogEntry(
+            "\U0001F4CA GDP Explained In /help",
+            "What GDP counts, and what being a net importer or exporter means, now lives on a "
+            "new **Economy** page of `/help`, so `/economy gdp` can be just the figures. "
+            "`/economy status` only lists gemstones that were actually mined.",
+        ),
+        ChangelogEntry(
+            "\U0001F527 Fixes",
+            "The losing side of a settled bet no longer reads \"returned to this side\". "
+            "Government refusals quote your server's own currency instead of \U0001F4B0. "
+            "Opening or settling a bet no longer shows you the server notice about it.",
+        ),
+    ),
+))
 
 _add(ChangelogVersion(
     version="1.4",
