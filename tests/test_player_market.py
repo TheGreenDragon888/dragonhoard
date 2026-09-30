@@ -43,8 +43,10 @@ from utils.db_helpers import (
 from utils.drills import release_stale_drill_locks
 from utils.job_board import ensure_todays_job
 from utils.market_book import (
+    MARKET_ENTRY_LIFETIME_DAYS,
     MAX_OPEN_LISTINGS,
     MAX_OPEN_ORDERS,
+    guilds_with_expired_entries,
     permanent_material_error,
     server_only_error,
 )
@@ -144,8 +146,8 @@ class MarketTestCase(unittest.IsolatedAsyncioTestCase):
         building books bigger than one player's MAX_OPEN_LISTINGS allows through
         /market list, like the ones players had before the limit existed."""
         await self.db.execute(
-            "INSERT INTO market_listings (guild_id, seller_id, material_id, quantity, price_units) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO market_listings (guild_id, seller_id, material_id, quantity, price_units, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now', '+7 days'))",
             (GUILD, user, material_id, quantity, player_price_units(price)),
         )
 
@@ -155,8 +157,8 @@ class MarketTestCase(unittest.IsolatedAsyncioTestCase):
             "VALUES (NULL, ?, 'diamond_drill', 5, 'diamond_container')", (user,)
         )
         listing_id = await self.db.execute(
-            "INSERT INTO market_listings (guild_id, seller_id, drill_id, quantity, price_units) "
-            "VALUES (?, ?, ?, 1, ?)",
+            "INSERT INTO market_listings (guild_id, seller_id, drill_id, quantity, price_units, expires_at) "
+            "VALUES (?, ?, ?, 1, ?, datetime('now', '+7 days'))",
             (GUILD, user, drill_id, player_price_units(price)),
         )
         await self.db.execute(
@@ -170,8 +172,8 @@ class MarketTestCase(unittest.IsolatedAsyncioTestCase):
             self.db, GUILD, user, -player_price_total(units, quantity)
         )
         await self.db.execute(
-            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now', '+7 days'))",
             (GUILD, user, material_id, quantity, units),
         )
 
@@ -219,8 +221,8 @@ class JobBoardCreditTests(MarketTestCase):
             self.db, GUILD, user, -player_price_total(price_units, quantity)
         )
         await self.db.execute(
-            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, datetime('now', '+7 days'))",
             (GUILD, user, material, quantity, price_units),
         )
 
@@ -671,6 +673,154 @@ class EntryLimitTests(MarketTestCase):
         names = [field.name for field in embed.fields]
         self.assertTrue(any(name.startswith("Selling · 3/5") for name in names), names)
         self.assertTrue(any(name.startswith("Buying · 1/5") for name in names), names)
+
+
+class ExpiryTests(MarketTestCase):
+    """Listings and orders expire MARKET_ENTRY_LIFETIME_DAYS after they are
+    placed (1.4.1). The hourly sweep hands back whatever is left; until it
+    runs, an expired entry is already off the books."""
+
+    async def expire_everything(self):
+        await self.db.execute(
+            "UPDATE market_listings SET expires_at = datetime('now', '-1 minute')"
+        )
+        await self.db.execute(
+            "UPDATE market_orders SET expires_at = datetime('now', '-1 minute')"
+        )
+
+    async def sweep(self):
+        for guild_id in await guilds_with_expired_entries(self.db):
+            await self.cog._expire_guild_entries(guild_id)
+
+    async def notices(self, user):
+        return await self.db.fetchall(
+            "SELECT notice_key, title, body FROM user_notifications WHERE user_id = ?", (user,)
+        )
+
+    async def test_the_lifetime_is_a_week(self):
+        self.assertEqual(MARKET_ENTRY_LIFETIME_DAYS, 7)
+
+    async def test_a_new_entry_expires_a_week_from_now(self):
+        await adjust_user_quantity(self.db, ALICE, "wiring", 1)
+        await self.list_item(ALICE, "wiring", 5.0, 1)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
+        await self.order(ALICE, "ruby", 1, 50.0)
+        for table in ("market_listings", "market_orders"):
+            with self.subTest(table):
+                row = await self.db.fetchone(
+                    f"SELECT (julianday(expires_at) - julianday('now')) AS days FROM {table}"
+                )
+                self.assertAlmostEqual(row["days"], 7, delta=0.01)
+
+    async def test_an_expired_listing_cannot_be_bought_before_the_sweep(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        await self.list_item(BOB, "wiring", 5.0, 10)
+        await self.expire_everything()
+        await adjust_currency_balance(self.db, GUILD, ALICE, 1000.0)
+        interaction = await self.buy(ALICE, "wiring", 1)
+        self.assertIn("Only 0", interaction.sent or "")
+
+    async def test_an_expired_order_cannot_be_filled_before_the_sweep(self):
+        await adjust_currency_balance(self.db, GUILD, BOB, 100.0)
+        await self.order(BOB, "wiring", 5, 5.0)
+        await self.expire_everything()
+        await adjust_user_quantity(self.db, ALICE, "wiring", 5)
+        interaction = await self.sell(ALICE, "wiring", 5)
+        self.assertIn("Nobody is buying", interaction.sent or "")
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "wiring"), 5)
+
+    async def test_an_expired_entry_frees_its_slot_before_the_sweep(self):
+        for _ in range(MAX_OPEN_LISTINGS):
+            await self.list_directly(ALICE, "wiring", 1, 5.0)
+        await self.expire_everything()
+        await adjust_user_quantity(self.db, ALICE, "ruby", 1)
+        self.assertIsNone((await self.list_item(ALICE, "ruby", 5000.0, 1)).sent)
+
+    async def test_the_sweep_returns_goods_and_currency(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        await self.list_item(BOB, "wiring", 5.0, 10)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
+        await self.order(ALICE, "ruby", 2, 20.0)
+        circulating_before = await circulating_currency_for(self.db, GUILD)
+        minted_before = await self.totals()
+
+        await self.expire_everything()
+        await self.sweep()
+
+        self.assertEqual(await get_user_quantity(self.db, BOB, "wiring"), 10)
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), 100.0)
+        self.assertEqual(await self.db.fetchall("SELECT * FROM market_listings"), [])
+        self.assertEqual(await self.db.fetchall("SELECT * FROM market_orders"), [])
+        self.assertAlmostEqual(await circulating_currency_for(self.db, GUILD), circulating_before)
+        self.assertEqual(await self.totals(), minted_before, "a return mints and burns nothing")
+
+    async def test_a_partly_filled_entry_returns_only_what_is_left(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        await self.list_item(BOB, "wiring", 5.0, 10)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 1000.0)
+        await self.buy(ALICE, "wiring", 4)
+        await self.expire_everything()
+        await self.sweep()
+        self.assertEqual(await get_user_quantity(self.db, BOB, "wiring"), 6)
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "wiring"), 4)
+
+    async def test_an_expired_drill_listing_puts_the_drill_back(self):
+        drill_id = await self.db.execute(
+            "INSERT INTO drills (guild_id, owner_id, drill_type, level, container_type) "
+            "VALUES (NULL, ?, 'ruby_drill', 3, 'steel_container')", (BOB,)
+        )
+        await self.list_item(BOB, f"drill:{drill_id}", 900.0)
+        await self.expire_everything()
+        await self.sweep()
+        row = await self.db.fetchone("SELECT * FROM drills WHERE drill_id = ?", (drill_id,))
+        self.assertIsNone(row["listed_id"])
+        self.assertEqual((row["owner_id"], row["level"], row["container_type"]),
+                         (BOB, 3, "steel_container"))
+        notice = (await self.notices(BOB))[0]
+        self.assertIn("Lv.3", notice["body"])
+
+    async def test_each_owner_gets_one_notice_naming_everything(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        await self.list_item(BOB, "wiring", 5.0, 10)
+        await adjust_currency_balance(self.db, GUILD, BOB, 100.0)
+        await self.order(BOB, "ruby", 2, 20.0)
+        await self.expire_everything()
+        await self.sweep()
+
+        notices = await self.notices(BOB)
+        self.assertEqual(len(notices), 1)
+        self.assertIn("10 Wiring", notices[0]["body"])
+        self.assertIn("2 Rubies", notices[0]["body"])
+        self.assertIn("40.00", notices[0]["body"])
+        self.assertEqual(await self.notices(ALICE), [])
+
+    async def test_live_entries_are_untouched_by_the_sweep(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        await self.list_item(BOB, "wiring", 5.0, 10)
+        await self.sweep()
+        self.assertEqual(len(await self.db.fetchall("SELECT * FROM market_listings")), 1)
+        self.assertEqual(await self.notices(BOB), [])
+
+    async def test_a_server_with_nothing_expired_is_not_visited(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        await self.list_item(BOB, "wiring", 5.0, 10)
+        self.assertEqual(await guilds_with_expired_entries(self.db), [])
+        await self.expire_everything()
+        self.assertEqual(await guilds_with_expired_entries(self.db), [GUILD])
+
+    async def test_entries_and_receipts_say_when_it_expires(self):
+        await adjust_user_quantity(self.db, ALICE, "wiring", 1)
+        listed = await self.list_item(ALICE, "wiring", 5.0, 1)
+        receipt = listed.response.send_message.call_args.kwargs
+        receipt = (receipt.get("embeds") or [receipt["embed"]])[0]
+        self.assertIn("<t:", receipt.description)
+
+        interaction = FakeInteraction(ALICE)
+        await EconomyCog.market_entries.callback(self.cog, interaction)
+        kwargs = interaction.response.send_message.call_args.kwargs
+        embed = (kwargs.get("embeds") or [kwargs["embed"]])[0]
+        selling = next(f for f in embed.fields if f.name.startswith("Selling"))
+        self.assertIn("expires <t:", selling.value)
 
 
 class RoutingTests(MarketTestCase):

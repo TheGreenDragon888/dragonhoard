@@ -710,19 +710,22 @@ class ServerOnlyEntriesMigrationTests(unittest.IsolatedAsyncioTestCase):
         # may still trade, and the same mix of orders.
         for material_id, quantity in (("steel", 30), ("iron_ore", 500), ("wiring", 2)):
             conn.execute(
-                "INSERT INTO market_listings (guild_id, seller_id, material_id, quantity, price_units) "
-                "VALUES (?, ?, ?, ?, 7200)",
+                "INSERT INTO market_listings "
+                "(guild_id, seller_id, material_id, quantity, price_units, expires_at) "
+                "VALUES (?, ?, ?, ?, 7200, datetime('now', '+1 day'))",
                 (GUILD, self.SELLER, material_id, quantity),
             )
         # 2,000 coal at 0.0120 holds 24.00; 1 wiring at 5.00 holds 5.00.
         conn.execute(
-            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units) "
-            "VALUES (?, ?, 'coal', 2000, 120)",
+            "INSERT INTO market_orders "
+            "(guild_id, buyer_id, material_id, quantity, price_units, expires_at) "
+            "VALUES (?, ?, 'coal', 2000, 120, datetime('now', '+1 day'))",
             (GUILD, self.BUYER),
         )
         conn.execute(
-            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units) "
-            "VALUES (?, ?, 'wiring', 1, 50000)",
+            "INSERT INTO market_orders "
+            "(guild_id, buyer_id, material_id, quantity, price_units, expires_at) "
+            "VALUES (?, ?, 'wiring', 1, 50000, datetime('now', '+1 day'))",
             (GUILD, self.BUYER),
         )
         conn.execute("PRAGMA user_version = 5")
@@ -780,6 +783,77 @@ class ServerOnlyEntriesMigrationTests(unittest.IsolatedAsyncioTestCase):
             "SELECT balance FROM server_currency_balances WHERE user_id = ?", (self.BUYER,)
         )
         self.assertAlmostEqual(balance["balance"], 34.0, msg="a second open refunds nothing")
+
+
+class EntryExpiryMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """1.4.1 gave listings and orders an expires_at. A database from before it
+    has entries of every age and no such column; opening it adds the column and
+    gives every existing entry seven days from the upgrade - none of them may
+    vanish on the day the update ships, however old it already was.
+
+    The old shape is made by opening a fresh database and dropping the column
+    (and its index) back out, which is exactly the table 1.4 created.
+    """
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        for table, index in (("market_listings", "idx_listings_expiry"),
+                             ("market_orders", "idx_orders_expiry")):
+            conn.execute(f"DROP INDEX {index}")
+            conn.execute(f"ALTER TABLE {table} DROP COLUMN expires_at")
+        conn.execute("INSERT INTO server_config (guild_id) VALUES (?)", (GUILD,))
+        # A month old, a week old and brand new.
+        for age in ("-30 days", "-7 days", "-1 minute"):
+            conn.execute(
+                "INSERT INTO market_listings "
+                "(guild_id, seller_id, material_id, quantity, price_units, created_at) "
+                "VALUES (?, ?, 'wiring', 1, 50000, datetime('now', ?))",
+                (GUILD, USER, age),
+            )
+            conn.execute(
+                "INSERT INTO market_orders "
+                "(guild_id, buyer_id, material_id, quantity, price_units, created_at) "
+                "VALUES (?, ?, 'ruby', 1, 500000, datetime('now', ?))",
+                (GUILD, USER, age),
+            )
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_every_entry_expires_a_week_after_the_upgrade(self):
+        for table in ("market_listings", "market_orders"):
+            rows = await self.db.fetchall(
+                f"SELECT (julianday(expires_at) - julianday('now')) AS days FROM {table}"
+            )
+            with self.subTest(table):
+                self.assertEqual(len(rows), 3, "nothing was dropped")
+                for row in rows:
+                    self.assertAlmostEqual(row["days"], 7, delta=0.01)
+
+    async def test_the_expiry_indexes_exist(self):
+        rows = await self.db.fetchall(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%_expiry'"
+        )
+        self.assertEqual({row["name"] for row in rows}, {"idx_listings_expiry", "idx_orders_expiry"})
+
+    async def test_opening_it_again_changes_nothing(self):
+        before = await self.db.fetchall("SELECT listing_id, expires_at FROM market_listings")
+        await self.db.init_schema()
+        after = await self.db.fetchall("SELECT listing_id, expires_at FROM market_listings")
+        self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
 
 
 if __name__ == "__main__":

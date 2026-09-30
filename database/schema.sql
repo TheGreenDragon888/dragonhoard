@@ -617,6 +617,12 @@ CREATE TABLE IF NOT EXISTS market_listings (
     -- would drift off its own sub-cent before it got there.
     price_units INTEGER NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    -- When the listing comes off the book and its goods go back (1.4.1;
+    -- utils/market_book.py: MARKET_ENTRY_LIFETIME_DAYS). No DEFAULT on
+    -- purpose: every insert sets it, and one that forgot would otherwise
+    -- create a listing that never expires. The index on it is created in
+    -- database/db.py, after the migration that adds it to older databases.
+    expires_at  TEXT NOT NULL,
     CHECK ((material_id IS NULL) != (drill_id IS NULL)),
     CHECK (drill_id IS NULL OR quantity = 1),
     CHECK (quantity > 0 AND price_units > 0)
@@ -648,6 +654,8 @@ CREATE TABLE IF NOT EXISTS market_orders (
     quantity    INTEGER NOT NULL,
     price_units INTEGER NOT NULL,     -- per unit, PLAYER_PRICE_SCALE
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    -- As on market_listings: when the order's escrow goes back (1.4.1).
+    expires_at  TEXT NOT NULL,
     CHECK (quantity > 0 AND price_units > 0)
 );
 -- Every read is one guild's book for one material, dearest first.

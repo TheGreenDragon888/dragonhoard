@@ -316,7 +316,7 @@ projects.
 **The player market (1.4)**: `/market list` and `/market order` put players'
 own asks and bids on two per-guild books (`market_listings`, `market_orders`),
 and `/market buy`/`/market sell` route across both before falling back to the
-server (`utils/market_book.py`). Three things there are load-bearing and easy
+server (`utils/market_book.py`). Four things there are load-bearing and easy
 to break:
 
 - **Only the server's share of a sale may credit the job board.** A player-to-
@@ -328,6 +328,12 @@ to break:
   would hand back a drill that was still on the book. `drill_unavailable_reason`
   /`DRILL_AVAILABLE_SQL` in `utils/drills.py` are the one place that rule lives;
   eight call sites read them.
+- **Every read of either book spells `LIVE_ENTRY_SQL`** (1.4.1,
+  `utils/market_book.py`). Entries expire after `MARKET_ENTRY_LIFETIME_DAYS` and
+  an hourly sweep hands them back, so an expired row can sit on the book for up
+  to an hour; a query without the condition would let it be bought, filled or
+  counted. Handing one back goes through `return_listing`/`refund_order`, the one
+  place each book's escrow is returned (cancel, expiry and guild removal).
 - **Order escrow is not a burn.** It leaves `server_currency_balances` but not
   the economy, so `circulating_currency` in `utils/db_helpers.py` adds it back -
   one function, two consumers (`/economy status` and `web/queries.py`), the same

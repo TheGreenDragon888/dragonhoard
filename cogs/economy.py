@@ -7,6 +7,8 @@ Implements:
   - /market sell <material> <quantity>    - sell to the server (the currency faucet)
   - /market buy <material> <quantity>     - buy from the server's stock (a currency sink)
   - /market status                        - show the server's current stock and prices
+  - /market list, /market order           - put your own ask or bid on the player books
+  - /market cancel, /market entries       - take one back; see your own
   - /economy status                       - this server's economy at a glance
   - /economy gdp                          - what this server produced, in detail
 
@@ -43,9 +45,11 @@ else - per docs/market.md section 2, it exists solely as a future conceptual
 unit for cross-server exchange rates and isn't spendable, earnable, or shown
 in any menu.
 """
+import logging
+
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from utils.responses import respond
 from utils.embeds import (
@@ -80,16 +84,25 @@ from utils.market_book import (
     fills_total,
     permanent_material_error,
     server_only_error,
+    ENTRY_LIFETIME_MODIFIER,
     EntryLimitReached,
     LISTINGS,
+    LIVE_ENTRY_SQL,
+    MARKET_ENTRY_LIFETIME_DAYS,
     MAX_OPEN_LISTINGS,
     MAX_OPEN_ORDERS,
     ORDERS,
     check_entry_limit,
+    expire_entries,
+    guilds_with_expired_entries,
+    refund_order,
+    return_listing,
     plan_buy,
     plan_sell,
     server_quantity,
 )
+from utils.betting import hours_until
+from utils.notifications import post_user_notification
 from utils.job_board import credit_job_progress, ensure_todays_job, hours_until_reset
 from utils.drills import (
     DRILL_AVAILABLE_SQL,
@@ -180,6 +193,8 @@ DRILL_DISPLAY_LIMIT = 20
 DRILL_GRID_COLUMNS = 4
 
 
+log = logging.getLogger("dragonhoard")
+
 # The most one /market command will move. Raised from 1,000 in 1.3, alongside
 # static prices: the old limit was partly a pricing guard - a big enough sale
 # used to walk the price down under itself - and partly a display one. Neither
@@ -238,7 +253,20 @@ BOOK_DISPLAY_LIMIT = 10
 # shares an embed with four others on /market status, while this one has a page
 # to itself - and because these are the entries the player is there to act on,
 # so hiding them behind a count is the thing the page exists to avoid.
-ENTRIES_DISPLAY_LIMIT = 40
+#
+# Since 1.4.1 no player can place more than MAX_OPEN_LISTINGS or
+# MAX_OPEN_ORDERS, so this only matters for a player who held more before the
+# limit arrived, and only until their entries expire. It came down from 40 then,
+# because each line gained an expiry countdown and 40 of them per book no longer
+# fit Discord's 6,000-character embed limit;
+# tests/test_player_market.py: test_a_page_full_of_entries_still_fits pins it.
+ENTRIES_DISPLAY_LIMIT = 20
+
+
+def entry_expiry_text() -> str:
+    """When an entry placed now expires, as a countdown the reader's client
+    keeps current (utils/market_book.py: MARKET_ENTRY_LIFETIME_DAYS)."""
+    return format_relative_timestamp(MARKET_ENTRY_LIFETIME_DAYS * 24)
 
 # Everything a player may trade: every material except the drill types, which
 # are not fungible and are sold by listing one specific drill, and except
@@ -317,6 +345,76 @@ class EconomyCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db
+        self.expiry_loop.start()
+
+    def cog_unload(self):
+        self.expiry_loop.cancel()
+
+    @tasks.loop(hours=1)
+    async def expiry_loop(self):
+        """Hands back every listing and order past its seven days (1.4.1;
+        utils/market_book.py: MARKET_ENTRY_LIFETIME_DAYS) and tells each owner.
+
+        Only servers with something expired are visited, and each is its own
+        transaction, guarded on its own: an unhandled exception would stop a
+        tasks.loop for good, and one server's bad row must not strand every
+        other server's escrow. An entry that has expired but not been swept yet
+        is already off the books - every read carries LIVE_ENTRY_SQL - so the
+        hour between the two costs a player nothing but the wait.
+        """
+        for guild_id in await guilds_with_expired_entries(self.db):
+            try:
+                await self._expire_guild_entries(guild_id)
+            except Exception:
+                log.exception("Market expiry in guild %s failed.", guild_id)
+
+    @expiry_loop.before_loop
+    async def before_expiry_loop(self):
+        await self.bot.wait_until_ready()
+
+    async def _expire_guild_entries(self, guild_id: int):
+        """One server's sweep: return what expired, and post each owner one
+        personal notice naming everything of theirs that came back. The notice
+        commits with the returns, so it can never describe one that rolled back."""
+        currency_emoji = await self._get_currency_emoji(guild_id)
+        async with self.db.transaction() as tx:
+            listings, orders = await expire_entries(tx, guild_id)
+            lines: dict[int, list[str]] = {}
+            # The first entry's id makes each notice's key unique - row ids are
+            # never reused (AUTOINCREMENT) - so a rerun cannot post it twice.
+            keys: dict[int, str] = {}
+            for listing in listings:
+                owner = listing["seller_id"]
+                keys.setdefault(owner, f"market_expired:listing:{listing['listing_id']}")
+                if listing["drill_id"] is not None:
+                    drill = await fetch_drill(tx, listing["drill_id"], owner)
+                    lines.setdefault(owner, []).append(
+                        f"**{drill_label(drill)}** is back in your inventory"
+                    )
+                else:
+                    info = get_material_info(listing["material_id"])
+                    lines.setdefault(owner, []).append(
+                        f"{info['emoji']} **{listing['quantity']:,} "
+                        f"{material_name(info, listing['quantity'])}** back in your inventory"
+                    )
+            for order, refund in orders:
+                owner = order["buyer_id"]
+                keys.setdefault(owner, f"market_expired:order:{order['order_id']}")
+                info = get_material_info(order["material_id"])
+                lines.setdefault(owner, []).append(
+                    f"Bid for {info['emoji']} **{order['quantity']:,} "
+                    f"{material_name(info, order['quantity'])}**: "
+                    f"{format_currency(refund, currency_emoji)} back in your balance"
+                )
+            for owner, returned in lines.items():
+                await post_user_notification(
+                    tx,
+                    owner,
+                    keys[owner],
+                    "⏳ Market entries expired",
+                    f"These were on the market for {MARKET_ENTRY_LIFETIME_DAYS} days "
+                    "without filling, so they came back to you:\n" + "\n".join(returned),
+                )
 
     async def _get_currency_emoji(self, guild_id: int) -> str | None:
         row = await self.db.fetchone(
@@ -1029,7 +1127,8 @@ class EconomyCog(commands.Cog):
                 await ensure_server_row(tx, interaction.guild_id)
 
                 listing = await tx.fetchone(
-                    "SELECT * FROM market_listings WHERE listing_id = ? AND guild_id = ?",
+                    "SELECT * FROM market_listings WHERE listing_id = ? AND guild_id = ? "
+                    f"AND {LIVE_ENTRY_SQL}",
                     (listing_id, interaction.guild_id),
                 )
                 if listing is None or listing["drill_id"] is None:
@@ -1125,8 +1224,10 @@ class EconomyCog(commands.Cog):
 
                 listing_id = await tx.execute(
                     "INSERT INTO market_listings "
-                    "(guild_id, seller_id, drill_id, quantity, price_units) VALUES (?, ?, ?, 1, ?)",
-                    (interaction.guild_id, interaction.user.id, drill_id, price_units),
+                    "(guild_id, seller_id, drill_id, quantity, price_units, expires_at) "
+                    "VALUES (?, ?, ?, 1, ?, datetime('now', ?))",
+                    (interaction.guild_id, interaction.user.id, drill_id, price_units,
+                     ENTRY_LIFETIME_MODIFIER),
                 )
                 # Insert first, then claim, so listed_id always names a row
                 # that exists - the same ordering /factory upgrade uses when it
@@ -1152,7 +1253,8 @@ class EconomyCog(commands.Cog):
         embed = make_embed("🏷️ Listed", MARKET_COLOR, description=(
             f"**{drill_label(row)}** is up for sale at "
             f"{format_currency(player_price_total(price_units, 1), currency_emoji)}.\n"
-            "Take it back any time with `/market cancel`."
+            f"It comes off the market {entry_expiry_text()} if it hasn't sold; "
+            "`/market cancel` takes it back sooner."
         ))
         await respond(interaction, self.db, embed=embed)
 
@@ -1191,8 +1293,10 @@ class EconomyCog(commands.Cog):
                 await deduct_user_quantity(tx, interaction.user.id, item, quantity)
                 listing_id = await tx.execute(
                     "INSERT INTO market_listings "
-                    "(guild_id, seller_id, material_id, quantity, price_units) VALUES (?, ?, ?, ?, ?)",
-                    (interaction.guild_id, interaction.user.id, item, quantity, price_units),
+                    "(guild_id, seller_id, material_id, quantity, price_units, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?, datetime('now', ?))",
+                    (interaction.guild_id, interaction.user.id, item, quantity, price_units,
+                     ENTRY_LIFETIME_MODIFIER),
                 )
                 remaining = await get_user_quantity(tx, interaction.user.id, item)
         except EntryLimitReached as exc:
@@ -1210,7 +1314,8 @@ class EconomyCog(commands.Cog):
             f"{info['emoji']} **{quantity:,}x {info['name']}** is up for sale at "
             f"{format_currency(player_price_total(price_units, 1), currency_emoji)} each "
             f"({format_currency(player_price_total(price_units, quantity), currency_emoji)} the lot).\n"
-            f"You have **{remaining:,}** left. Take the listing back any time with "
+            f"You have **{remaining:,}** left. It comes off the market "
+            f"{entry_expiry_text()} if it hasn't sold; take it back sooner with "
             "`/market cancel`."
         ))
         await respond(interaction, self.db, embed=embed)
@@ -1281,8 +1386,10 @@ class EconomyCog(commands.Cog):
                 await deduct_currency_balance(tx, interaction.guild_id, interaction.user.id, total)
                 order_id = await tx.execute(
                     "INSERT INTO market_orders "
-                    "(guild_id, buyer_id, material_id, quantity, price_units) VALUES (?, ?, ?, ?, ?)",
-                    (interaction.guild_id, interaction.user.id, item, quantity, price_units),
+                    "(guild_id, buyer_id, material_id, quantity, price_units, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?, datetime('now', ?))",
+                    (interaction.guild_id, interaction.user.id, item, quantity, price_units,
+                     ENTRY_LIFETIME_MODIFIER),
                 )
                 balance_after = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
         except EntryLimitReached as exc:
@@ -1301,7 +1408,7 @@ class EconomyCog(commands.Cog):
             f"{info['emoji']} **{quantity:,}x {info['name']}**.\n"
             f"{format_currency(total, currency_emoji, True)} is held until it fills; "
             f"your balance is {format_currency(balance_after, currency_emoji)}.\n"
-            "Withdraw it any time with `/market cancel`."
+            f"It expires {entry_expiry_text()}; `/market cancel` withdraws it sooner."
         ))
         await respond(interaction, self.db, embed=embed)
 
@@ -1368,13 +1475,15 @@ class EconomyCog(commands.Cog):
             async with self.db.transaction() as tx:
                 if f"{kind}:" == LISTING_VALUE_PREFIX:
                     row = await tx.fetchone(
-                        "SELECT * FROM market_listings WHERE listing_id = ? AND seller_id = ? AND guild_id = ?",
+                        "SELECT * FROM market_listings WHERE listing_id = ? AND seller_id = ? "
+                        f"AND guild_id = ? AND {LIVE_ENTRY_SQL}",
                         (row_id, interaction.user.id, interaction.guild_id),
                     )
                     cancel = self._cancel_listing
                 else:
                     row = await tx.fetchone(
-                        "SELECT * FROM market_orders WHERE order_id = ? AND buyer_id = ? AND guild_id = ?",
+                        "SELECT * FROM market_orders WHERE order_id = ? AND buyer_id = ? "
+                        f"AND guild_id = ? AND {LIVE_ENTRY_SQL}",
                         (row_id, interaction.user.id, interaction.guild_id),
                     )
                     cancel = self._cancel_order
@@ -1400,18 +1509,11 @@ class EconomyCog(commands.Cog):
 
     async def _cancel_listing(self, tx, listing, currency_emoji) -> str:
         """Returns a listing's escrowed goods and deletes it."""
-        await tx.execute("DELETE FROM market_listings WHERE listing_id = ?", (listing["listing_id"],))
+        await return_listing(tx, listing)
         if listing["drill_id"] is not None:
-            # Matching on listed_id makes this idempotent, the same property
-            # cogs/factory.py relies on when it releases an upgraded drill.
-            await tx.execute(
-                "UPDATE drills SET listed_id = NULL WHERE drill_id = ? AND listed_id = ?",
-                (listing["drill_id"], listing["listing_id"]),
-            )
             row = await fetch_drill(tx, listing["drill_id"], listing["seller_id"])
             return f"**{drill_label(row)}** is back in your inventory."
 
-        await adjust_user_quantity(tx, listing["seller_id"], listing["material_id"], listing["quantity"])
         info = get_material_info(listing["material_id"])
         return (
             f"{info['emoji']} **{listing['quantity']:,}x {info['name']}** is back in your "
@@ -1419,14 +1521,9 @@ class EconomyCog(commands.Cog):
         )
 
     async def _cancel_order(self, tx, order, currency_emoji) -> str:
-        """Returns an order's escrowed currency and deletes it.
-
-        adjust_currency_balance rather than record_minted: this currency was
-        never burned when it was escrowed, so returning it mints nothing.
-        """
-        await tx.execute("DELETE FROM market_orders WHERE order_id = ?", (order["order_id"],))
-        refund = player_price_total(order["price_units"], order["quantity"])
-        await adjust_currency_balance(tx, order["guild_id"], order["buyer_id"], refund)
+        """Returns an order's escrowed currency and deletes it
+        (utils/market_book.py: refund_order)."""
+        refund = await refund_order(tx, order)
         info = get_material_info(order["material_id"])
         return (
             f"Your bid for {info['emoji']} **{order['quantity']:,}x {info['name']}** is "
@@ -1645,7 +1742,8 @@ class EconomyCog(commands.Cog):
             emoji = get_material_info(row["material_id"])["emoji"]
             count = f"{quantity:,}"
         price = format_compact_price(player_price_total(price_units, 1))
-        return f"`#{row['id']}` {emoji} `{price}` · {count}{extra}"
+        expires = format_relative_timestamp(hours_until(row["expires_at"]))
+        return f"`#{row['id']}` {emoji} `{price}` · {count}{extra} · expires {expires}"
 
     def _own_listing_lines(self, listings) -> list[str]:
         """The caller's own asks, each led by its id."""

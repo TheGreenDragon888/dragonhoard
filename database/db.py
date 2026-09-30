@@ -360,6 +360,36 @@ class Database(_Executor):
             if "mined_until" not in drill_columns:
                 conn.execute("ALTER TABLE drills ADD COLUMN mined_until TEXT")
 
+            # 1.4.1: listings and orders expire (utils/market_book.py:
+            # MARKET_ENTRY_LIFETIME_DAYS). Introspection-gated, since a new
+            # column IS visible in the schema. SQLite can only add a NOT NULL
+            # column with a constant default, so older databases get '' - but
+            # every insert sets the column, and the backfill below gives every
+            # existing entry a real value. Entries already on the books get
+            # their seven days from now, the moment the update runs, rather
+            # than from when they were placed, so none of them disappears on
+            # the day the update ships.
+            for table in ("market_listings", "market_orders"):
+                columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                if "expires_at" not in columns:
+                    from utils.market_book import ENTRY_LIFETIME_MODIFIER
+
+                    conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN expires_at TEXT NOT NULL DEFAULT ''"
+                    )
+                    conn.execute(
+                        f"UPDATE {table} SET expires_at = datetime('now', ?)",
+                        (ENTRY_LIFETIME_MODIFIER,),
+                    )
+            # Here rather than in schema.sql, which runs before the column
+            # above exists on an older database.
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_listings_expiry ON market_listings (expires_at)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_orders_expiry ON market_orders (expires_at)"
+            )
+
             # 1.4 lets a notice carry an action its reader can take, which is
             # how a new prediction bet gets its two buttons onto the next reply
             # each player sees (utils/responses.py). Nullable and

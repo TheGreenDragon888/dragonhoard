@@ -62,12 +62,12 @@ from utils.db_helpers import (
     ensure_user_row,
     ensure_server_row,
     get_user_quantity,
-    adjust_currency_balance,
     adjust_user_quantity,
     deduct_user_quantity,
     mining_slot_status,
     mining_slots_full_message,
 )
+from utils.market_book import refund_order, return_listing
 from utils.drills import (
     DrillScope,
     DRILL_AVAILABLE_SQL,
@@ -107,7 +107,6 @@ from utils.production_ledger import record_mined, split_by_guild
 
 from data.materials import (
     BONANZA_SPEED_MULTIPLIER,
-    player_price_total,
     DEFAULT_MINING_EFFICIENCY,
     DEFAULT_MINING_FOCUS,
     DEFAULT_MINING_AFFINITY,
@@ -252,32 +251,18 @@ class MiningCog(commands.Cog):
             listings = await tx.fetchall(
                 "SELECT * FROM market_listings WHERE guild_id = ?", (guild_id,)
             )
+            # Expired-but-unswept entries included: their escrow is still held,
+            # and this is the last chance to hand it back.
             for row in listings:
-                if row["drill_id"] is not None:
-                    await tx.execute(
-                        "UPDATE drills SET listed_id = NULL WHERE drill_id = ? AND listed_id = ?",
-                        (row["drill_id"], row["listing_id"]),
-                    )
-                else:
-                    await adjust_user_quantity(
-                        tx, row["seller_id"], row["material_id"], row["quantity"]
-                    )
+                await return_listing(tx, row)
                 withdrawn += 1
 
             orders = await tx.fetchall(
                 "SELECT * FROM market_orders WHERE guild_id = ?", (guild_id,)
             )
             for row in orders:
-                # Not a mint: this currency was escrowed, never burned, so
-                # returning it restores a balance rather than creating one.
-                await adjust_currency_balance(
-                    tx, guild_id, row["buyer_id"],
-                    player_price_total(row["price_units"], row["quantity"]),
-                )
+                await refund_order(tx, row)
                 withdrawn += 1
-
-            await tx.execute("DELETE FROM market_listings WHERE guild_id = ?", (guild_id,))
-            await tx.execute("DELETE FROM market_orders WHERE guild_id = ?", (guild_id,))
         return withdrawn
 
     async def _set_guild_presence(self, guild_id: int, present: bool):

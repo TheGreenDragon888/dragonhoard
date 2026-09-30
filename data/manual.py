@@ -541,14 +541,15 @@ _add(ManualSection(
             "Puts something of yours up for sale to the rest of the server at a price you "
             "set: gemstones, components, containers, even a specific drill with its level "
             "and container intact - anything but ores and smelted metals. Up to 5 listings "
-            "at a time on each server. What you list is held "
+            "at a time on each server, each lasting a week. What you list is held "
             "aside until somebody buys it or you take it back, so it leaves your inventory "
             "straight away.",
         ),
         ManualCommand(
             "/market order", "/market order <item> <quantity> <price>",
             "Puts up a standing offer to BUY something, at your price, from whoever wants "
-            "to fill it. Up to 5 orders at a time on each server. The money is held aside the "
+            "to fill it. Up to 5 orders at a time on each server, each lasting a week. The "
+            "money is held aside the "
             "moment you place it, so the order can always pay out - you get it back in full "
             "if you withdraw.",
         ),

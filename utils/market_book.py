@@ -48,7 +48,7 @@ from data.materials import (
     sale_unit_price,
 )
 from database.db import InsufficientQuantity
-from utils.db_helpers import get_server_stock
+from utils.db_helpers import adjust_currency_balance, adjust_user_quantity, get_server_stock
 
 # What a fill came from. The server is a source like any other here, which is
 # the whole point of the 1.4 model - it just happens to be the one with an
@@ -138,7 +138,7 @@ async def plan_buy(db, guild_id: int, buyer_id: int, material_id: str, quantity:
 
     rows = await db.fetchall(
         "SELECT listing_id, seller_id, quantity, price_units FROM market_listings "
-        "WHERE guild_id = ? AND material_id = ? AND seller_id != ? "
+        f"WHERE guild_id = ? AND material_id = ? AND seller_id != ? AND {LIVE_ENTRY_SQL} "
         "ORDER BY price_units ASC, created_at ASC, listing_id ASC",
         (guild_id, material_id, buyer_id),
     )
@@ -178,7 +178,7 @@ async def plan_sell(db, guild_id: int, seller_id: int, material_id: str, quantit
 
     rows = await db.fetchall(
         "SELECT order_id, buyer_id, quantity, price_units FROM market_orders "
-        "WHERE guild_id = ? AND material_id = ? AND buyer_id != ? "
+        f"WHERE guild_id = ? AND material_id = ? AND buyer_id != ? AND {LIVE_ENTRY_SQL} "
         "ORDER BY price_units DESC, created_at ASC, order_id ASC",
         (guild_id, material_id, seller_id),
     )
@@ -232,6 +232,21 @@ def permanent_material_error(material_id: str) -> str | None:
     )
 
 
+# How long a listing or an order stays on the book (1.4.1). Past it, the sweep
+# in cogs/economy.py hands back whatever is left, exactly as /market cancel
+# would. Stored per row as an absolute expires_at, written with
+# ENTRY_LIFETIME_MODIFIER by the command that places the entry.
+MARKET_ENTRY_LIFETIME_DAYS = 7
+ENTRY_LIFETIME_MODIFIER = f"+{MARKET_ENTRY_LIFETIME_DAYS} days"
+
+# The condition that makes a row part of the book. Every read of either book
+# carries it, spelled this way (prefix it with the table's alias where the
+# query has one), so an entry that has expired but not yet been swept can be
+# neither bought, filled, counted nor shown - the sweep runs hourly, and
+# nothing may happen to an entry in the hour after it expired. The same idea
+# as utils/drills.py: DRILL_AVAILABLE_SQL.
+LIVE_ENTRY_SQL = "expires_at > datetime('now')"
+
 # How many open entries one player may have on each of a server's books at
 # once (1.4.1). Per server, like the books themselves, and one limit per book
 # rather than one shared between them. An entry stops counting when it fills
@@ -264,7 +279,8 @@ async def open_entry_count(db, guild_id: int, user_id: int, book: str) -> int:
     """How many entries this player has on one of this server's books."""
     _, table, owner = _ENTRY_LIMITS[book]
     row = await db.fetchone(
-        f"SELECT COUNT(*) AS n FROM {table} WHERE guild_id = ? AND {owner} = ?",
+        f"SELECT COUNT(*) AS n FROM {table} WHERE guild_id = ? AND {owner} = ? "
+        f"AND {LIVE_ENTRY_SQL}",
         (guild_id, user_id),
     )
     return row["n"]
@@ -368,7 +384,7 @@ async def listing_depth(db, guild_id: int):
         "SELECT material_id, SUM(quantity) AS quantity, MIN(price_units) AS price_units, "
         "       COUNT(DISTINCT seller_id) AS participants "
         "FROM market_listings WHERE guild_id = ? AND material_id IS NOT NULL "
-        "GROUP BY material_id",
+        f"AND {LIVE_ENTRY_SQL} GROUP BY material_id",
         (guild_id,),
     )
     return {
@@ -382,7 +398,7 @@ async def order_depth(db, guild_id: int):
     rows = await db.fetchall(
         "SELECT material_id, SUM(quantity) AS quantity, MAX(price_units) AS price_units, "
         "       COUNT(DISTINCT buyer_id) AS participants "
-        "FROM market_orders WHERE guild_id = ? GROUP BY material_id",
+        f"FROM market_orders WHERE guild_id = ? AND {LIVE_ENTRY_SQL} GROUP BY material_id",
         (guild_id,),
     )
     return {
@@ -398,7 +414,8 @@ async def listed_drills(db, guild_id: int):
         "SELECT l.listing_id, l.seller_id, l.price_units, d.drill_type, d.level, "
         "       d.container_type "
         "FROM market_listings l JOIN drills d ON d.drill_id = l.drill_id "
-        "WHERE l.guild_id = ? ORDER BY l.price_units ASC, l.listing_id ASC",
+        f"WHERE l.guild_id = ? AND l.{LIVE_ENTRY_SQL} "
+        "ORDER BY l.price_units ASC, l.listing_id ASC",
         (guild_id,),
     )
 
@@ -413,14 +430,16 @@ async def own_entries(db, guild_id: int, user_id: int):
     """
     listings = await db.fetchall(
         "SELECT l.listing_id AS id, l.material_id, l.quantity, l.price_units, "
-        "       d.drill_type, d.level, d.container_type "
+        "       l.expires_at, d.drill_type, d.level, d.container_type "
         "FROM market_listings l LEFT JOIN drills d ON d.drill_id = l.drill_id "
-        "WHERE l.guild_id = ? AND l.seller_id = ? ORDER BY l.listing_id",
+        f"WHERE l.guild_id = ? AND l.seller_id = ? AND l.{LIVE_ENTRY_SQL} "
+        "ORDER BY l.listing_id",
         (guild_id, user_id),
     )
     orders = await db.fetchall(
-        "SELECT order_id AS id, material_id, quantity, price_units "
-        "FROM market_orders WHERE guild_id = ? AND buyer_id = ? ORDER BY order_id",
+        "SELECT order_id AS id, material_id, quantity, price_units, expires_at "
+        f"FROM market_orders WHERE guild_id = ? AND buyer_id = ? AND {LIVE_ENTRY_SQL} "
+        "ORDER BY order_id",
         (guild_id, user_id),
     )
     return listings, orders
@@ -445,7 +464,7 @@ async def listed_quantities(db, guild_id: int, exclude_user: int):
         "SELECT material_id, SUM(quantity) AS quantity, MIN(price_units) AS price_units "
         "FROM market_listings "
         "WHERE guild_id = ? AND seller_id != ? AND material_id IS NOT NULL "
-        "GROUP BY material_id",
+        f"AND {LIVE_ENTRY_SQL} GROUP BY material_id",
         (guild_id, exclude_user),
     )
     return {r["material_id"]: (r["quantity"], r["price_units"]) for r in rows}
@@ -461,7 +480,81 @@ async def bid_quantities(db, guild_id: int, exclude_user: int):
     rows = await db.fetchall(
         "SELECT material_id, SUM(quantity) AS quantity, MAX(price_units) AS price_units "
         "FROM market_orders WHERE guild_id = ? AND buyer_id != ? "
-        "GROUP BY material_id",
+        f"AND {LIVE_ENTRY_SQL} GROUP BY material_id",
         (guild_id, exclude_user),
     )
     return {r["material_id"]: (r["quantity"], r["price_units"]) for r in rows}
+
+
+async def return_listing(tx, listing) -> None:
+    """Hands a listing's escrowed goods back to its seller and deletes it.
+
+    The one way a listing leaves the book other than by filling: /market
+    cancel, the expiry sweep and guild removal all come here. A material goes
+    back into the seller's inventory; a drill has its listed_id cleared, which
+    is all it takes to put it back in their inventory, since the drill never
+    left the drills table.
+    """
+    await tx.execute("DELETE FROM market_listings WHERE listing_id = ?", (listing["listing_id"],))
+    if listing["drill_id"] is not None:
+        # Matching on listed_id makes this idempotent, the same property
+        # cogs/factory.py relies on when it releases an upgraded drill.
+        await tx.execute(
+            "UPDATE drills SET listed_id = NULL WHERE drill_id = ? AND listed_id = ?",
+            (listing["drill_id"], listing["listing_id"]),
+        )
+        return
+    await adjust_user_quantity(tx, listing["seller_id"], listing["material_id"], listing["quantity"])
+
+
+async def refund_order(tx, order) -> float:
+    """Hands an order's escrowed currency back to its buyer, deletes it, and
+    returns the amount.
+
+    The order-side twin of return_listing, with the same three callers. Only
+    what is left of the order is refunded - a part that filled was paid out of
+    the escrow as it filled. adjust_currency_balance rather than record_minted:
+    this currency was never burned when it was escrowed, so returning it mints
+    nothing.
+    """
+    await tx.execute("DELETE FROM market_orders WHERE order_id = ?", (order["order_id"],))
+    refund = player_price_total(order["price_units"], order["quantity"])
+    await adjust_currency_balance(tx, order["guild_id"], order["buyer_id"], refund)
+    return refund
+
+
+async def guilds_with_expired_entries(db) -> list[int]:
+    """Every server with at least one listing or order past its expires_at -
+    the only servers the hourly sweep visits. Both halves are lookups on the
+    expires_at indexes, so a sweep with nothing to do reads almost nothing."""
+    rows = await db.fetchall(
+        "SELECT guild_id FROM market_listings WHERE expires_at <= datetime('now') "
+        "UNION "
+        "SELECT guild_id FROM market_orders WHERE expires_at <= datetime('now')"
+    )
+    return [row["guild_id"] for row in rows]
+
+
+async def expire_entries(tx, guild_id: int):
+    """Returns every expired listing and order on one server's books, as
+    return_listing and refund_order do, and reports what was handed back as
+    (listings, orders): the expired rows, each order paired with its refund.
+
+    The caller tells each player, in the same transaction, so a notice can
+    never describe a return that rolled back.
+    """
+    listings = await tx.fetchall(
+        "SELECT * FROM market_listings WHERE guild_id = ? AND expires_at <= datetime('now') "
+        "ORDER BY listing_id",
+        (guild_id,),
+    )
+    for listing in listings:
+        await return_listing(tx, listing)
+
+    orders = await tx.fetchall(
+        "SELECT * FROM market_orders WHERE guild_id = ? AND expires_at <= datetime('now') "
+        "ORDER BY order_id",
+        (guild_id,),
+    )
+    refunded = [(order, await refund_order(tx, order)) for order in orders]
+    return listings, refunded
