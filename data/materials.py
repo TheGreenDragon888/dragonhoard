@@ -894,12 +894,12 @@ def purchase_total(material_id: str, quantity: int) -> float:
 # Player-set prices (1.4: /market list and /market order) are stored as a whole
 # number of ten-thousandths of a currency unit - a hundredth of a cent.
 #
-# MARKET_PRICE_CENTS' unit could not be reused. A player listing has to undercut
-# the server's ask and beat its bid, and for iron ore those are 0.01 and 0.02:
-# a band one cent wide, containing no whole cent a seller would rationally pick.
-# At this scale it holds 99 prices. The other five tradeable materials hold 199,
-# 299, 1,499, 2,999 and 4,799 - run player_price_bounds over TRADEABLE_ORDER to
-# reproduce those.
+# It was introduced in 1.4, when a player could list the six materials the
+# server trades and a listing had to undercut the server's ask and beat its
+# bid: for iron ore those are 0.01 and 0.02, a band one cent wide containing no
+# whole cent a seller would rationally pick. As of 1.4.1 those six are
+# server-only (SERVER_ONLY_MATERIALS) and that band is gone. The scale stays
+# because every stored listing and order price is in it.
 #
 # Ten-thousandths rather than any other sub-cent unit because it is exactly the
 # precision format_price already falls back to when an amount would otherwise
@@ -940,31 +940,6 @@ def player_price_total(price_units: int, quantity: int) -> float:
     to drift here.
     """
     return price_units * quantity / PLAYER_PRICE_SCALE
-
-
-def player_price_bounds(material_id: str) -> tuple[int | None, int | None]:
-    """The exclusive (low, high) bounds a player's price must sit strictly
-    between, in PLAYER_PRICE_SCALE units - or (None, None) for a material the
-    server does not trade, where a player may ask whatever they like.
-
-    Both ends are the server's own quotes, and the rule is the same one from
-    either side: an offer nobody has a reason to take is not worth putting on
-    the book. A listing at or above the server's ask is one nobody would buy
-    when the server sells the same thing cheaper; a bid at or below the
-    server's bid is one nobody would fill when the server pays the same or
-    more. The band between them is where a player is actually the better
-    counterparty.
-
-    Gemstones carry a MARKET_PRICE_CENTS entry but are NOT in TRADEABLE_ORDER -
-    the server neither buys nor sells them (docs/market.md section 3) - so they
-    correctly fall through to unbounded here. Reading their price as a band
-    would invent a server quote that does not exist.
-    """
-    if material_id not in TRADEABLE_ORDER:
-        return None, None
-    per_unit = PLAYER_PRICE_SCALE // 100
-    cents = MARKET_PRICE_CENTS[material_id]
-    return cents * per_unit, cents * MARKET_BUY_MARKUP * per_unit
 
 
 _MATERIAL_TABLES = (
@@ -1802,6 +1777,18 @@ TRADEABLE_ORDER: tuple[str, ...] = tuple(
 # of goods against a 1.00 bonus. Nothing here is worth more than steel's 0.48
 # a unit, which is what makes the rule work.
 JOB_BOARD_MATERIALS: tuple[str, ...] = TRADEABLE_ORDER
+
+# What players may not list or bid for on the player market (1.4.1): anything
+# the job board can ask for, because player books for those competed with it.
+# /market sell fills the dearest player bid before selling to the server, and
+# only the server's share of a sale counts toward the board (utils/market_book.py
+# module docstring), so a standing bid for the day's material took a player's
+# job sale and paid them no progress for it.
+#
+# Aliased rather than listing the six ids, for the reason PERMANENT_MATERIALS
+# gives: the constant is the rule, and the ids follow from it. A material added
+# to the board is off the books by the same edit.
+SERVER_ONLY_MATERIALS: frozenset[str] = frozenset(JOB_BOARD_MATERIALS)
 
 # What one completion of the day's task pays, on top of what selling the goods
 # earned in the first place. The quantity is worked backwards from it: the

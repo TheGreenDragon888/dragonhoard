@@ -78,9 +78,8 @@ from utils.market_book import (
     consume_listing,
     consume_order,
     fills_total,
-    listing_price_error,
-    order_price_error,
     permanent_material_error,
+    server_only_error,
     plan_buy,
     plan_sell,
     server_quantity,
@@ -138,6 +137,7 @@ from data.materials import (
     BLAST_FURNACE_BATCH_SIZE,
     GEMSTONES,
     PRESS_RECIPES,
+    SERVER_ONLY_MATERIALS,
     TRADEABLE_ORDER,
     INVENTORY_CATEGORIES,
     blast_furnace_rate,
@@ -234,15 +234,19 @@ BOOK_DISPLAY_LIMIT = 10
 # so hiding them behind a count is the thing the page exists to avoid.
 ENTRIES_DISPLAY_LIMIT = 40
 
-# Everything a player may place a BID for: every material except the drill
-# types, which are not fungible and are sold by listing one specific drill, and
-# except Exotic Matter, which is never traded at all (data/materials.py:
+# Everything a player may trade: every material except the drill types, which
+# are not fungible and are sold by listing one specific drill, and except
+# Exotic Matter, which is never traded at all (data/materials.py:
 # PERMANENT_MATERIALS). Built by exclusion rather than by listing the ids, so a
-# new material is orderable by existing and a new exotic one is not by being in
+# new material is tradeable by existing and a new exotic one is not by being in
 # that table.
 #
-# Ordered TRADEABLE_ORDER first, since those are the six with a server quote to
-# compare against and the ones a player is most likely to be bidding on.
+# /market buy and /market sell validate against this and build their lists from
+# it. It still includes the job board's six (TRADEABLE_ORDER, first, since they
+# are what the server trades): those are bought and sold, just never listed or
+# bid for. /market order leaves them out of its own list and refuses them
+# (utils/market_book.py: server_only_error) rather than this table dropping
+# them, which would have made them unknown to buy and sell too.
 ORDERABLE_MATERIALS: tuple[str, ...] = TRADEABLE_ORDER + tuple(
     material_id for material_id in ALL_MATERIALS
     if material_id not in TRADEABLE_ORDER
@@ -478,10 +482,11 @@ class EconomyCog(commands.Cog):
         actually hold, then their free drills.
 
         An autocomplete rather than a choice list because Discord caps a static
-        choice list at 25 and there are 22 tradeable material ids before a
+        choice list at 25 and there are 16 listable material ids before a
         single drill is counted. It offers only what they HAVE, which is also
-        what makes it useful - the alternative is a list of 22 things they
-        mostly can't sell.
+        what makes it useful - the alternative is a list of 16 things they
+        mostly can't sell. The job board's six (SERVER_ONLY_MATERIALS) are left
+        out even when held, since /market list refuses them.
 
         Drills encode as "drill:<id>" because a drill is not a stack: two Steel
         Drills differ by level and container, so the row has to be named rather
@@ -496,10 +501,10 @@ class EconomyCog(commands.Cog):
             (interaction.user.id,),
         )
         held = {row["material_id"]: row["quantity"] for row in rows}
-        for material_id in TRADEABLE_ORDER + tuple(
-            m for m in ALL_MATERIALS if m not in TRADEABLE_ORDER
-        ):
+        for material_id in ALL_MATERIALS:
             if material_id not in held or material_id in PERMANENT_MATERIALS:
+                continue
+            if material_id in SERVER_ONLY_MATERIALS:
                 continue
             if material_id in DRILLS:
                 continue
@@ -551,8 +556,8 @@ class EconomyCog(commands.Cog):
         stocks, most of the list would have been dead ends on a quiet server.
 
         The price shown is the CHEAPEST source, which is what plan_buy will
-        fill from first: a player listing where one undercuts the server (the
-        band rule guarantees it does), otherwise the server's own ask.
+        fill from first: the best player listing for a material players trade,
+        the server's own ask for one of the six it sells.
 
         Drills appear here and not in _orderable_autocomplete because the two
         answer different questions. You cannot BID for a drill - an order names
@@ -654,7 +659,8 @@ class EconomyCog(commands.Cog):
 
     async def _orderable_autocomplete(self, interaction: discord.Interaction, current: str):
         """Anything a player may bid for: every material id except Exotic
-        Matter and the drill types.
+        Matter, the drill types and the job board's six, which are traded only
+        with the server.
 
         No drill orders. An order names a KIND of thing, and a drill is never
         just its kind - level and container are most of what one is worth - so
@@ -664,6 +670,8 @@ class EconomyCog(commands.Cog):
         search = current.strip().lower()
         choices = []
         for material_id in ORDERABLE_MATERIALS:
+            if material_id in SERVER_ONLY_MATERIALS:
+                continue
             info = ALL_MATERIALS[material_id]
             if search and search not in info["name"].lower():
                 continue
@@ -725,10 +733,10 @@ class EconomyCog(commands.Cog):
                     )
                     return
 
-                # Dearest bid first, then the server. A player bidding above
-                # the server's flat rate is the only reason to prefer them, and
-                # the band rule (utils/market_book.py) is what guarantees any
-                # bid on the book does.
+                # Dearest bid first, then the server. As of 1.4.1 a material
+                # has player bids or a server price, never both
+                # (SERVER_ONLY_MATERIALS), so in practice this is one or the
+                # other; the plan is ordered by price either way.
                 fills, short = await plan_sell(
                     tx, interaction.guild_id, interaction.user.id, item, quantity
                 )
@@ -872,11 +880,10 @@ class EconomyCog(commands.Cog):
                 await ensure_user_row(tx, interaction.user.id)
                 await ensure_server_row(tx, interaction.guild_id)
 
-                # Cheapest source first. A player listing is always under the
-                # server's ask by the band rule (utils/market_book.py), so in
-                # practice the book clears before the shelves do - but the plan
-                # is ordered by price rather than by source, so it stays right
-                # for the sixteen materials the server does not stock at all.
+                # Cheapest source first. As of 1.4.1 a material has player
+                # listings or server stock, never both (SERVER_ONLY_MATERIALS),
+                # but the plan is ordered by price rather than by source, so it
+                # does not depend on that holding.
                 fills, short = await plan_buy(
                     tx, interaction.guild_id, interaction.user.id, item, quantity
                 )
@@ -1146,7 +1153,7 @@ class EconomyCog(commands.Cog):
             await interaction.response.send_message(f"Unknown item `{item}`.", ephemeral=True)
             return
 
-        blocked = permanent_material_error(item) or listing_price_error(item, price_units)
+        blocked = permanent_material_error(item) or server_only_error(item)
         if blocked:
             await interaction.response.send_message(blocked, ephemeral=True)
             return
@@ -1220,18 +1227,13 @@ class EconomyCog(commands.Cog):
         # and not only on /market list because a bid nobody is permitted to
         # fill would sit on the book holding the buyer's currency in escrow
         # against a trade that can never happen.
-        blocked = permanent_material_error(item)
+        blocked = permanent_material_error(item) or server_only_error(item)
         if blocked:
             await interaction.response.send_message(blocked, ephemeral=True)
             return
 
         if item not in ORDERABLE_MATERIALS:
             await interaction.response.send_message(f"Unknown item `{item}`.", ephemeral=True)
-            return
-
-        blocked = order_price_error(item, price_units)
-        if blocked:
-            await interaction.response.send_message(blocked, ephemeral=True)
             return
 
         info = get_material_info(item)

@@ -20,14 +20,14 @@ from cogs.economy import (
 from cogs.mining import MiningCog
 from data.materials import (
     ALL_MATERIALS,
-    JOB_BOARD_TARGET_PAYOUT,
     DRILLS,
     PERMANENT_MATERIALS,
     PLAYER_PRICE_SCALE,
-    TRADEABLE_ORDER,
-    player_price_bounds,
+    JOB_BOARD_MATERIALS,
+    SERVER_ONLY_MATERIALS,
     player_price_total,
     player_price_units,
+    sale_unit_price,
 )
 from database.db import Database
 from utils.db_helpers import (
@@ -42,16 +42,16 @@ from utils.db_helpers import (
 )
 from utils.drills import release_stale_drill_locks
 from utils.job_board import ensure_todays_job
-from utils.market_book import (
-    listing_price_error,
-    order_price_error,
-    permanent_material_error,
-)
+from utils.market_book import permanent_material_error, server_only_error
 
 GUILD = 8080
 ALICE = 111
 BOB = 222
 MEMBERS = 10
+
+# What can go on a player book: everything tradeable except the job board's six
+# (SERVER_ONLY_MATERIALS), which trade only with the server.
+LISTABLE = tuple(m for m in ORDERABLE_MATERIALS if m not in SERVER_ONLY_MATERIALS)
 
 
 class FakeUser:
@@ -166,15 +166,43 @@ class JobBoardCreditTests(MarketTestCase):
         )
         return (row["sold"], row["claims_paid"]) if row else (0, 0)
 
+    async def bid_directly(self, user, material, quantity, price_units):
+        """A standing bid written straight into the book, escrow and all.
+
+        /market order refuses the job board's materials as of 1.4.1, so the
+        guard these tests pin can no longer be reached through the command. It
+        is kept anyway - it is what makes the rule hold if a row for one of them
+        ever reaches the book some other way - and this is how it is reached.
+        """
+        await adjust_currency_balance(
+            self.db, GUILD, user, -player_price_total(price_units, quantity)
+        )
+        await self.db.execute(
+            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (GUILD, user, material, quantity, price_units),
+        )
+
+    def above_the_server(self, material):
+        """One ten-thousandth over what the server pays, so plan_sell prefers
+        the bid."""
+        return round(sale_unit_price(material) * PLAYER_PRICE_SCALE) + 1
+
+    async def test_ordering_a_job_material_is_refused(self):
+        """The 1.4.1 rule that keeps the board's sales away from player bids
+        in the first place."""
+        job = await self.today()
+        await adjust_currency_balance(self.db, GUILD, BOB, 10_000.0)
+        interaction = await self.order(BOB, job["material_id"], job["quantity"], 1.0)
+        self.assertIn("only with the server", interaction.sent or "")
+        self.assertEqual(await self.db.fetchall("SELECT * FROM market_orders"), [])
+
     async def test_a_sale_to_a_player_credits_the_board_with_nothing(self):
         job = await self.today()
         material, need = job["material_id"], job["quantity"]
 
-        # Bob bids for exactly one task's worth, above what the server pays so
-        # the band rule accepts it and plan_sell prefers it.
-        low, _ = player_price_bounds(material)
         await adjust_currency_balance(self.db, GUILD, BOB, 10_000.0)
-        await self.order(BOB, material, need, (low + 1) / PLAYER_PRICE_SCALE)
+        await self.bid_directly(BOB, material, need, self.above_the_server(material))
 
         await adjust_user_quantity(self.db, ALICE, material, need)
         await self.sell(ALICE, material, need)
@@ -189,9 +217,8 @@ class JobBoardCreditTests(MarketTestCase):
         job = await self.today()
         material, need = job["material_id"], job["quantity"]
 
-        low, _ = player_price_bounds(material)
         await adjust_currency_balance(self.db, GUILD, BOB, 10_000.0)
-        await self.order(BOB, material, need, (low + 1) / PLAYER_PRICE_SCALE)
+        await self.bid_directly(BOB, material, need, self.above_the_server(material))
 
         # Two tasks' worth: one clears against Bob's bid, one against the server.
         await adjust_user_quantity(self.db, ALICE, material, need * 2)
@@ -206,8 +233,7 @@ class JobBoardCreditTests(MarketTestCase):
         currency end where they started; the point is that the supply does too."""
         job = await self.today()
         material, need = job["material_id"], job["quantity"]
-        low, _ = player_price_bounds(material)
-        price = (low + 1) / PLAYER_PRICE_SCALE
+        price = self.above_the_server(material)
 
         for user in (ALICE, BOB):
             await adjust_currency_balance(self.db, GUILD, user, 10_000.0)
@@ -215,9 +241,9 @@ class JobBoardCreditTests(MarketTestCase):
         circulating_before = await circulating_currency_for(self.db, GUILD)
 
         await adjust_user_quantity(self.db, ALICE, material, need)
-        await self.order(BOB, material, need, price)
+        await self.bid_directly(BOB, material, need, price)
         await self.sell(ALICE, material, need)      # goods Alice -> Bob
-        await self.order(ALICE, material, need, price)
+        await self.bid_directly(ALICE, material, need, price)
         await self.sell(BOB, material, need)        # goods Bob -> Alice
 
         minted_after, burned_after = await self.totals()
@@ -242,69 +268,69 @@ class JobBoardCreditTests(MarketTestCase):
         self.assertEqual((sold, claims), (need, 1))
 
 
-class PriceBandTests(unittest.TestCase):
-    """A player's offer has to be better than the server's, or it is an offer
-    nobody has a reason to take (utils/market_book.py)."""
+class ServerOnlyTests(MarketTestCase):
+    """The job board's materials are traded only with the server (1.4.1).
 
-    def test_every_tradeable_material_has_a_usable_band(self):
-        for material_id in TRADEABLE_ORDER:
+    /market sell fills the dearest player bid first and only the server's share
+    of a sale counts toward the board, so a bid for the day's material took a
+    player's job sale and paid them no progress for it.
+    """
+
+    def test_the_rule_is_the_job_boards_materials(self):
+        """SERVER_ONLY_MATERIALS must BE the board's list, not a copy of it, so
+        a material added to the board comes off the books by the same edit."""
+        self.assertEqual(SERVER_ONLY_MATERIALS, frozenset(JOB_BOARD_MATERIALS))
+        self.assertEqual(len(SERVER_ONLY_MATERIALS), 6)
+
+    def test_every_one_is_refused_by_both_commands(self):
+        for material_id in SERVER_ONLY_MATERIALS:
             with self.subTest(material_id):
-                low, high = player_price_bounds(material_id)
-                self.assertGreater(
-                    high - low - 1, 0,
-                    "a band with no price in it would make this material unlistable",
-                )
+                self.assertIsNotNone(server_only_error(material_id))
 
-    def test_iron_ore_is_listable_only_because_prices_go_sub_cent(self):
-        """The case PLAYER_PRICE_SCALE exists for. Iron ore's band is one cent
-        wide, so at whole cents it holds no price a seller would pick."""
-        low, high = player_price_bounds("iron_ore")
-        self.assertEqual((low, high), (100, 200))
-        whole_cents = [p for p in range(low + 1, high) if p % (PLAYER_PRICE_SCALE // 100) == 0]
-        self.assertEqual(whole_cents, [], "no whole cent sits strictly inside the band")
-        self.assertEqual(high - low - 1, 99, "99 sub-cent prices do")
+    def test_nothing_else_is(self):
+        for material_id in ALL_MATERIALS:
+            if material_id not in SERVER_ONLY_MATERIALS:
+                with self.subTest(material_id):
+                    self.assertIsNone(server_only_error(material_id))
 
-    def test_an_ask_at_or_above_the_servers_is_refused(self):
-        for material_id in TRADEABLE_ORDER:
-            _, high = player_price_bounds(material_id)
+    async def test_listing_one_is_refused_and_takes_nothing(self):
+        for material_id in SERVER_ONLY_MATERIALS:
             with self.subTest(material_id):
-                self.assertIsNotNone(listing_price_error(material_id, high))
-                self.assertIsNotNone(listing_price_error(material_id, high + 1))
-                self.assertIsNone(listing_price_error(material_id, high - 1))
+                await adjust_user_quantity(self.db, ALICE, material_id, 50)
+                interaction = await self.list_item(ALICE, material_id, 1.0, 50)
+                self.assertIn("only with the server", interaction.sent or "")
+                self.assertEqual(await get_user_quantity(self.db, ALICE, material_id), 50)
+        self.assertEqual(await self.db.fetchall("SELECT * FROM market_listings"), [])
 
-    def test_an_ask_at_or_below_what_the_server_pays_is_refused(self):
-        for material_id in TRADEABLE_ORDER:
-            low, _ = player_price_bounds(material_id)
+    async def test_ordering_one_is_refused_and_holds_nothing(self):
+        await adjust_currency_balance(self.db, GUILD, ALICE, 500.0)
+        for material_id in SERVER_ONLY_MATERIALS:
             with self.subTest(material_id):
-                self.assertIsNotNone(listing_price_error(material_id, low))
-                self.assertIsNone(listing_price_error(material_id, low + 1))
+                interaction = await self.order(ALICE, material_id, 10, 1.0)
+                self.assertIn("only with the server", interaction.sent or "")
+                self.assertEqual(await get_currency_balance(self.db, GUILD, ALICE), 500.0)
+        self.assertEqual(await self.db.fetchall("SELECT * FROM market_orders"), [])
 
-    def test_a_bid_is_the_same_rule_from_the_other_side(self):
-        for material_id in TRADEABLE_ORDER:
-            low, high = player_price_bounds(material_id)
-            with self.subTest(material_id):
-                self.assertIsNotNone(order_price_error(material_id, low))
-                self.assertIsNotNone(order_price_error(material_id, high))
-                self.assertIsNone(order_price_error(material_id, low + 1))
+    async def test_neither_autocomplete_offers_them(self):
+        for material_id in SERVER_ONLY_MATERIALS:
+            await adjust_user_quantity(self.db, ALICE, material_id, 50)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 5)
+        listable = [c.value for c in await self.cog._listable_autocomplete(FakeInteraction(ALICE), "")]
+        orderable = [c.value for c in await self.cog._orderable_autocomplete(FakeInteraction(ALICE), "")]
+        self.assertEqual(listable, ["wiring"])
+        for material_id in SERVER_ONLY_MATERIALS:
+            self.assertNotIn(material_id, orderable)
 
-    def test_a_material_the_server_does_not_trade_is_unbounded(self):
-        untraded = [
-            m for m in ALL_MATERIALS
-            if m not in TRADEABLE_ORDER and m not in DRILLS and m not in PERMANENT_MATERIALS
-        ]
-        self.assertEqual(len(untraded), 16, "the sixteen with no server quote")
-        for material_id in untraded:
-            with self.subTest(material_id):
-                self.assertEqual(player_price_bounds(material_id), (None, None))
-                self.assertIsNone(listing_price_error(material_id, 1))
-                self.assertIsNone(order_price_error(material_id, 10 ** 9))
+    async def test_selling_and_buying_them_still_goes_to_the_server(self):
+        await adjust_user_quantity(self.db, ALICE, "steel", 100)
+        await self.sell(ALICE, "steel", 100)
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "steel"), 0)
 
-    def test_a_gemstones_reference_price_is_not_read_as_a_server_quote(self):
-        """Gemstones carry a MARKET_PRICE_CENTS entry but the server neither
-        buys nor sells them, so there is no quote for a player to beat."""
-        for gem in ("ruby", "obsidian", "diamond"):
-            with self.subTest(gem):
-                self.assertEqual(player_price_bounds(gem), (None, None))
+        await adjust_server_stock(self.db, GUILD, "steel", 10)
+        await adjust_currency_balance(self.db, GUILD, BOB, 100.0)
+        interaction = await self.buy(BOB, "steel", 10)
+        self.assertIsNone(interaction.sent)
+        self.assertEqual(await get_user_quantity(self.db, BOB, "steel"), 10)
 
 
 class PricePrecisionTests(unittest.TestCase):
@@ -382,19 +408,19 @@ class EscrowTests(MarketTestCase):
     permanent hole in somebody's inventory."""
 
     async def test_listing_takes_the_goods_and_cancelling_gives_them_back(self):
-        await adjust_user_quantity(self.db, ALICE, "steel", 500)
-        interaction = await self.list_item(ALICE, "steel", 0.60, 200)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 500)
+        interaction = await self.list_item(ALICE, "wiring", 0.60, 200)
         self.assertIsNone(interaction.sent, "the listing should have been accepted")
-        self.assertEqual(await get_user_quantity(self.db, ALICE, "steel"), 300)
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "wiring"), 300)
 
         row = await self.db.fetchone("SELECT listing_id FROM market_listings")
         await self.cancel(ALICE, f"listing:{row['listing_id']}")
-        self.assertEqual(await get_user_quantity(self.db, ALICE, "steel"), 500)
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "wiring"), 500)
         self.assertEqual(await self.db.fetchall("SELECT * FROM market_listings"), [])
 
     async def test_ordering_takes_the_currency_and_cancelling_refunds_it(self):
         await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
-        await self.order(ALICE, "steel", 100, 0.60)
+        await self.order(ALICE, "wiring", 100, 0.60)
         self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), 40.0)
 
         row = await self.db.fetchone("SELECT order_id FROM market_orders")
@@ -406,32 +432,32 @@ class EscrowTests(MarketTestCase):
         """It has left a balance but not the economy - docs/market.md 4."""
         await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
         before = await circulating_currency_for(self.db, GUILD)
-        await self.order(ALICE, "steel", 100, 0.60)
+        await self.order(ALICE, "wiring", 100, 0.60)
         self.assertAlmostEqual(await circulating_currency_for(self.db, GUILD), before)
 
     async def test_an_order_mints_and_burns_nothing(self):
         await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
         before = await self.totals()
-        await self.order(ALICE, "steel", 100, 0.60)
+        await self.order(ALICE, "wiring", 100, 0.60)
         row = await self.db.fetchone("SELECT order_id FROM market_orders")
         await self.cancel(ALICE, f"order:{row['order_id']}")
         self.assertEqual(await self.totals(), before)
 
     async def test_you_cannot_cancel_somebody_elses(self):
-        await adjust_user_quantity(self.db, ALICE, "steel", 10)
-        await self.list_item(ALICE, "steel", 0.60, 10)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 10)
+        await self.list_item(ALICE, "wiring", 0.60, 10)
         row = await self.db.fetchone("SELECT listing_id FROM market_listings")
         interaction = await self.cancel(BOB, f"listing:{row['listing_id']}")
         self.assertIn("no listing numbered", interaction.sent or "")
         self.assertEqual(len(await self.db.fetchall("SELECT * FROM market_listings")), 1)
 
     async def test_cancel_offers_only_your_own_entries(self):
-        await adjust_user_quantity(self.db, ALICE, "steel", 10)
-        await adjust_user_quantity(self.db, BOB, "steel", 10)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 10)
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
         await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
-        await self.list_item(ALICE, "steel", 0.60, 10)
-        await self.list_item(BOB, "steel", 0.60, 10)
-        await self.order(ALICE, "copper", 5, 0.40)
+        await self.list_item(ALICE, "wiring", 0.60, 10)
+        await self.list_item(BOB, "wiring", 0.60, 10)
+        await self.order(ALICE, "drill_chassis", 5, 0.40)
         listing = await self.db.fetchone(
             "SELECT listing_id FROM market_listings WHERE seller_id = ?", (ALICE,)
         )
@@ -442,19 +468,19 @@ class EscrowTests(MarketTestCase):
             [c.value for c in choices],
             [f"listing:{listing['listing_id']}", f"order:{order['order_id']}"],
         )
-        self.assertTrue(choices[0].name.startswith("Selling 10 Steel"))
-        self.assertTrue(choices[1].name.startswith("Buying 5 Copper"))
+        self.assertTrue(choices[0].name.startswith("Selling 10 Wiring"))
+        self.assertTrue(choices[1].name.startswith("Buying 5 Drill Chassis"))
 
-        typed = await self.cog._cancellable_autocomplete(FakeInteraction(ALICE), "copper")
+        typed = await self.cog._cancellable_autocomplete(FakeInteraction(ALICE), "chassis")
         self.assertEqual([c.value for c in typed], [f"order:{order['order_id']}"])
 
     async def test_a_listing_and_an_order_with_the_same_number_are_told_apart(self):
         """The two books number their rows separately, so a bare id could name
         one of each - the prefix is what picks the book."""
-        await adjust_user_quantity(self.db, ALICE, "steel", 10)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 10)
         await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
-        await self.list_item(ALICE, "steel", 0.60, 10)
-        await self.order(ALICE, "copper", 10, 0.40)
+        await self.list_item(ALICE, "wiring", 0.60, 10)
+        await self.order(ALICE, "drill_chassis", 10, 0.40)
         listing = await self.db.fetchone("SELECT listing_id FROM market_listings")
         order = await self.db.fetchone("SELECT order_id FROM market_orders")
         self.assertEqual(listing["listing_id"], order["order_id"])
@@ -464,96 +490,81 @@ class EscrowTests(MarketTestCase):
         self.assertEqual(len(await self.db.fetchall("SELECT * FROM market_listings")), 1)
 
     async def test_cancel_refuses_a_value_not_from_the_list(self):
-        await adjust_user_quantity(self.db, ALICE, "steel", 10)
-        await self.list_item(ALICE, "steel", 0.60, 10)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 10)
+        await self.list_item(ALICE, "wiring", 0.60, 10)
         row = await self.db.fetchone("SELECT listing_id FROM market_listings")
         interaction = await self.cancel(ALICE, str(row["listing_id"]))
         self.assertIn("Pick one", interaction.sent or "")
         self.assertEqual(len(await self.db.fetchall("SELECT * FROM market_listings")), 1)
 
     async def test_listing_more_than_you_hold_is_refused(self):
-        await adjust_user_quantity(self.db, ALICE, "steel", 5)
-        interaction = await self.list_item(ALICE, "steel", 0.60, 10)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 5)
+        interaction = await self.list_item(ALICE, "wiring", 0.60, 10)
         self.assertIn("only have", interaction.sent or "")
-        self.assertEqual(await get_user_quantity(self.db, ALICE, "steel"), 5)
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "wiring"), 5)
 
     async def test_ordering_beyond_your_balance_is_refused(self):
         await adjust_currency_balance(self.db, GUILD, ALICE, 1.0)
-        interaction = await self.order(ALICE, "steel", 100, 0.60)
+        interaction = await self.order(ALICE, "wiring", 100, 0.60)
         self.assertIn("only have", interaction.sent or "")
         self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), 1.0)
 
 
 class RoutingTests(MarketTestCase):
-    async def test_a_cheaper_listing_clears_before_the_servers_stock(self):
-        await adjust_server_stock(self.db, GUILD, "steel", 40)
-        await adjust_user_quantity(self.db, BOB, "steel", 60)
-        await self.list_item(BOB, "steel", 0.72, 60)
+    """How /market buy and /market sell fill against the player books.
+
+    As of 1.4.1 a material has either a server leg or player legs, never both
+    (SERVER_ONLY_MATERIALS), so these run on materials only players trade.
+    """
+
+    async def test_the_cheapest_listing_clears_first(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 60)
+        await self.list_item(BOB, "wiring", 6.00, 60)
+        await adjust_user_quantity(self.db, BOB, "wiring", 40)
+        await self.list_item(BOB, "wiring", 5.00, 40)
         await adjust_currency_balance(self.db, GUILD, ALICE, 1000.0)
 
-        before = await get_currency_balance(self.db, GUILD, ALICE)
-        await self.buy(ALICE, "steel", 100)
-        spent = before - await get_currency_balance(self.db, GUILD, ALICE)
+        await self.buy(ALICE, "wiring", 50)
 
-        # 60 from Bob at 0.72 plus 40 from the server at 0.96.
-        self.assertAlmostEqual(spent, 60 * 0.72 + 40 * 0.96, places=6)
-        self.assertEqual(await get_user_quantity(self.db, ALICE, "steel"), 100)
-        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), 43.20, places=6)
-
-    async def test_only_the_server_leg_burns(self):
-        await adjust_server_stock(self.db, GUILD, "steel", 40)
-        await adjust_user_quantity(self.db, BOB, "steel", 60)
-        await self.list_item(BOB, "steel", 0.72, 60)
-        await adjust_currency_balance(self.db, GUILD, ALICE, 1000.0)
-
-        _, burned_before = await self.totals()
-        await self.buy(ALICE, "steel", 100)
-        _, burned_after = await self.totals()
-        self.assertAlmostEqual(burned_after - burned_before, 40 * 0.96, places=6)
-
-    async def test_a_dearer_bid_clears_before_the_server(self):
-        await adjust_currency_balance(self.db, GUILD, BOB, 1000.0)
-        await self.order(BOB, "steel", 30, 0.80)
-        await adjust_user_quantity(self.db, ALICE, "steel", 100)
-
-        await self.sell(ALICE, "steel", 100)
-
-        # 30 to Bob at 0.80, 70 to the server at 0.48 - plus the job board
-        # bonus IF today's task happens to be steel. Which material the board
-        # picks is weighted and random, so it differs between a run of this
-        # file alone and a run of the whole suite; reading what was actually
-        # paid is what makes this test independent of that draw rather than
-        # passing in isolation and failing beside its neighbours.
-        row = await self.db.fetchone(
-            "SELECT claims_paid FROM daily_job_progress WHERE guild_id = ? AND user_id = ?",
-            (GUILD, ALICE),
-        )
-        bonus = (row["claims_paid"] if row else 0) * JOB_BOARD_TARGET_PAYOUT
+        # 40 at 5.00, then 10 of the 60 at 6.00.
         self.assertAlmostEqual(
-            await get_currency_balance(self.db, GUILD, ALICE),
-            30 * 0.80 + 70 * 0.48 + bonus, places=6,
+            await get_currency_balance(self.db, GUILD, ALICE), 1000.0 - (40 * 5.00 + 10 * 6.00)
         )
-        self.assertEqual(await get_user_quantity(self.db, BOB, "steel"), 30)
+        rows = await self.db.fetchall("SELECT quantity, price_units FROM market_listings")
+        self.assertEqual([(r["quantity"], r["price_units"]) for r in rows], [(50, 60_000)])
+
+    async def test_the_dearest_bid_clears_first(self):
+        await adjust_currency_balance(self.db, GUILD, BOB, 1000.0)
+        await self.order(BOB, "wiring", 30, 5.00)
+        await self.order(BOB, "wiring", 30, 6.00)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 40)
+
+        await self.sell(ALICE, "wiring", 40)
+
+        # 30 at 6.00, then 10 at 5.00.
+        self.assertAlmostEqual(
+            await get_currency_balance(self.db, GUILD, ALICE), 30 * 6.00 + 10 * 5.00
+        )
+        self.assertEqual(await get_user_quantity(self.db, BOB, "wiring"), 40)
 
     async def test_you_cannot_fill_your_own_listing(self):
-        await adjust_user_quantity(self.db, ALICE, "steel", 50)
-        await self.list_item(ALICE, "steel", 0.50, 50)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 50)
+        await self.list_item(ALICE, "wiring", 0.50, 50)
         await adjust_currency_balance(self.db, GUILD, ALICE, 1000.0)
-        interaction = await self.buy(ALICE, "steel", 50)
+        interaction = await self.buy(ALICE, "wiring", 50)
         self.assertIn("Only 0", interaction.sent or "")
 
-    async def test_a_purchase_beyond_both_books_is_refused_outright(self):
-        await adjust_server_stock(self.db, GUILD, "steel", 10)
-        await adjust_user_quantity(self.db, BOB, "steel", 5)
-        await self.list_item(BOB, "steel", 0.72, 5)
+    async def test_a_purchase_beyond_the_book_is_refused_outright(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 15)
+        await self.list_item(BOB, "wiring", 0.72, 15)
         await adjust_currency_balance(self.db, GUILD, ALICE, 1000.0)
 
-        interaction = await self.buy(ALICE, "steel", 100)
-        self.assertIn("Only 15", interaction.sent or "", "names what both books hold")
-        self.assertEqual(await get_user_quantity(self.db, ALICE, "steel"), 0)
+        interaction = await self.buy(ALICE, "wiring", 100)
+        self.assertIn("Only 15", interaction.sent or "", "names what the book holds")
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "wiring"), 0)
         self.assertEqual(await get_currency_balance(self.db, GUILD, ALICE), 1000.0)
 
-    async def test_an_untraded_material_trades_between_players_only(self):
+    async def test_a_player_trade_mints_and_burns_nothing(self):
         """A gemstone has no server leg at all, which is the point of letting
         players trade one."""
         await adjust_user_quantity(self.db, BOB, "ruby", 2)
@@ -567,19 +578,19 @@ class RoutingTests(MarketTestCase):
         self.assertEqual(await self.totals(), (minted_before, burned_before))
 
     async def test_a_partly_filled_listing_keeps_the_rest(self):
-        await adjust_user_quantity(self.db, BOB, "steel", 100)
-        await self.list_item(BOB, "steel", 0.72, 100)
+        await adjust_user_quantity(self.db, BOB, "wiring", 100)
+        await self.list_item(BOB, "wiring", 0.72, 100)
         await adjust_currency_balance(self.db, GUILD, ALICE, 1000.0)
-        await self.buy(ALICE, "steel", 40)
+        await self.buy(ALICE, "wiring", 40)
 
         row = await self.db.fetchone("SELECT quantity FROM market_listings")
         self.assertEqual(row["quantity"], 60)
 
     async def test_a_fully_filled_listing_is_deleted(self):
-        await adjust_user_quantity(self.db, BOB, "steel", 100)
-        await self.list_item(BOB, "steel", 0.72, 100)
+        await adjust_user_quantity(self.db, BOB, "wiring", 100)
+        await self.list_item(BOB, "wiring", 0.72, 100)
         await adjust_currency_balance(self.db, GUILD, ALICE, 1000.0)
-        await self.buy(ALICE, "steel", 100)
+        await self.buy(ALICE, "wiring", 100)
         self.assertEqual(await self.db.fetchall("SELECT * FROM market_listings"), [])
 
 
@@ -724,15 +735,15 @@ class GuildRemovalTests(MarketTestCase):
         mining.db = self.db
         mining.bot = None
 
-        await adjust_user_quantity(self.db, ALICE, "steel", 100)
-        await self.list_item(ALICE, "steel", 0.60, 100)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 100)
+        await self.list_item(ALICE, "wiring", 0.60, 100)
         await adjust_currency_balance(self.db, GUILD, BOB, 100.0)
-        await self.order(BOB, "steel", 100, 0.60)
+        await self.order(BOB, "wiring", 100, 0.60)
 
         withdrawn = await mining._withdraw_guild_market(GUILD)
 
         self.assertEqual(withdrawn, 2)
-        self.assertEqual(await get_user_quantity(self.db, ALICE, "steel"), 100)
+        self.assertEqual(await get_user_quantity(self.db, ALICE, "wiring"), 100)
         self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), 100.0)
         self.assertEqual(await self.db.fetchall("SELECT * FROM market_listings"), [])
         self.assertEqual(await self.db.fetchall("SELECT * FROM market_orders"), [])
@@ -772,14 +783,14 @@ class AutocompleteTests(MarketTestCase):
         await self.list_item(BOB, "ruby", 4800.0, 3)
         self.assertTrue(any(n.startswith("Ruby -") for n in await self.buyable()))
 
-    async def test_buying_quotes_the_cheapest_source_and_the_combined_total(self):
-        await adjust_server_stock(self.db, GUILD, "steel", 50)
-        await adjust_user_quantity(self.db, BOB, "steel", 100)
-        await self.list_item(BOB, "steel", 0.72, 100)
-        steel = next(n for n in await self.buyable() if n.startswith("Steel"))
-        # 100 listed plus 50 in stock, at the cheaper of 0.72 and the server's 0.96.
-        self.assertIn("150", steel)
-        self.assertIn("0.72", steel)
+    async def test_buying_quotes_the_cheapest_listing_and_the_combined_total(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 150)
+        await self.list_item(BOB, "wiring", 0.90, 50)
+        await self.list_item(BOB, "wiring", 0.72, 100)
+        wiring = next(n for n in await self.buyable() if n.startswith("Wiring"))
+        # 150 listed in all, at the cheaper of the two asks.
+        self.assertIn("150", wiring)
+        self.assertIn("0.72", wiring)
 
     async def test_buying_excludes_your_own_listings(self):
         """plan_buy will not fill against them, so offering them would name
@@ -818,12 +829,13 @@ class AutocompleteTests(MarketTestCase):
         await self.order(BOB, "wiring", 5, 12.5)
         self.assertTrue(any(n.startswith("Wiring -") for n in await self.sellable()))
 
-    async def test_selling_quotes_the_dearest_source(self):
-        await adjust_user_quantity(self.db, ALICE, "steel", 100)
+    async def test_selling_quotes_the_dearest_bid(self):
+        await adjust_user_quantity(self.db, ALICE, "wiring", 100)
         await adjust_currency_balance(self.db, GUILD, BOB, 500.0)
-        await self.order(BOB, "steel", 30, 0.80)
-        steel = next(n for n in await self.sellable() if n.startswith("Steel"))
-        self.assertIn("0.80", steel, "the bid beats the server's 0.48")
+        await self.order(BOB, "wiring", 30, 0.60)
+        await self.order(BOB, "wiring", 30, 0.80)
+        wiring = next(n for n in await self.sellable() if n.startswith("Wiring"))
+        self.assertIn("0.80", wiring, "the dearer of the two bids")
 
     async def test_selling_excludes_your_own_bids(self):
         await adjust_user_quantity(self.db, ALICE, "wiring", 10)
@@ -917,7 +929,7 @@ class EmbedBudgetTests(MarketTestCase):
     emoji, which is why the emoji is named once per FIELD rather than once per
     line.
 
-    The worst case is every orderable material on both books at once, plus a
+    The worst case is every listable material on both books at once, plus a
     full drill field, which is what this builds.
     """
 
@@ -930,13 +942,10 @@ class EmbedBudgetTests(MarketTestCase):
         )
         await adjust_currency_balance(self.db, GUILD, ALICE, 10 ** 9)
         await adjust_currency_balance(self.db, GUILD, BOB, 10 ** 9)
-        for material_id in ORDERABLE_MATERIALS:
-            low, high = player_price_bounds(material_id)
-            ask = (high - 1) / PLAYER_PRICE_SCALE if low is not None else 1000.0
-            bid = (low + 1) / PLAYER_PRICE_SCALE if low is not None else 500.0
+        for material_id in LISTABLE:
             await adjust_user_quantity(self.db, BOB, material_id, 1000)
-            await self.list_item(BOB, material_id, round(ask, 4), 1000)
-            await self.order(ALICE, material_id, 50, round(bid, 4))
+            await self.list_item(BOB, material_id, 1000.0, 1000)
+            await self.order(ALICE, material_id, 50, 500.0)
         # More drills than the field will name, so the "and N more" line is in.
         for _ in range(BOOK_DISPLAY_LIMIT + 5):
             drill_id = await self.db.execute(
@@ -978,7 +987,7 @@ class EmbedBudgetTests(MarketTestCase):
         book = "\n".join(
             f.value for f in embed.fields if f.name.startswith("Market Listings")
         )
-        for material_id in ORDERABLE_MATERIALS:
+        for material_id in LISTABLE:
             with self.subTest(material_id):
                 self.assertIn(ALL_MATERIALS[material_id]["emoji"], book)
 
@@ -987,24 +996,24 @@ class EmbedBudgetTests(MarketTestCase):
         cheapest is fillable - plan_buy takes it first - so the rest are not
         actionable, and what a buyer wants instead is how much is behind it."""
         for i in range(6):
-            await adjust_user_quantity(self.db, BOB, "steel", 50)
-            await self.list_item(BOB, "steel", round(0.95 - i * 0.01, 4), 50)
+            await adjust_user_quantity(self.db, BOB, "wiring", 50)
+            await self.list_item(BOB, "wiring", round(0.95 - i * 0.01, 4), 50)
         embed = await self.render()
         book = "\n".join(
             f.value for f in embed.fields if f.name.startswith("Market Listings")
         )
-        steel = [ln for ln in book.splitlines() if ALL_MATERIALS["steel"]["emoji"] in ln]
-        self.assertEqual(len(steel), 1, "one line per material, however many sellers")
-        self.assertIn("0.9000", steel[0], "the cheapest ask, which is the fillable one")
-        self.assertIn("300", steel[0], "the total depth behind it")
-        self.assertIn("1 seller", steel[0], "all six listings are Bob's")
+        wiring = [ln for ln in book.splitlines() if ALL_MATERIALS["wiring"]["emoji"] in ln]
+        self.assertEqual(len(wiring), 1, "one line per material, however many sellers")
+        self.assertIn("0.9000", wiring[0], "the cheapest ask, which is the fillable one")
+        self.assertIn("300", wiring[0], "the total depth behind it")
+        self.assertIn("1 seller", wiring[0], "all six listings are Bob's")
 
     async def test_status_carries_only_the_market_not_your_own_entries(self):
         """/market status answers "what is the market doing". What the caller
         personally has on the book is /market entries, which is a different
         question and a per-viewer read this page should not be paying for."""
-        await adjust_user_quantity(self.db, ALICE, "steel", 50)
-        await self.list_item(ALICE, "steel", 0.72, 50)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 50)
+        await self.list_item(ALICE, "wiring", 0.72, 50)
         names = [f.name for f in (await self.render()).fields]
         self.assertTrue(any(n.startswith("Item") for n in names))
         self.assertTrue(any(n.startswith("Market Listings") for n in names))
@@ -1046,15 +1055,15 @@ class MarketEntriesTests(MarketTestCase):
         self.assertIn("/market order", empty.value)
 
     async def test_a_listing_appears_with_the_id_cancel_takes(self):
-        await adjust_user_quantity(self.db, ALICE, "steel", 50)
-        await self.list_item(ALICE, "steel", 0.72, 50)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 50)
+        await self.list_item(ALICE, "wiring", 0.72, 50)
         row = await self.db.fetchone("SELECT listing_id FROM market_listings")
         selling = self.field(await self.entries(), "Selling")
         self.assertIn(f"#{row['listing_id']}", selling.value)
-        # The material's EMOJI, not its name. Asserting on "Steel" would pass
+        # The material's EMOJI, not its name. Asserting on "Wiring" would pass
         # whether or not the line named the material, because the custom emoji
-        # markup is <:Steel:...> and contains that word.
-        self.assertIn(ALL_MATERIALS["steel"]["emoji"], selling.value)
+        # markup is <:Wiring:...> and contains that word.
+        self.assertIn(ALL_MATERIALS["wiring"]["emoji"], selling.value)
         self.assertIn("0.7200", selling.value)
         self.assertIn("50", selling.value)
 
@@ -1063,18 +1072,18 @@ class MarketEntriesTests(MarketTestCase):
         column after it by a different amount per line and defeats the
         alignment format_compact_price exists to provide. /market status leaves
         them out for the same reason."""
-        await adjust_user_quantity(self.db, ALICE, "iron_ore", 500)
-        await self.list_item(ALICE, "iron_ore", 0.0155, 500)
+        await adjust_user_quantity(self.db, ALICE, "drill_chassis", 500)
+        await self.list_item(ALICE, "drill_chassis", 0.0155, 500)
         selling = self.field(await self.entries(), "Selling")
-        emoji = ALL_MATERIALS["iron_ore"]["emoji"]
-        self.assertNotIn("Iron Ore", selling.value.replace(emoji, ""))
+        emoji = ALL_MATERIALS["drill_chassis"]["emoji"]
+        self.assertNotIn("Drill Chassis", selling.value.replace(emoji, ""))
 
     async def test_an_entry_reads_the_same_way_as_the_market_book(self):
         """The two pages share one line shape - id (where there is one), the
         material's emoji, a fixed-width price, then the counts - so a player
         reads /market entries the same way they read /market status."""
-        await adjust_user_quantity(self.db, ALICE, "steel", 50)
-        await self.list_item(ALICE, "steel", 0.72, 50)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 50)
+        await self.list_item(ALICE, "wiring", 0.72, 50)
 
         entry = self.field(await self.entries(), "Selling").value.splitlines()[0]
         status = FakeInteraction(ALICE)
@@ -1085,7 +1094,7 @@ class MarketEntriesTests(MarketTestCase):
             f for f in embed.fields if f.name.startswith("Market Listings")
         ).value.splitlines()[0]
 
-        emoji = ALL_MATERIALS["steel"]["emoji"]
+        emoji = ALL_MATERIALS["wiring"]["emoji"]
         self.assertTrue(entry.startswith("`#"), "an entry leads with its id")
         self.assertTrue(book.startswith(emoji), "the book has no id to lead with")
         # Past the id, the two are the same construction.
@@ -1096,7 +1105,7 @@ class MarketEntriesTests(MarketTestCase):
         """The figure a player is looking for when they wonder where their
         balance went - the escrow has left it but not the economy."""
         await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
-        await self.order(ALICE, "coal", 500, 0.05)
+        await self.order(ALICE, "iron_drill_bit", 500, 0.05)
         embed = await self.entries()
         self.assertIn("Held in bids", embed.description)
         buying = self.field(embed, "Buying")
@@ -1114,10 +1123,10 @@ class MarketEntriesTests(MarketTestCase):
         self.assertIn("Steel Container", selling.value)
 
     async def test_it_shows_only_your_own(self):
-        await adjust_user_quantity(self.db, BOB, "steel", 50)
-        await self.list_item(BOB, "steel", 0.72, 50)
+        await adjust_user_quantity(self.db, BOB, "wiring", 50)
+        await self.list_item(BOB, "wiring", 0.72, 50)
         await adjust_currency_balance(self.db, GUILD, BOB, 100.0)
-        await self.order(BOB, "coal", 100, 0.05)
+        await self.order(BOB, "iron_drill_bit", 100, 0.05)
 
         embed = await self.entries(ALICE)
         self.assertIsNotNone(self.field(embed, "Nothing on the market"))
@@ -1125,7 +1134,7 @@ class MarketEntriesTests(MarketTestCase):
 
     async def test_the_balance_shown_excludes_what_bids_are_holding(self):
         await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
-        await self.order(ALICE, "coal", 500, 0.05)
+        await self.order(ALICE, "iron_drill_bit", 500, 0.05)
         embed = await self.entries()
         # 100.00 - 25.00 escrowed; the two lines together account for the lot.
         self.assertIn("75.00", embed.description)
@@ -1140,9 +1149,9 @@ class MarketEntriesTests(MarketTestCase):
         )
         await adjust_currency_balance(self.db, GUILD, ALICE, 10 ** 9)
         for _ in range(ENTRIES_DISPLAY_LIMIT + 5):
-            await adjust_user_quantity(self.db, ALICE, "steel", 10)
-            await self.list_item(ALICE, "steel", 0.72, 10)
-            await self.order(ALICE, "coal", 10, 0.05)
+            await adjust_user_quantity(self.db, ALICE, "wiring", 10)
+            await self.list_item(ALICE, "wiring", 0.72, 10)
+            await self.order(ALICE, "iron_drill_bit", 10, 0.05)
 
         embed = await self.entries()
         total = (

@@ -29,14 +29,20 @@ here than anywhere else in the codebase:
   players could pass one stack back and forth and mint the bonus on every leg
   at no cost to either. plan_sell reports the server's share separately for
   that reason, and cogs/economy.py credits progress with that figure alone.
+
+  As of 1.4.1 the board's materials cannot reach a player book at all
+  (SERVER_ONLY_MATERIALS, server_only_error below), so a sale of one is always
+  filled by the server in full. The guard above stays: it is what keeps the
+  rule true if a row for one of them ever gets onto a book some other way.
 """
 from typing import NamedTuple
 
 from data.materials import (
     PERMANENT_MATERIALS,
     PLAYER_PRICE_SCALE,
+    SERVER_ONLY_MATERIALS,
     TRADEABLE_ORDER,
-    player_price_bounds,
+    get_material_info,
     player_price_total,
     purchase_unit_price,
     sale_unit_price,
@@ -114,10 +120,10 @@ async def plan_buy(db, guild_id: int, buyer_id: int, material_id: str, quantity:
     all-or-nothing ("The server only has N of that in stock"), and a command
     that quotes a price should charge that price or decline.
 
-    Ordered by price explicitly rather than assuming the band rule has put
-    players first. It does for the six materials the server trades, but the
-    other sixteen have no server leg at all, and the ordering has to be right
-    on its own terms rather than as a side effect of validation elsewhere.
+    Ordered by price explicitly rather than assuming which source is cheaper.
+    As of 1.4.1 a material has either a server leg or player legs, never both
+    (SERVER_ONLY_MATERIALS), but the ordering has to be right on its own terms
+    rather than as a side effect of validation elsewhere.
 
     A seller's own listings are skipped. Self-trading moves nothing and would
     only put wash volume into the figures docs/market.md section 4 asks to
@@ -192,57 +198,21 @@ async def plan_sell(db, guild_id: int, seller_id: int, material_id: str, quantit
     return fills, remaining
 
 
-def listing_price_error(material_id: str, price_units: int) -> str | None:
-    """Why this ask is not worth putting on the book, or None if it is fine.
+def server_only_error(material_id: str) -> str | None:
+    """Why this material can't go on a player book, or None if it can.
 
-    The rule is the server's own quotes (data/materials.py:
-    player_price_bounds): an ask at or above what the server charges is one
-    nobody would take when the server sells the same thing cheaper, and an ask
-    at or below what the server PAYS is one the seller should have taken to the
-    server instead. Neither is a trade anyone benefits from, so neither belongs
-    on a book people read to find one.
-
-    Untraded materials - gemstones, components, containers, drills - have no
-    server quote to be measured against and are unbounded.
+    Everything the job board can ask for is traded only with the server
+    (data/materials.py: SERVER_ONLY_MATERIALS says why). Both commands check
+    this, as they do permanent_material_error, and before the "Unknown item"
+    check, so a player sees the rule rather than something that reads as a typo.
     """
-    low, high = player_price_bounds(material_id)
-    if low is None:
+    if material_id not in SERVER_ONLY_MATERIALS:
         return None
-    if price_units >= high:
-        return (
-            f"The server already sells that for {_p(high)} - nobody would buy "
-            f"it from you at {_p(price_units)} or more. Ask under {_p(high)}."
-        )
-    if price_units <= low:
-        return (
-            f"The server already pays {_p(low)} for that, so you would be "
-            f"better off with `/market sell`. Ask over {_p(low)}."
-        )
-    return None
-
-
-def order_price_error(material_id: str, price_units: int) -> str | None:
-    """Why this bid is not worth putting on the book, or None if it is fine.
-
-    The mirror of listing_price_error, and the same rule read from the other
-    side: a bid at or below what the server pays is one nobody would fill when
-    the server pays the same or more, and a bid at or above what the server
-    CHARGES is one the buyer should have taken to the server instead.
-    """
-    low, high = player_price_bounds(material_id)
-    if low is None:
-        return None
-    if price_units <= low:
-        return (
-            f"The server already pays {_p(low)} for that - nobody would sell "
-            f"to you at {_p(price_units)} or less. Bid over {_p(low)}."
-        )
-    if price_units >= high:
-        return (
-            f"The server already sells that for {_p(high)}, so you would be "
-            f"better off with `/market buy`. Bid under {_p(high)}."
-        )
-    return None
+    name = get_material_info(material_id)["name"]
+    return (
+        f"{name} is traded only with the server, so every sale can count toward "
+        "the job board. Use `/market sell` or `/market buy`."
+    )
 
 
 def permanent_material_error(material_id: str) -> str | None:
@@ -260,16 +230,6 @@ def permanent_material_error(material_id: str) -> str | None:
         "reserved for a feature that hasn't been built yet, so there's no "
         "price anyone is in a position to put on it."
     )
-
-
-def _p(price_units: int) -> str:
-    """A bound as it appears in a rejection. Local to this module because it is
-    only ever used inside these messages; format_compact_price is for columns
-    that have to line up, which prose does not."""
-    from utils.formatting import format_price
-    from data.materials import PLAYER_PRICE_SCALE
-
-    return format_price(price_units / PLAYER_PRICE_SCALE)
 
 
 async def consume_listing(tx, listing_id: int, quantity: int) -> None:
@@ -339,9 +299,9 @@ async def listing_depth(db, guild_id: int):
     somewhere.
 
     It also bounds the field by the number of MATERIALS rather than the number
-    of rows: at most twenty-two lines however many people are trading, where an
-    un-aggregated book grew without limit and hid whole materials behind an
-    "... and N more".
+    of rows: at most one line per listable material however many people are
+    trading, where an un-aggregated book grew without limit and hid whole
+    materials behind an "... and N more".
 
     Depth and seller count are what survive aggregation, and they are the two
     things a buyer actually wants next to the price: how much is on offer at

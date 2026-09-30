@@ -370,22 +370,24 @@ maker plays among other participants.
 
 Three rules shape the player books:
 
-**A player's offer has to beat the server's, or it isn't allowed.** An ask must
-be strictly under what the server charges and strictly over what the server
-pays; a bid is the same rule from the other side. An offer outside that band is
-one nobody has a reason to take — either the server is already cheaper, or the
-player would have done better trading with the server directly — and a book
-people read to find a deal should not be full of them. Materials the server
-does not trade (gemstones, components, containers, drills) have no band at all,
-because there is no quote to beat.
+**The job board's materials are not on them.** Iron ore, copper ore, coal,
+iron, copper and steel trade only with the server (1.4.1;
+`SERVER_ONLY_MATERIALS` in `data/materials.py`). `/market sell` fills the
+dearest player bid before it sells to the server, and only the server's share
+of a sale counts toward the job board (below), so a standing bid for the day's
+material took a player's job sale and paid them no job progress for it. The
+board exists to refill the server's stock of exactly these six, and a book
+competing for them worked against it. Entries for them that were already on
+the books when 1.4.1 shipped were handed back to their owners.
 
-That band is narrow, and it is why player prices are finer-grained than the
-server's. Iron ore's band is a single cent wide — the server pays 0.01 and asks
-0.02 — so at whole cents there is no price strictly inside it. Player prices are
-therefore whole numbers of *ten-thousandths* of a currency unit
-(`PLAYER_PRICE_SCALE`), which gives iron ore 99 usable prices and steel 4,799.
+This replaced 1.4's rule that a player's offer on one of the six had to beat
+the server's own quote. That band is why player prices are finer-grained than
+the server's: iron ore's was a single cent wide (the server pays 0.01 and asks
+0.02), so player prices were made whole numbers of *ten-thousandths* of a
+currency unit (`PLAYER_PRICE_SCALE`). The band went with the six, and the scale
+stays because every stored listing and order price is in it.
 
-**Everything tradeable between players is tradeable, including what the server
+**Everything else is tradeable between players, including what the server
 won't touch.** Gemstones are the point of this: the server has been barred from
 them since 1.2 because one sale could end a server's economy, but that was
 never an argument against a ruby changing hands between two players at a price

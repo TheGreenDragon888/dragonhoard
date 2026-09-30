@@ -97,8 +97,9 @@ reproduce. `tests/test_betting_math.py` pins both the exactness and the
 order-independence.
 
 Cents rather than `PLAYER_PRICE_SCALE` ten-thousandths (`data/materials.py`)
-because a stake is a sum of money somebody typed, not a unit price that has to
-fit inside a band one cent wide. The two scales exist for different jobs, which
+because a stake is a sum of money somebody typed, not a unit price - and player
+prices were made that fine to fit 1.4's band one cent wide (docs/market.md
+section 3). The two scales exist for different jobs, which
 is why `circulating_currency` takes each escrow in its own unit rather than one
 pre-summed total.
 

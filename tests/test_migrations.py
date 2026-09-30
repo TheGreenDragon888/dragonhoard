@@ -376,9 +376,10 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         adds two, both pure data (the tables they fill are created empty either
         way, so the schema can't say whether they've run): 4 gave pools and
         drills a per-material composition, and 5 replaced the daily allowance
-        with a full bag."""
+        with a full bag. 1.4.1 adds 6, which hands back player-book entries for
+        the materials that became server-only."""
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 5)
+        self.assertEqual(row[0], 6)
 
     async def test_the_daily_top_ups_bookkeeping_is_gone(self):
         # There is no daily event left for it to record, and a column nothing
@@ -666,6 +667,119 @@ class NoticeActionMigrationTests(unittest.IsolatedAsyncioTestCase):
             "SELECT action_key FROM notifications WHERE title = 'New bet'"
         )
         self.assertEqual(row["action_key"], "bet:12")
+
+
+class ServerOnlyEntriesMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """1.4.1 took the job board's six materials off the player books
+    (data/materials.py: SERVER_ONLY_MATERIALS). A database from 1.4 can hold
+    listings and orders for them, and user_version 6 hands every one back:
+    goods to the seller, escrowed currency to the buyer, one notice each.
+
+    Built by opening a fresh database (which lands on the current version),
+    winding user_version back to 5 and adding 1.4-era rows - the shape of the
+    books did not change, only what is allowed on them.
+    """
+
+    SELLER = 501
+    BUYER = 502
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        conn.execute(
+            "INSERT INTO server_config (guild_id, currency_emoji) VALUES (?, '<:Scale:1>')",
+            (GUILD,),
+        )
+        for user in (self.SELLER, self.BUYER):
+            conn.execute("INSERT INTO users (user_id) VALUES (?)", (user,))
+        conn.execute(
+            "INSERT INTO user_materials (user_id, material_id, quantity) VALUES (?, 'steel', 5)",
+            (self.SELLER,),
+        )
+        conn.execute(
+            "INSERT INTO server_currency_balances (guild_id, user_id, balance) VALUES (?, ?, 10.0)",
+            (GUILD, self.BUYER),
+        )
+        # Two listings for server-only materials, one for a material players
+        # may still trade, and the same mix of orders.
+        for material_id, quantity in (("steel", 30), ("iron_ore", 500), ("wiring", 2)):
+            conn.execute(
+                "INSERT INTO market_listings (guild_id, seller_id, material_id, quantity, price_units) "
+                "VALUES (?, ?, ?, ?, 7200)",
+                (GUILD, self.SELLER, material_id, quantity),
+            )
+        # 2,000 coal at 0.0120 holds 24.00; 1 wiring at 5.00 holds 5.00.
+        conn.execute(
+            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units) "
+            "VALUES (?, ?, 'coal', 2000, 120)",
+            (GUILD, self.BUYER),
+        )
+        conn.execute(
+            "INSERT INTO market_orders (guild_id, buyer_id, material_id, quantity, price_units) "
+            "VALUES (?, ?, 'wiring', 1, 50000)",
+            (GUILD, self.BUYER),
+        )
+        conn.execute("PRAGMA user_version = 5")
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_only_the_server_only_entries_are_gone(self):
+        listings = await self.db.fetchall("SELECT material_id FROM market_listings")
+        orders = await self.db.fetchall("SELECT material_id FROM market_orders")
+        self.assertEqual([row["material_id"] for row in listings], ["wiring"])
+        self.assertEqual([row["material_id"] for row in orders], ["wiring"])
+
+    async def test_the_goods_are_back_in_the_sellers_inventory(self):
+        rows = await self.db.fetchall(
+            "SELECT material_id, quantity FROM user_materials WHERE user_id = ? ORDER BY material_id",
+            (self.SELLER,),
+        )
+        self.assertEqual(
+            {row["material_id"]: row["quantity"] for row in rows},
+            {"iron_ore": 500, "steel": 35},
+        )
+
+    async def test_the_currency_is_back_in_the_buyers_balance(self):
+        row = await self.db.fetchone(
+            "SELECT balance FROM server_currency_balances WHERE guild_id = ? AND user_id = ?",
+            (GUILD, self.BUYER),
+        )
+        self.assertAlmostEqual(row["balance"], 10.0 + 24.0)
+
+    async def test_each_player_gets_one_notice_naming_what_came_back(self):
+        rows = await self.db.fetchall(
+            "SELECT user_id, notice_key, body FROM user_notifications ORDER BY user_id"
+        )
+        self.assertEqual([row["user_id"] for row in rows], [self.SELLER, self.BUYER])
+        seller, buyer = rows
+        self.assertEqual(seller["notice_key"], Database.SERVER_ONLY_RETURN_NOTICE)
+        self.assertIn("30 Steel", seller["body"])
+        self.assertIn("500 Iron Ore", seller["body"])
+        self.assertNotIn("Wiring", seller["body"])
+        self.assertIn("2,000 Coal", buyer["body"])
+        self.assertIn("24.00", buyer["body"])
+
+    async def test_it_lands_on_version_6_and_does_not_run_twice(self):
+        row = await self.db.fetchone("PRAGMA user_version")
+        self.assertEqual(row[0], 6)
+        await self.db.init_schema()
+        balance = await self.db.fetchone(
+            "SELECT balance FROM server_currency_balances WHERE user_id = ?", (self.BUYER,)
+        )
+        self.assertAlmostEqual(balance["balance"], 34.0, msg="a second open refunds nothing")
 
 
 if __name__ == "__main__":

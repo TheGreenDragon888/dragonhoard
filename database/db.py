@@ -622,6 +622,13 @@ class Database(_Executor):
             if version < 5:
                 self._migrate_pool_to_bag(conn)
 
+            # 1.4.1 took the job board's materials off the player books
+            # (data/materials.py: SERVER_ONLY_MATERIALS). Entries already on the
+            # books for them have to be handed back, and the schema can't tell
+            # whether that has happened, so it is gated on user_version.
+            if version < 6:
+                self._migrate_return_server_only_entries(conn)
+
             # server_mining_pool.carry banked the fraction of a gemstone a pool
             # had accrued from the daily top-up. The bag replaced that outright
             # - the gems are simply in it - so nothing has read or written this
@@ -866,6 +873,105 @@ class Database(_Executor):
                 conn.execute("ALTER TABLE server_config DROP COLUMN mining_pool_last_topup")
 
             conn.execute("PRAGMA user_version = 5")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    # The key of the one notice each affected player gets from the migration
+    # below. One per player rather than one per entry: user_notifications is
+    # keyed on (user_id, notice_key), and a player with five entries wants one
+    # message listing them, not five.
+    SERVER_ONLY_RETURN_NOTICE = "market_server_only_returned"
+    SERVER_ONLY_RETURN_LINES = 20
+
+    @staticmethod
+    def _migrate_return_server_only_entries(conn: sqlite3.Connection):
+        """Hands back every listing and order for a material that became
+        server-only in 1.4.1, and tells each player what came back.
+
+        Exactly what /market cancel does, written as SQL because a migration
+        runs before the async helpers can: a listing's goods go back to the
+        seller's inventory, an order's escrowed currency goes back to the
+        buyer's balance on that server, and the rows are deleted. Nothing is
+        minted or burned - escrowed currency already counted as circulating
+        (utils/db_helpers.py: circulating_currency) and now counts as balance.
+        """
+        from data.materials import (
+            SERVER_ONLY_MATERIALS,
+            get_material_info,
+            material_name,
+            player_price_total,
+        )
+        from utils.formatting import format_currency
+
+        placeholders = ", ".join("?" for _ in SERVER_ONLY_MATERIALS)
+        ids = tuple(sorted(SERVER_ONLY_MATERIALS))
+        lines: dict[int, list[str]] = {}
+
+        conn.execute("BEGIN")
+        try:
+            listings = conn.execute(
+                "SELECT listing_id, seller_id, material_id, quantity FROM market_listings "
+                f"WHERE material_id IN ({placeholders}) ORDER BY listing_id",
+                ids,
+            ).fetchall()
+            for row in listings:
+                conn.execute(
+                    "INSERT INTO user_materials (user_id, material_id, quantity) VALUES (?, ?, ?) "
+                    "ON CONFLICT (user_id, material_id) DO UPDATE SET quantity = quantity + excluded.quantity",
+                    (row["seller_id"], row["material_id"], row["quantity"]),
+                )
+                conn.execute("DELETE FROM market_listings WHERE listing_id = ?", (row["listing_id"],))
+                info = get_material_info(row["material_id"])
+                lines.setdefault(row["seller_id"], []).append(
+                    f"Listing: {info['emoji']} **{row['quantity']:,} "
+                    f"{material_name(info, row['quantity'])}** back in your inventory"
+                )
+
+            orders = conn.execute(
+                "SELECT o.order_id, o.guild_id, o.buyer_id, o.material_id, o.quantity, "
+                "o.price_units, c.currency_emoji FROM market_orders o "
+                "LEFT JOIN server_config c ON c.guild_id = o.guild_id "
+                f"WHERE o.material_id IN ({placeholders}) ORDER BY o.order_id",
+                ids,
+            ).fetchall()
+            for row in orders:
+                refund = player_price_total(row["price_units"], row["quantity"])
+                conn.execute(
+                    "INSERT INTO server_currency_balances (guild_id, user_id, balance) VALUES (?, ?, ?) "
+                    "ON CONFLICT (guild_id, user_id) DO UPDATE SET balance = balance + excluded.balance",
+                    (row["guild_id"], row["buyer_id"], refund),
+                )
+                conn.execute("DELETE FROM market_orders WHERE order_id = ?", (row["order_id"],))
+                info = get_material_info(row["material_id"])
+                lines.setdefault(row["buyer_id"], []).append(
+                    f"Order: {info['emoji']} **{row['quantity']:,} "
+                    f"{material_name(info, row['quantity'])}**, "
+                    f"{format_currency(refund, row['currency_emoji'])} back in your balance"
+                )
+
+            for user_id, returned in lines.items():
+                # Entries were uncapped before 1.4.1, so a busy trader could
+                # have enough to overflow an embed's description.
+                if len(returned) > Database.SERVER_ONLY_RETURN_LINES:
+                    hidden = len(returned) - Database.SERVER_ONLY_RETURN_LINES
+                    returned = returned[:Database.SERVER_ONLY_RETURN_LINES]
+                    returned.append(f"... and {hidden:,} more")
+                conn.execute(
+                    "INSERT OR IGNORE INTO user_notifications (user_id, notice_key, title, body) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        user_id,
+                        Database.SERVER_ONLY_RETURN_NOTICE,
+                        "↩️ Market entries returned",
+                        "Ores and smelted metals now trade only with the server, so every "
+                        "sale can count toward the job board. These entries of yours were "
+                        "taken off the player market:\n" + "\n".join(returned),
+                    ),
+                )
+
+            conn.execute("PRAGMA user_version = 6")
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

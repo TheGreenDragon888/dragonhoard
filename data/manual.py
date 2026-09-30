@@ -501,10 +501,9 @@ _add(ManualSection(
         "warehouse, buys from you, and sells back at a markup - and you can trade with "
         "everyone else here too, through `/market list` and `/market order`. Buying and "
         "selling take the better deal automatically.\n\n"
-        "**A player price has to beat the server's.** A listing must undercut what the "
-        "server charges and a bid must beat what it pays, or it's an offer nobody has a "
-        "reason to take. Things the server doesn't trade - gemstones, components, "
-        "containers, drills - have no such limit.\n\n"
+        "**Ores and smelted metals trade only with the server.** You can still sell and "
+        "buy them, but not list or bid for them, so every sale can count toward the job "
+        "board. Gemstones, components, containers and drills can go up at any price.\n\n"
         "**Selling is the only way currency comes into existence.** There's no payout for "
         "chatting and no daily handout - if you want money, you mine and you sell. Money "
         "leaves again through the fees you pay to the machines you use, and when "
@@ -540,8 +539,8 @@ _add(ManualSection(
         ManualCommand(
             "/market list", "/market list <item> <price> [quantity]",
             "Puts something of yours up for sale to the rest of the server at a price you "
-            "set. Anything you own works - ore, gemstones, components, containers, even a "
-            "specific drill with its level and container intact. What you list is held "
+            "set: gemstones, components, containers, even a specific drill with its level "
+            "and container intact - anything but ores and smelted metals. What you list is held "
             "aside until somebody buys it or you take it back, so it leaves your inventory "
             "straight away.",
         ),

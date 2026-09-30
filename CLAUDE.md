@@ -338,11 +338,20 @@ category) is the single definition of what can never be traded, scrapped or
 consumed. Add a second exotic material to that table and it inherits every
 exclusion; state the reason nowhere else.
 
+`SERVER_ONLY_MATERIALS` (1.4.1, keyed on `JOB_BOARD_MATERIALS`) is the same kind
+of single definition for what can be bought and sold with the server but never
+listed or bid for: player bids for the board's materials took players' job
+sales. `server_only_error` is the refusal both commands give. Note that
+`ORDERABLE_MATERIALS` in `cogs/economy.py` still contains the six - it is also
+what `/market buy` and `/market sell` validate against - so filter with
+`SERVER_ONLY_MATERIALS` rather than dropping them from it.
+
 Market prices are static as of 1.3 and are whole numbers of cents, enforced
 at import by `MARKET_PRICE_CENTS`. Player-set prices are whole numbers of
-ten-thousandths of a currency unit (`PLAYER_PRICE_SCALE`), because the band a
-player ask must fit inside is one cent wide for iron ore and contains no whole
-cent. Three constants now hold each other up and
+ten-thousandths of a currency unit (`PLAYER_PRICE_SCALE`). It was introduced
+for 1.4's rule that a player ask on iron ore sit between the server's 0.01 and
+0.02, a band with no whole cent in it; that rule went with 1.4.1's
+`SERVER_ONLY_MATERIALS`, and the scale stays because stored prices use it. Three constants now hold each other up and
 should be changed together or not at all: the price table, `MARKET_BUY_MARKUP`
 (2), and `JOB_BOARD_TARGET_PAYOUT` (1.00). The job board pays per completion
 with no daily cap, and what stops that printing currency is only that buying
