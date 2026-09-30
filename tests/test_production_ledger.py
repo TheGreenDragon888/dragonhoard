@@ -18,6 +18,7 @@ the code alone and would be "tidied" back to something wrong:
 """
 import tempfile
 import unittest
+import unittest.mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -339,7 +340,73 @@ class EmptyServerTests(_LedgerTestCase):
         """add_multi_field would otherwise render a field reading "None",
         which is worse than not showing the field at all."""
         cog = EconomyCog.__new__(EconomyCog)
-        self.assertEqual(cog._value_breakdown_lines(await self.totals(), None), [])
+        self.assertEqual(cog._value_breakdown_lines(await self.totals()), [])
+
+
+    async def test_the_title_says_so_too(self):
+        self.assertEqual(
+            EconomyCog._gdp_title(await self.totals(), None, "Scales"), "Nothing produced yet"
+        )
+
+
+class GdpPageTests(_LedgerTestCase):
+    """/economy gdp carries figures only; what they mean is on the Economy page
+    of /help (1.4.1)."""
+
+    async def test_the_title_is_the_weeks_gdp_in_the_currencys_name(self):
+        async with self.db.transaction() as tx:
+            await record_mined(tx, GUILD, {"iron_ore": 100})           # 1.00
+        totals = await self.totals()
+        self.assertEqual(EconomyCog._gdp_title(totals, "2026-09-01", "Scales"), "1.00 Scales in 7 days")
+        self.assertEqual(EconomyCog._gdp_title(totals, "2026-09-01", None), "1.00 in 7 days")
+
+    async def test_the_breakdown_is_figures_with_a_one_line_verdict(self):
+        async with self.db.transaction() as tx:
+            await record_mined(tx, GUILD, {"iron_ore": 100})           # 1.00 out
+            await record_output(tx, GUILD, "furnace", "iron", 10,
+                                smelting_inputs("iron", 10))           # 1.30 in
+        lines = EconomyCog.__new__(EconomyCog)._value_breakdown_lines(await self.totals())
+        self.assertEqual(lines[-1], "Input `1.30` \u00b7 Mined `1.00` \u00b7 net **importer**")
+        for line in lines:
+            self.assertNotIn("<:", line, "the currency is named once, in the field heading")
+
+
+class _StatusGuild:
+    """Enough of discord.Guild for /economy status: a name, and a chunk that
+    returns no members (see tests/test_market_sell_db.py)."""
+    id = GUILD
+    name = "Test Server"
+
+    async def chunk(self, *, cache=True):
+        return []
+
+
+class GemstoneFieldTests(_LedgerTestCase):
+    """/economy status lists only the gems actually mined, and drops the field
+    when there were none (1.4.1)."""
+
+    async def render(self):
+        interaction = unittest.mock.AsyncMock()
+        interaction.guild_id = GUILD
+        interaction.guild = _StatusGuild()
+        interaction.user.id = USER
+        cog = EconomyCog.__new__(EconomyCog)
+        cog.db = self.db
+        await EconomyCog.economy_status.callback(cog, interaction)
+        kwargs = interaction.response.send_message.call_args.kwargs
+        return (kwargs.get("embeds") or [kwargs["embed"]])[0]
+
+    async def test_no_gems_means_no_field(self):
+        embed = await self.render()
+        self.assertFalse(any(f.name.startswith("Gemstones") for f in embed.fields))
+
+    async def test_only_the_gems_mined_are_shown(self):
+        async with self.db.transaction() as tx:
+            await record_mined(tx, GUILD, {"ruby": 2})
+        field = next(f for f in (await self.render()).fields if f.name.startswith("Gemstones"))
+        self.assertIn("**2**", field.value)
+        self.assertNotIn("**0**", field.value)
+        self.assertNotIn("GDP", field.value, "the explanation lives in /help")
 
 
 class SlotProgressTests(_LedgerTestCase):

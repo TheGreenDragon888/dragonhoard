@@ -571,18 +571,6 @@ _add(ManualSection(
             "`/market entries`.",
         ),
         ManualCommand(
-            "/economy status", "/economy status",
-            "The whole server's economy on one page: the wealth its players hold, its mining "
-            "slot progress, what it produced this week, what's queued, and today's job. "
-            "Read-only - it costs nothing to look.",
-        ),
-        ManualCommand(
-            "/economy gdp", "/economy gdp",
-            "What the server actually produced, in detail: the last 24 hours and the last 7 "
-            "days, which stage of production added the value, and whether its machines ran "
-            "on more than it dug up here.",
-        ),
-        ManualCommand(
             "/donate infrastructure", "/donate infrastructure <machine> <amount>",
             "Pays your own currency into one of the server's machines. It counts exactly "
             "like a fee, so it speeds the machine up for everyone - the only way to push a "
@@ -596,6 +584,33 @@ _add(ManualSection(
             "and nothing is lost on the way.",
         ),
     ),
+))
+
+
+_add(ManualSection(
+    key="economy",
+    label="Economy",
+    emoji="📊",
+    # The market's yellow: /economy reads the market's own ledger from another
+    # angle rather than being a feature of its own (docs/stylization.md).
+    color=MARKET_COLOR,
+    summary="The server's wealth, what it produced, and what GDP means",
+    body=(
+        "`/economy status` is this server's economy on one page, and `/economy gdp` takes "
+        "what it produced apart. Both only read - looking costs nothing."
+    ),
+    commands=(
+        ManualCommand(
+            "/economy status", "/economy status",
+            "The wealth this server's players hold, its mining slot progress, what it "
+            "produced this week, the gemstones mined here, what's queued, and today's job.",
+        ),
+        ManualCommand(
+            "/economy gdp", "/economy gdp",
+            "What the server produced over the last 24 hours and 7 days, which stage added "
+            "the value, and whether it is a net importer or exporter.",
+        ),
+    ),
     notes=(
         (
             "Where money goes",
@@ -607,17 +622,22 @@ _add(ManualSection(
         ),
         (
             "What server GDP means",
-            "`/economy gdp` reports what this server **produced**, which is a different thing "
-            "from how much money it has. Mining counts what you dug out of this server's "
-            "pool; smelting counts what the bars are worth **minus** the ore and coal they "
-            "ate, so nothing is counted twice.\n\n"
+            "GDP is what this server **produced**, valued at market prices - a different "
+            "thing from how much money it has. Each stage counts once, at what it added: "
+            "mining counts what you dug out of this server's pool; smelting counts what the "
+            "bars are worth **minus** the ore and coal they ate.\n\n"
             "It's credited to the server the work happened in, not the one you typed the "
-            "command in - so if you mine here and smelt somewhere else, each server gets "
-            "its own half. Gemstones are left out entirely: one Diamond is worth more than "
-            "a month of everyone's mining, and a number that swings that far isn't telling "
-            "you anything.\n\n"
-            "It counts from when this was added, so a long-running server starts at nothing "
-            "like everyone else - none of it was written down before.",
+            "command in - mine here and smelt elsewhere, and each server gets its own half.\n\n"
+            "It counts from when this was added, so every server started at nothing.",
+        ),
+        (
+            "Importer, exporter, gemstones",
+            "The last line of `/economy gdp` compares what this server's machines consumed "
+            "with what was mined here. A **net importer**'s machines ran on more than it dug "
+            "up; a **net exporter** dug up more than its machines consumed.\n\n"
+            "Gemstones are left out of GDP entirely: one Diamond is worth more than a month "
+            "of everyone's mining, and a number that swings that far isn't telling you "
+            "anything. `/economy status` counts the gems mined here on their own instead.",
         ),
     ),
 ))

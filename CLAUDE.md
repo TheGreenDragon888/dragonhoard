@@ -195,8 +195,9 @@ not fill against. The lists are a convenience; the membership check in each
 command is the enforcement.
 
 `/economy` is a group, not a bare command: `/economy status` is the overview
-page and `/economy gdp` holds every GDP figure and the reasoning behind it
-(both windows, the per-stage breakdown, the import/export comparison). Discord
+page and `/economy gdp` holds every GDP figure (both windows, the per-stage
+breakdown, the import/export comparison). What those figures mean is on the
+Economy page of `/help` (`data/manual.py`), not on the embeds (1.4.1). Discord
 will not let a command with subcommands be invoked on its own, which is why the
 overview has a name at all.
 

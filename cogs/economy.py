@@ -53,6 +53,7 @@ from discord.ext import commands, tasks
 
 from utils.responses import respond
 from utils.embeds import (
+    footer_with,
     make_embed,
     add_multi_field,
     queue_field_name,
@@ -1864,34 +1865,50 @@ class EconomyCog(commands.Cog):
             f"**Last 7d** {format_currency(week.gdp, currency_emoji)}"
         )
 
-    def _value_breakdown_lines(self, week, currency_emoji: str | None) -> list[str]:
+    @staticmethod
+    def _gdp_title(week, first_seen: str | None, currency_name: str | None) -> str:
+        """The page's headline figure: the week's GDP, as the title a machine
+        status page gives its speed.
+
+        Named with the currency's NAME rather than its emoji, because a title
+        renders no custom emoji (docs/stylization.md) - and a server that has
+        not named its currency gets the bare figure.
+        """
+        if first_seen is None:
+            return "Nothing produced yet"
+        unit = f" {currency_name}" if currency_name else ""
+        return f"{format_price(week.gdp)}{unit} in 7 days"
+
+    def _value_breakdown_lines(self, week) -> list[str]:
         """Which stage of production added the week's value, and whether this
         server's machines ran on more input than it dug up.
 
-        The import/export sentence is the honest form of "was this smelted here
-        or somewhere else". It cannot be answered per unit and never will be:
+        Figures only: the field's heading names the currency once, and what an
+        importer or exporter is lives on the Economy page of /help.
+
+        The import/export line is the honest form of "was this smelted here or
+        somewhere else". It cannot be answered per unit and never will be:
         user_materials is keyed on user_id with no guild, so once ore is in an
         inventory there is nothing that records which server it came out of.
         Comparing the aggregates is what IS answerable, and it answers the same
         question at the scale anyone actually cares about it.
         """
         lines = [
-            f"{GDP_SOURCE_LABEL[source]} {format_currency(week.added_by_source[source], currency_emoji)}"
+            f"{GDP_SOURCE_LABEL[source]} `{format_price(week.added_by_source[source])}`"
             for source in GDP_SOURCES
             if source in week.added_by_source
         ]
         if week.machine_input <= 0 and week.mined_output <= 0:
             return lines
         if week.machine_input > week.mined_output:
-            verdict = "a net **importer**: its machines ran on more than it dug up"
+            verdict = "net **importer**"
         elif week.machine_input < week.mined_output:
-            verdict = "a net **exporter**: it dug up more than its machines consumed"
+            verdict = "net **exporter**"
         else:
-            verdict = "exactly balanced"
+            verdict = "balanced"
         lines.append(
-            f"Machines here consumed {format_currency(week.machine_input, currency_emoji)} "
-            f"of input against {format_currency(week.mined_output, currency_emoji)} mined "
-            f"here \u2014 {verdict}."
+            f"Input `{format_price(week.machine_input)}` \u00b7 "
+            f"Mined `{format_price(week.mined_output)}` \u00b7 {verdict}"
         )
         return lines
 
@@ -1973,18 +1990,21 @@ class EconomyCog(commands.Cog):
             f"Weekly GDP: {format_currency(week.gdp, currency_emoji)}"
         )
 
-        # Every gem, including the ones at zero. A run of noughts is the
-        # honest picture of a one-in-a-million drop rate, and omitting them
-        # would make an empty field out of the commonest case.
-        gem_cells = []
-        for material_id in GEMSTONES:
-            info = get_material_info(material_id)
-            gem_cells.append(f"{info['emoji']} **{gems.get(material_id, 0):,}**")
-        embed.add_field(
-            name="Gemstones Mined (7d)",
-            value=" \u00b7 ".join(gem_cells) + "\n(Not counted toward GDP)",
-            inline=False,
-        )
+        # Only the gems actually mined, and no field at all when there were
+        # none (1.4.1, by request: a row of zeroes was most of what this field
+        # showed). That gems stay out of GDP is explained on the Economy page
+        # of /help rather than under every count.
+        gem_cells = [
+            f"{get_material_info(material_id)['emoji']} **{gems[material_id]:,}**"
+            for material_id in GEMSTONES
+            if gems.get(material_id, 0) > 0
+        ]
+        if gem_cells:
+            embed.add_field(
+                name="Gemstones Mined \u00b7 7d",
+                value=" \u00b7 ".join(gem_cells),
+                inline=False,
+            )
 
         queue_lines, queued_items, queued_jobs, queue_wait = await self._queue_lines(
             interaction.guild_id, cfg
@@ -2043,6 +2063,7 @@ class EconomyCog(commands.Cog):
             (interaction.guild_id,),
         )
         currency_emoji = cfg["currency_emoji"] if cfg else None
+        currency_name = cfg["currency_name"] if cfg else None
 
         day = await window_totals(
             self.db, interaction.guild_id, window_cutoff(GDP_DAY_HOURS)
@@ -2051,25 +2072,28 @@ class EconomyCog(commands.Cog):
         week = await window_totals(self.db, interaction.guild_id, week_cutoff)
         first_seen = await tracked_since(self.db, interaction.guild_id)
 
-        embed = make_embed("Server GDP", MARKET_COLOR)
+        # The title is the headline figure, the way a machine status page's is
+        # its speed; the author line says which page this is.
+        embed = make_embed(self._gdp_title(week, first_seen, currency_name), MARKET_COLOR)
         # Names the subcommand, not just the command: /economy status and
         # /market status are already three yellow embeds apart from each other
         # on the author line alone (docs/stylization.md), and this is a fourth.
         embed.set_author(name=f"\U0001F4CA Economy \u2022 GDP \u2022 {guild_name}")
 
-        # Value added, counted once per stage: what a thing sold for minus what
-        # was consumed making it (docs/market.md section 5). Said here rather
-        # than on the status page because this is the page somebody opens to
-        # find out what the figure means.
-        embed.description = (
-            f"What this server **produced**, valued at market prices - each stage "
-            f"counted once, at what it added.\n\n"
-            f"{self._gdp_windows_value(day, week, first_seen, currency_emoji)}"
-        )
+        # Figures only. What GDP counts - value added, each stage once at
+        # market prices (docs/market.md section 5) - is explained on the
+        # Economy page of /help, which the footer points at, rather than
+        # repeated to everyone who opens this.
+        embed.description = self._gdp_windows_value(day, week, first_seen, currency_emoji)
 
-        breakdown = self._value_breakdown_lines(week, currency_emoji)
+        breakdown = self._value_breakdown_lines(week)
         if breakdown:
-            add_multi_field(embed, "Where The Value Came From (7d)", breakdown)
+            add_multi_field(
+                embed,
+                f"Where the value came from \u00b7 7d \u00b7 {currency_emoji or DEFAULT_CURRENCY_EMOJI}",
+                breakdown,
+            )
+        embed.set_footer(text=footer_with("/help Economy explains GDP"))
 
         await respond(interaction, self.db, embed=embed)
 
