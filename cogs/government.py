@@ -7,7 +7,7 @@ Implements the server government (1.4):
                                                      settings, the treasury,
                                                      the debt and the projects
   - /treasurer fee <machine> <multiplier>          - Treasurer only
-  - /treasurer tax <percent>
+  - /treasurer feevat <percent>
   - /treasurer bondrate <percent>
   - /mayor fund <machine> <amount>                 - Mayor only
   - /mayor enhance <machine>
@@ -67,7 +67,7 @@ from utils.government import (
     BOND_DENOMINATIONS_CENTS,
     FEE_MULTIPLIERS,
     MAX_BOND_RATE_PERCENT,
-    MAX_TAX_PERCENT,
+    MAX_FEE_VAT_PERCENT,
     MAYOR,
     OFFICE_LABELS,
     TREASURER,
@@ -95,7 +95,7 @@ from utils.government import (
     prune_tax_history,
     set_bond_rate,
     set_fee_multiplier,
-    set_tax,
+    set_fee_vat,
     start_bonanza,
     voting_open,
 )
@@ -145,7 +145,7 @@ class GovernmentCog(commands.Cog):
     government_group = app_commands.Group(name="government", description="This server's Mayor, Treasurer and treasury")
     treasurer_group = app_commands.Group(name="treasurer", description="The Treasurer's settings (Treasurer only)")
     mayor_group = app_commands.Group(name="mayor", description="The Mayor's projects (Mayor only)")
-    bonds_group = app_commands.Group(name="bonds", description="Lend this server currency and be repaid out of its tax")
+    bonds_group = app_commands.Group(name="bonds", description="Lend this server currency and be repaid out of its VAT")
 
     # -----------------------------------------------------------------------
     # Membership, and the lazy count
@@ -228,7 +228,7 @@ class GovernmentCog(commands.Cog):
     # /government status
     # -----------------------------------------------------------------------
 
-    @government_group.command(name="status", description="Who holds office, the tax, the treasury and the projects")
+    @government_group.command(name="status", description="Who holds office, the VAT, the treasury and the projects")
     async def government_status_command(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
         await self._count_if_due(interaction.guild, interaction.guild_id)
@@ -242,7 +242,7 @@ class GovernmentCog(commands.Cog):
         # fields are figures. Until 1.4.1 the title repeated the header and the
         # fees and projects were two five-line lists naming every machine twice.
         embed = make_embed(
-            f"Tax {status.tax_percent}% · Bond rate {status.bond_rate_percent}%",
+            f"Fee VAT {status.fee_vat_percent}% · Bond rate {status.bond_rate_percent}%",
             GOVERNMENT_COLOR,
         )
         if interaction.guild is not None:
@@ -351,17 +351,17 @@ class GovernmentCog(commands.Cog):
             f"{FEE_UNITS.get(machine.value, 'item')} (x{value:g}).",
         )
 
-    @treasurer_group.command(name="tax", description="Set the share of every machine fee the government keeps (once a day)")
-    @app_commands.describe(percent=f"0-{MAX_TAX_PERCENT}%")
-    async def treasurer_tax(
+    @treasurer_group.command(name="feevat", description="Set the share of every machine fee the government keeps (once a day)")
+    @app_commands.describe(percent=f"0-{MAX_FEE_VAT_PERCENT}%, taken out of the fee rather than added to it")
+    async def treasurer_feevat(
         self, interaction: discord.Interaction,
-        percent: app_commands.Range[int, 0, MAX_TAX_PERCENT],
+        percent: app_commands.Range[int, 0, MAX_FEE_VAT_PERCENT],
     ):
         await self._treasurer_action(
             interaction,
-            lambda tx: set_tax(tx, interaction.guild_id, interaction.user.id, percent),
-            "🏛️ Tax Set",
-            f"The tax is now **{percent}%** of every machine fee.",
+            lambda tx: set_fee_vat(tx, interaction.guild_id, interaction.user.id, percent),
+            "🏛️ Fee VAT Set",
+            f"The Fee VAT is now **{percent}%** of every machine fee.",
         )
 
     @treasurer_group.command(name="bondrate", description="Set the premium new bonds repay (once a day)")
@@ -519,7 +519,7 @@ class GovernmentCog(commands.Cog):
             f"You lent the server **{_cents(bond.principal_cents, emoji)}**.",
             [
                 ("Lent", currency_line(bond.principal_cents / 100, balance, emoji, gained=False)),
-                ("Repays", f"{_cents(bond.owed_cents, emoji)} · {bond.rate_percent}% on top, hourly from tax"),
+                ("Repays", f"{_cents(bond.owed_cents, emoji)} · {bond.rate_percent}% on top, hourly from VAT"),
             ],
             footer_note="/bonds holdings shows what is still owed",
         )

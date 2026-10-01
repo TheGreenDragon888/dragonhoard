@@ -20,7 +20,7 @@ The core loop:
 4. **Reinvest** — smelt ore in the `/furnace` (or a hundred at a time in the `/blast` furnace), craft better gear in the `/factory`, compress materials into gems with the hydraulic `/press`, break what you no longer want back down in the `/scrapper`, and upgrade your drills so the whole loop runs faster. Production fees burn currency back out of the economy — and every fee the server has ever collected adds up toward **mining slots**, which let *everyone* in that server keep another drill in the ground.
 5. **Check the board** — `/jobboard` shows the one task your server is paying a bonus for today. Everyone can claim it, and it pays again every time you finish it.
 6. **Bet on it** — `/bet open` puts your currency on something you think will happen, and everyone else can back you or take the other side. The winning side splits the whole pot; nothing is created and the bot takes no cut.
-7. **Elect a government** — every Thursday the server votes (`/vote`) for a **Mayor** and a **Treasurer**. The Treasurer sets each machine's fee and a tax on it; the Mayor spends the tax on projects — machine levels, Infrastructure Enhancements that double a machine's speed, Mining Slot Enhancements, and 48-hour Server Bonanzas — and can sell bonds (`/bonds buy`) repaid out of tax. Admins don't set fees.
+7. **Elect a government** — every Thursday the server votes (`/vote`) for a **Mayor** and a **Treasurer**. The Treasurer sets each machine's fee and a Fee VAT on it; the Mayor spends the VAT on projects — machine levels, Infrastructure Enhancements that double a machine's speed, Mining Slot Enhancements, and 48-hour Server Bonanzas — and can sell bonds (`/bonds buy`) repaid out of VAT. Admins don't set fees.
 
 Look anything up in-game with `/recipe` (the recipe book) or the built-in manual: `/help`, `/manual`, or `/man` — same book, three names.
 
@@ -45,9 +45,9 @@ And `/honk` plays a honk. No further questions.
 | `/jobboard` | Today's paid task for this server |
 | `/bet open\|place\|status\|resolve\|cancel` | Bet this server's currency on what happens next |
 | `/vote mayor\|treasurer`, `/government status` | This server's weekly election, and who holds office |
-| `/treasurer fee\|tax\|bondrate` | The Treasurer's settings |
+| `/treasurer fee\|feevat\|bondrate` | The Treasurer's settings |
 | `/mayor fund\|enhance\|slots\|bonanza\|bonds` | The Mayor's projects |
-| `/bonds buy\|holdings` | Lend the server currency, repaid out of tax |
+| `/bonds buy\|holdings` | Lend the server currency, repaid out of VAT |
 | `/recipe factory\|furnace\|press\|scrapper` | The recipe book |
 | `/help`, `/manual`, `/man` | The in-Discord manual |
 | `/changelog [version]` | What changed in each release |

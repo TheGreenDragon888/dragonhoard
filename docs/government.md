@@ -1,10 +1,11 @@
 # The Server Government (1.4)
 
 Every server elects a **Mayor** and a **Treasurer** each week. The Treasurer
-sets what the machines charge and how much of it is taxed; the Mayor spends
-the tax, and money borrowed against it, on projects. The purpose is community
-engagement - a server has something to argue about and organise around - and,
-for large servers, a way past the machine-level cost wall.
+sets what the machines charge and how much of it the government keeps (the
+Fee VAT); the Mayor spends that VAT, and money borrowed against it, on
+projects. The purpose is community engagement - a server has something to
+argue about and organise around - and, for large servers, a way past the
+machine-level cost wall.
 
 Code: `utils/government.py` (every rule and every currency movement) and
 `cogs/government.py` (commands, embeds, the hourly loop, member events).
@@ -42,7 +43,7 @@ Tests: `tests/test_government.py`.
 - **Ties** go to the incumbent, then to whoever reached the tied count first
   (the latest `cast_at` among their votes), then to the lower id - never to
   chance.
-- **No recall.** A Treasurer who sets x4 fees and 100% tax lasts until the next
+- **No recall.** A Treasurer who sets x4 fees and 100% Fee VAT lasts until the next
   Friday; the weekly term is the remedy.
 
 ## 2. The Treasurer's settings
@@ -50,7 +51,7 @@ Tests: `tests/test_government.py`.
 | Setting | Values | Default |
 | --- | --- | --- |
 | Fee multiplier, per machine | x0.25, x0.5, x0.625, x0.8, x1, x1.25, x1.6, x2, x4 | x1 |
-| Tax rate | 0-100% | 0% |
+| Fee VAT | 0-100% | 0% |
 | Bond rate (a one-time premium) | 0-5% | 0% |
 
 A machine's fee is its `config.py` default times its multiplier
@@ -69,9 +70,16 @@ Each setting (each machine's multiplier separately) may change **once per game
 day**. Without that, a Treasurer could set x0.25, queue their own jobs - fees
 are charged at queue time - and set x4 again.
 
-While the server owes active creditors, the tax cannot drop below the rate in
-force when the most recent bond still owed was sold (`tax_floor`). Bondholders
-lent against that tax, and it is the only thing that repays them.
+While the server owes active creditors, the Fee VAT cannot drop below the rate
+in force when the most recent bond still owed was sold (`fee_vat_floor`).
+Bondholders lent against that VAT, and it is the only thing that repays them.
+
+**Why "VAT".** Until the rename it was called the tax, which read as a charge
+on top of the fee. It never was one: the player pays the same fee at any rate,
+and the rate only decides how much of it the government holds instead of
+burning. Taken out of the amount rather than added to it is what a VAT is. The
+column is still `server_config.tax_percent`; renaming it would have cost a
+migration and changed nothing a player sees.
 
 Removing `/setup fee` discarded every server's custom fee. In the production
 backup of 2026-08-30 (`/opt/dragonhoard/data/backup-2026-08-30-022248.db`, a
@@ -82,9 +90,9 @@ including one that had switched the press off with a fee of 999.
 
 **Currency leaves the government only as a burn or as a bond repayment.**
 
-- A fee's untaxed share is handled exactly as a whole fee was before 1.4:
+- A fee's share left after VAT is handled exactly as a whole fee was before 1.4:
   burned, banked to the machine's level and counted toward mining slots.
-- The taxed share is **held**, not burned: in the repayment pool while the
+- The VAT share is **held**, not burned: in the repayment pool while the
   server owes active creditors, in the treasury otherwise. It levels no
   machine and counts toward nothing until the Mayor spends it.
 - `spend_treasury` is the only way money leaves the treasury, and every caller
@@ -95,7 +103,7 @@ including one that had switched the press off with a fee of 999.
   economy.
 
 Why that keeps the supply where it was: a bond moves X from a player to the
-treasury, the Mayor's project burns X, and later X of tax that would have been
+treasury, the Mayor's project burns X, and later X of VAT that would have been
 burned repays the player instead. The total burned is unchanged; it only
 happens sooner. `tests/test_government.py: SupplyTests` runs that cycle and
 checks it.
@@ -104,7 +112,7 @@ checks it.
 4.76% - of what repays it, and that currency, which would have been burned,
 goes to a player. That ceiling is what `MAX_BOND_RATE_PERCENT` exists to hold.
 
-At 100% tax, machines stop levelling from use entirely and level only as fast
+At 100% Fee VAT, machines stop levelling from use entirely and level only as fast
 as the Mayor funds them. That is a political choice the design leaves to the
 server.
 
@@ -115,23 +123,23 @@ server.
   2026-08-30 production backup no server's players held more than 77.46
   between them. Revisit against live data as servers grow.
 - **The premium** is fixed at sale; a later rate change affects only later
-  bonds. A running rate could grow a debt faster than a low tax repays it.
+  bonds. A running rate could grow a debt faster than a low VAT repays it.
 - **The cap:** a sale is refused if the debt still owed to active creditors
-  plus the new bond (premium included) would exceed the tax collected over the
+  plus the new bond (premium included) would exceed the VAT collected over the
   previous `DEBT_CAP_DAYS` (7) complete game days - "a server can repay
   everything within a week". Today is excluded: it is not over. A server with
-  no tax history cannot sell bonds at all, so a new government's first week is
+  no VAT history cannot sell bonds at all, so a new government's first week is
   bond-free. Checked when the Mayor opens a sale, enforced at every purchase.
 - **Sales** belong to a Mayor: `/mayor bonds <amount>` opens one (replacing any
   open sale), and it is cancelled when the Mayor changes. The debt belongs to
   the server and carries over.
-- **Repayment:** while anything is owed to active creditors, *all* tax goes to
+- **Repayment:** while anything is owed to active creditors, *all* VAT goes to
   the repayment pool, and once an hour the pool is split pro-rata on each
   creditor's **remaining** balance - so every active creditor is repaid by the
   same final payout - in whole cents by `apportion()`, the same function that
   splits a bet's pot. The fraction of a cent it cannot split waits for the next
   payout. Once everybody active is repaid, the rest of the pool moves to the
-  treasury and new tax follows it.
+  treasury and new VAT follows it.
 - **Officeholders may buy bonds.** Repayment is pro-rata, so nobody is paid
   first; the premium leak is capped either way.
 - **Leaving freezes, never voids.** A departed creditor's bonds are skipped by
@@ -170,7 +178,7 @@ machine by levelling it means climbing from level L to 2L, which on
 97,500 from level 4 and 2,440,625 from level 5. Against income it is not: in
 the production backups of 2026-08-18 and 2026-08-30 (11.14 days apart; live
 figures) the busiest server banked 85.3 of fees a week, so 1,000 is 11.7 weeks
-of its entire fee flow at 100% tax. That was judged right for a feature meant
+of its entire fee flow at 100% Fee VAT. That was judged right for a feature meant
 to be a large, congested server's multi-week goal.
 
 Enhancements raise speed only, not the queue cap.
@@ -212,6 +220,6 @@ multiplies with enhancements.
 ## 6. Ruled out
 
 - **A lottery seeded from the treasury.** It would be the one project that is
-  not a burn - tax money handed to one player - and was removed from this
+  not a burn - VAT money handed to one player - and was removed from this
   feature set. A `/lottery` command may come separately.
 - **Voiding debts when a creditor leaves** - see Bonds.

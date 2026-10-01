@@ -66,7 +66,7 @@ from utils.government import (
     pay_bondholders,
     set_bond_rate,
     set_fee_multiplier,
-    set_tax,
+    set_fee_vat,
     start_bonanza,
     tax_collected,
 )
@@ -120,7 +120,7 @@ class _GovernmentTestCase(unittest.IsolatedAsyncioTestCase):
             await charge_machine_fee(tx, GUILD, user, machine, amount, now)
 
     async def record_tax_days_ago(self, amount, days, now=THURSDAY):
-        """Tax collected `days` game days before `now`, without the fee."""
+        """VAT collected `days` game days before `now`, without the fee."""
         day = (now.astimezone(timezone(timedelta(hours=-7))).date() - timedelta(days=days)).isoformat()
         await self.db.execute(
             "INSERT INTO government_tax_daily (guild_id, day, amount) VALUES (?, ?, ?) "
@@ -153,7 +153,7 @@ class FeeTaxTests(_GovernmentTestCase):
         self.assertAlmostEqual(cfg["furnace_fees_collected"], 2.0)
         self.assertEqual(cfg["treasury"], 0.0)
 
-    async def test_the_taxed_share_is_held_not_burned_and_levels_nothing(self):
+    async def test_the_vat_share_is_held_not_burned_and_levels_nothing(self):
         await self.set(tax_percent=25)
         await self.fee(4.0, now=THURSDAY)
         cfg = await self.cfg()
@@ -162,7 +162,7 @@ class FeeTaxTests(_GovernmentTestCase):
         self.assertAlmostEqual(cfg["treasury"], 1.0)
         self.assertAlmostEqual(await tax_collected(self.db, GUILD, 1, THURSDAY + timedelta(days=1)), 1.0)
 
-    async def test_a_full_tax_burns_and_banks_exactly_nothing(self):
+    async def test_a_full_fee_vat_burns_and_banks_exactly_nothing(self):
         await self.set(tax_percent=100)
         await self.fee(0.01)
         cfg = await self.cfg()
@@ -170,7 +170,7 @@ class FeeTaxTests(_GovernmentTestCase):
         self.assertEqual(cfg["furnace_fees_collected"], 0.0)
         self.assertAlmostEqual(cfg["treasury"], 0.01)
 
-    async def test_held_tax_still_counts_as_circulating(self):
+    async def test_held_vat_still_counts_as_circulating(self):
         before = await circulating_currency_for(self.db, GUILD)
         await self.set(tax_percent=50)
         await self.fee(10.0)
@@ -264,7 +264,7 @@ class TreasurerTests(_GovernmentTestCase):
             with self.subTest(actor=actor):
                 with self.assertRaises(GovernmentError):
                     async with self.db.transaction() as tx:
-                        await set_tax(tx, GUILD, actor, 10, THURSDAY)
+                        await set_fee_vat(tx, GUILD, actor, 10, THURSDAY)
 
     async def test_the_multiplier_must_be_one_of_the_steps(self):
         with self.assertRaises(GovernmentError):
@@ -287,22 +287,22 @@ class TreasurerTests(_GovernmentTestCase):
     async def test_the_game_day_turns_at_phoenix_midnight_not_utc(self):
         # 06:59 UTC Friday is still Thursday in Phoenix.
         async with self.db.transaction() as tx:
-            await set_tax(tx, GUILD, TREASURER_ID, 10, THURSDAY)
+            await set_fee_vat(tx, GUILD, TREASURER_ID, 10, THURSDAY)
         with self.assertRaises(GovernmentError):
             async with self.db.transaction() as tx:
-                await set_tax(tx, GUILD, TREASURER_ID, 20, datetime(2026, 9, 25, 6, 59, tzinfo=timezone.utc))
+                await set_fee_vat(tx, GUILD, TREASURER_ID, 20, datetime(2026, 9, 25, 6, 59, tzinfo=timezone.utc))
         async with self.db.transaction() as tx:
-            await set_tax(tx, GUILD, TREASURER_ID, 20, datetime(2026, 9, 25, 7, 0, tzinfo=timezone.utc))
+            await set_fee_vat(tx, GUILD, TREASURER_ID, 20, datetime(2026, 9, 25, 7, 0, tzinfo=timezone.utc))
 
-    async def test_tax_cannot_drop_below_the_rate_bonds_were_sold_at(self):
+    async def test_fee_vat_cannot_drop_below_the_rate_bonds_were_sold_at(self):
         await self.set(tax_percent=40)
         await self.open_sale(500)
         await self.buy(BOB, 500)
         with self.assertRaises(GovernmentError):
             async with self.db.transaction() as tx:
-                await set_tax(tx, GUILD, TREASURER_ID, 39, THURSDAY)
+                await set_fee_vat(tx, GUILD, TREASURER_ID, 39, THURSDAY)
         async with self.db.transaction() as tx:
-            await set_tax(tx, GUILD, TREASURER_ID, 60, THURSDAY)
+            await set_fee_vat(tx, GUILD, TREASURER_ID, 60, THURSDAY)
 
     async def test_the_bond_rate_is_capped(self):
         with self.assertRaises(GovernmentError):
@@ -742,7 +742,7 @@ class CogTests(_GovernmentTestCase):
 
     async def test_a_player_who_is_not_treasurer_is_refused_privately(self):
         i = FakeInteraction(ALICE)
-        await GovernmentCog.treasurer_tax.callback(self.cog, i, 10)
+        await GovernmentCog.treasurer_feevat.callback(self.cog, i, 10)
         self.assertIn("Only the Treasurer", i.refusal)
         self.assertTrue(i.response.send_message.call_args.kwargs["ephemeral"])
 
@@ -811,7 +811,7 @@ class CogTests(_GovernmentTestCase):
         machines = next(f for f in i.embed.fields if f.name.startswith("Machines")).value
         self.assertEqual(len(machines.splitlines()), 5)
         self.assertIn("Hydraulic Press", machines)
-        self.assertTrue(i.embed.title.startswith("Tax "))
+        self.assertTrue(i.embed.title.startswith("Fee VAT "))
 
     async def test_the_mayor_funds_slots_and_a_bond_is_bought(self):
         await self.set(treasury=10.0)

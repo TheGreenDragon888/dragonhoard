@@ -123,15 +123,16 @@ CREATE TABLE IF NOT EXISTS server_config (
     factory_enhancement_level       INTEGER NOT NULL DEFAULT 0,
     press_enhancement_level         INTEGER NOT NULL DEFAULT 0,
     scrapper_enhancement_level      INTEGER NOT NULL DEFAULT 0,
-    -- The share of every machine fee that goes to the government instead of
-    -- being burned, in whole percent, and the bond premium in whole percent.
+    -- The Fee VAT - the share of every machine fee that goes to the
+    -- government instead of being burned - in whole percent (named before it
+    -- was called a VAT), and the bond premium in whole percent.
     tax_percent          INTEGER NOT NULL DEFAULT 0,
     tax_changed          TEXT,
     bond_rate_percent    INTEGER NOT NULL DEFAULT 0,
     bond_rate_changed    TEXT,
     -- Currency the government holds. NOT burned: utils/db_helpers.py:
     -- circulating_currency adds both back, as it does order and bet escrow.
-    -- The treasury is what the Mayor spends; the repayment pool is tax
+    -- The treasury is what the Mayor spends; the repayment pool is VAT
     -- collected while the server owes bondholders, paid out hourly.
     treasury             REAL NOT NULL DEFAULT 0.0,
     repayment_pool       REAL NOT NULL DEFAULT 0.0,
@@ -775,7 +776,7 @@ CREATE TABLE IF NOT EXISTS government_votes (
     PRIMARY KEY (guild_id, voting_day, office, voter_id)
 );
 
--- A bond: currency a player lent the server, repaid out of tax.
+-- A bond: currency a player lent the server, repaid out of VAT.
 --
 -- Integer cents for the reason prediction_wagers.stake_cents is: repayment
 -- divides one pool between every creditor (utils/betting.py: apportion) and
@@ -784,8 +785,8 @@ CREATE TABLE IF NOT EXISTS government_votes (
 -- owed_cents is principal plus the premium, fixed at sale; remaining_cents is
 -- what is still to be paid. frozen marks a holder who has left the server:
 -- payouts skip them and the debt cap ignores them until they are back.
--- tax_percent_at_sale is what stops the Treasurer cutting taxes below the
--- rate the latest bond was sold under while debt is owed.
+-- tax_percent_at_sale is what stops the Treasurer cutting the Fee VAT below
+-- the rate the latest bond was sold under while debt is owed.
 CREATE TABLE IF NOT EXISTS government_bonds (
     bond_id             INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id            INTEGER NOT NULL,
@@ -804,8 +805,8 @@ CREATE TABLE IF NOT EXISTS government_bonds (
 CREATE INDEX IF NOT EXISTS idx_government_bonds_owed
     ON government_bonds (guild_id) WHERE remaining_cents > 0;
 
--- Tax collected per server per game day. What the bond debt cap is measured
--- against: debt may not exceed the previous 7 days' tax. Pruned past
+-- VAT collected per server per game day. What the bond debt cap is measured
+-- against: debt may not exceed the previous 7 days' VAT. Pruned past
 -- utils/government.py: TAX_HISTORY_DAYS.
 CREATE TABLE IF NOT EXISTS government_tax_daily (
     guild_id  INTEGER NOT NULL,

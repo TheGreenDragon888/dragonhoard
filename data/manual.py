@@ -886,10 +886,11 @@ _add(ManualSection(
         "Mayor until somebody votes for somebody else. The Mayor is decided first; if the "
         "Treasurer ballot's winner just became Mayor, the next one down gets it.\n\n"
         "**The Treasurer sets the money.** Each machine's fee is its default times "
-        + ", ".join(f"x{m:g}" for m in FEE_MULTIPLIERS) + ", and a **tax** of 0-100% of every "
-        "fee goes to the government instead of being destroyed. Each setting can change once "
-        "a day.\n\n"
-        "**The Mayor spends it.** Tax lands in the treasury, and the Mayor spends it on "
+        + ", ".join(f"x{m:g}" for m in FEE_MULTIPLIERS) + ", and a **Fee VAT** of 0-100% of every "
+        "fee goes to the government instead of being destroyed. It's a VAT, not a charge on "
+        "top: you pay the same fee whatever the rate, and the rate only decides how much of "
+        "it the government keeps. Each setting can change once a day.\n\n"
+        "**The Mayor spends it.** VAT lands in the treasury, and the Mayor spends it on "
         "projects: funding a machine's level, an **Infrastructure Enhancement** (doubles one "
         f"machine's speed on top of its level - {ENHANCEMENT_PRICE_BASE:,.0f} for the first, "
         f"{ENHANCEMENT_PRICE_STEP} times as much for each after), a **Mining Slot "
@@ -901,15 +902,15 @@ _add(ManualSection(
     ),
     commands=(
         ManualCommand("/government status", "/government status",
-                      "Who holds office, the fees and tax, the treasury and the debt, and what "
+                      "Who holds office, the fees and VAT, the treasury and the debt, and what "
                       "each project costs right now."),
         ManualCommand("/vote mayor", "/vote mayor <member>", "Votes for a Mayor. Thursdays only."),
         ManualCommand("/vote treasurer", "/vote treasurer <member>", "Votes for a Treasurer. Thursdays only."),
         ManualCommand("/treasurer fee", "/treasurer fee <machine> <multiplier>",
                       "Sets one machine's fee as a multiple of its default. Treasurer only."),
-        ManualCommand("/treasurer tax", "/treasurer tax <percent>",
-                      "Sets the tax on every machine fee. Treasurer only. It can't drop below the "
-                      "rate bonds were last sold at while the server owes on them."),
+        ManualCommand("/treasurer feevat", "/treasurer feevat <percent>",
+                      "Sets the Fee VAT on every machine fee. Treasurer only. It can't drop below "
+                      "the rate bonds were last sold at while the server owes on them."),
         ManualCommand("/treasurer bondrate", "/treasurer bondrate <percent>",
                       f"Sets the premium new bonds repay, 0-{MAX_BOND_RATE_PERCENT}%. Treasurer only."),
         ManualCommand("/mayor fund", "/mayor fund <machine> <amount>",
@@ -929,11 +930,11 @@ _add(ManualSection(
     notes=(
         (
             "Bonds",
-            "A bond lends the server money now and is repaid out of tax: "
+            "A bond lends the server money now and is repaid out of VAT: "
             + ", ".join(format_bond(c) for c in BOND_DENOMINATIONS_CENTS) + ", plus the "
             "Treasurer's premium, fixed when you buy. While the server owes anything, **all** "
-            "of its tax repays bondholders - every hour, split in proportion to what each is "
-            f"still owed. The server can't owe more than its last {DEBT_CAP_DAYS} days of tax. "
+            "of its VAT repays bondholders - every hour, split in proportion to what each is "
+            f"still owed. The server can't owe more than its last {DEBT_CAP_DAYS} days of VAT. "
             "Leave the server and your bonds are frozen, not lost: they pick up again when you "
             "come back.",
         ),

@@ -462,7 +462,7 @@ def circulating_currency(
     server whose members had a large bet running would otherwise look like one
     that had just burned the stake.
 
-    So is the government's money (1.4). Tax and bond sales leave players'
+    So is the government's money (1.4). VAT and bond sales leave players'
     balances for the treasury or the repayment pool, and nothing is burned
     until the Mayor spends it on a project - repayments go back to players
     untouched (docs/government.md, Money flow).
@@ -668,8 +668,8 @@ async def bank_infrastructure_fee(
     find every one of them again.
 
     Charging the player is deliberately NOT part of this. A fee reaches here
-    through utils/government.py: charge_machine_fee (the untaxed share of a
-    fee, burned), through /donate or through a Mayor's machine funding (burns
+    through utils/government.py: charge_machine_fee (the share of a
+    fee left after VAT, burned), through /donate or through a Mayor's machine funding (burns
     recorded by their callers), and folding those together would mean the
     callers passing a flag to skip half the function.
     """

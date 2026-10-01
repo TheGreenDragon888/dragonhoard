@@ -145,7 +145,7 @@ that render those numbers to a player take a `unit` argument for that reason
 
 Every fee a cog charges goes through `charge_machine_fee`
 (utils/government.py), which takes it from the player, holds the Treasurer's
-tax share for the government, and burns and banks the rest through
+Fee VAT share for the government, and burns and banks the rest through
 `bank_infrastructure_fee` - the single place a fee turns into progress: it
 credits `<machine>_fees_collected`, re-levels that machine, and re-checks the
 server's mining slots. Do not write either step in a cog. Mining slots (1.3) are the
@@ -170,7 +170,7 @@ an elected Mayor and Treasurer. Admins have no say in it - that is why
 clock, counted at the midnight that ends it, both lazily by any government
 command and by an hourly loop that also pays bondholders. The rule the module
 keeps: **currency leaves the government only as a burn or a bond repayment.**
-Tax is held, not burned, in `treasury` or `repayment_pool`, so
+VAT is held, not burned, in `treasury` or `repayment_pool`, so
 `circulating_currency` counts both (the same argument as order escrow);
 `spend_treasury` is the one way money leaves the treasury, and every caller is
 a project, so every such payment is a burn. The bond premium is the one leak.

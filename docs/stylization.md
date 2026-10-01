@@ -110,7 +110,7 @@ a trade answered with a paragraph of prose instead.
 ## Figures, not explanations
 
 A status page or receipt carries figures. What they mean - how GDP is counted,
-where tax goes, how bonds are repaid - is written once, on the feature's page
+where VAT goes, how bonds are repaid - is written once, on the feature's page
 of `/help` (`data/manual.py`), and a footer note points there when a reader
 might need it. Repeating the explanation on the embed made every reader pay
 for it on every command, and 1.4's embeds had grown sentences for each.

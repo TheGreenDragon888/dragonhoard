@@ -73,7 +73,7 @@ def setup_guide_embed(guild_name: str) -> discord.Embed:
         value=(
             "```/vote mayor <member>\n/vote treasurer <member>```"
             "Every Thursday your players elect a Mayor and a Treasurer. The Treasurer sets "
-            "what the machines charge and the tax on it; the Mayor spends the tax on "
+            "what the machines charge and the VAT on it; the Mayor spends the VAT on "
             "projects. Admins don't set either - `/government status` shows who does."
         ),
         inline=False,

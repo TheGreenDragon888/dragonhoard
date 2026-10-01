@@ -1,7 +1,7 @@
 """
 utils/government.py
 
-The server government (1.4): an elected Mayor and Treasurer, the tax that
+The server government (1.4): an elected Mayor and Treasurer, the VAT that
 funds them, the bonds that let them spend ahead of it, and the projects they
 spend on. See docs/government.md for the design and the reasoning behind every
 number here; cogs/government.py owns the slash commands and the embeds.
@@ -13,8 +13,8 @@ connection.
 THE ONE RULE THIS MODULE EXISTS TO KEEP: currency leaves the government only as
 a burn or as a bond repayment.
 
-  A fee used to be burned outright. Now the Treasurer's tax diverts a share of
-  it, and that share is HELD - in the treasury, or in the repayment pool while
+  A fee used to be burned outright. Now the Treasurer's Fee VAT diverts a share
+  of it, and that share is HELD - in the treasury, or in the repayment pool while
   the server owes bondholders - rather than burned. utils/db_helpers.py:
   circulating_currency counts both, the way it counts order and bet escrow.
 
@@ -79,7 +79,11 @@ OFFICE_LABELS = {MAYOR: "Mayor", TREASURER: "Treasurer"}
 # utils/formatting.py: format_exact_price shows in full.
 FEE_MULTIPLIERS = (0.25, 0.5, 0.625, 0.8, 1.0, 1.25, 1.6, 2.0, 4.0)
 
-MAX_TAX_PERCENT = 100
+# The Fee VAT: the share of every machine fee the government keeps. It is a
+# VAT rather than a tax on top - the player pays the same fee at any rate, and
+# the rate only decides how much of it is held instead of burned. Stored in
+# server_config.tax_percent, the column's name from before it was called that.
+MAX_FEE_VAT_PERCENT = 100
 # The ceiling on the bond premium. It is the only currency this whole feature
 # lets escape being burned, so it is what bounds the leak (see the module
 # docstring).
@@ -241,7 +245,7 @@ async def charge_machine_fee(
     percent = cfg["tax_percent"] if cfg else 0
     # 100% is special-cased so the untaxed share is exactly zero rather than
     # whatever amount - amount * 100 / 100 rounds to.
-    tax = amount if percent >= MAX_TAX_PERCENT else amount * percent / 100
+    tax = amount if percent >= MAX_FEE_VAT_PERCENT else amount * percent / 100
     kept = amount - tax
 
     await record_burned(db, guild_id, kept)
@@ -331,10 +335,10 @@ async def set_fee_multiplier(
     )
 
 
-async def tax_floor(db: _Executor, guild_id: int) -> int:
-    """The lowest the tax rate may be set while the server owes active
+async def fee_vat_floor(db: _Executor, guild_id: int) -> int:
+    """The lowest the Fee VAT may be set while the server owes active
     creditors: the rate in force when the most recent bond still owed was sold.
-    Bondholders lent against that tax, and it is the only thing that repays
+    Bondholders lent against that VAT, and it is the only thing that repays
     them."""
     row = await db.fetchone(
         f"SELECT tax_percent_at_sale FROM government_bonds WHERE guild_id = ? "
@@ -344,17 +348,17 @@ async def tax_floor(db: _Executor, guild_id: int) -> int:
     return row["tax_percent_at_sale"] if row else 0
 
 
-async def set_tax(tx: _Executor, guild_id: int, actor_id: int, percent: int, now: datetime | None = None) -> None:
-    if not 0 <= percent <= MAX_TAX_PERCENT:
-        raise GovernmentError(f"The tax rate must be between 0% and {MAX_TAX_PERCENT}%.")
+async def set_fee_vat(tx: _Executor, guild_id: int, actor_id: int, percent: int, now: datetime | None = None) -> None:
+    if not 0 <= percent <= MAX_FEE_VAT_PERCENT:
+        raise GovernmentError(f"The Fee VAT must be between 0% and {MAX_FEE_VAT_PERCENT}%.")
     await ensure_server_row(tx, guild_id)
     await require_office(tx, guild_id, actor_id, TREASURER)
     row = await tx.fetchone("SELECT tax_changed FROM server_config WHERE guild_id = ?", (guild_id,))
-    _refuse_second_change(row["tax_changed"], "tax rate", now)
-    floor = await tax_floor(tx, guild_id)
+    _refuse_second_change(row["tax_changed"], "Fee VAT", now)
+    floor = await fee_vat_floor(tx, guild_id)
     if percent < floor:
         raise GovernmentError(
-            f"The server owes bondholders who lent at a {floor}% tax, so the tax rate "
+            f"The server owes bondholders who lent at a {floor}% Fee VAT, so the Fee VAT "
             f"can't go below {floor}% until they are repaid."
         )
     await tx.execute(
@@ -447,7 +451,7 @@ async def open_bond_sale(
         if owed_if_sold > room:
             raise GovernmentError(
                 f"Selling that much would leave the server owing more than it collected in "
-                f"tax over the last {DEBT_CAP_DAYS} days. It has room for "
+                f"VAT over the last {DEBT_CAP_DAYS} days. It has room for "
                 f"{await _money(tx, guild_id, max(0, room) / 100)} more debt, interest included."
             )
     await tx.execute(
@@ -484,7 +488,7 @@ async def buy_bond(
     room = await debt_cap_cents(tx, guild_id, now) - await outstanding_debt_cents(tx, guild_id)
     if owed > room:
         raise GovernmentError(
-            f"The server can't take on that much debt: it may owe no more than its tax over "
+            f"The server can't take on that much debt: it may owe no more than its VAT over "
             f"the last {DEBT_CAP_DAYS} days, and has room for {await _money(tx, guild_id, max(0, room) / 100)}, "
             f"interest included."
         )
@@ -1057,7 +1061,7 @@ async def guilds_with_bonanza(db: _Executor, now: datetime | None = None) -> set
 class GovernmentStatus(NamedTuple):
     mayor: int | None
     treasurer: int | None
-    tax_percent: int
+    fee_vat_percent: int
     bond_rate_percent: int
     multipliers: dict[str, float]
     enhancements: dict[str, int]
@@ -1076,7 +1080,7 @@ async def government_status(db: _Executor, guild_id: int, now: datetime | None =
     return GovernmentStatus(
         mayor=cfg["mayor_id"],
         treasurer=cfg["treasurer_id"],
-        tax_percent=cfg["tax_percent"],
+        fee_vat_percent=cfg["tax_percent"],
         bond_rate_percent=cfg["bond_rate_percent"],
         multipliers={m: cfg[f"{m}_fee_multiplier"] for m in MACHINES},
         enhancements={m: cfg[f"{m}_enhancement_level"] for m in MACHINES},
