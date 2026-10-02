@@ -1643,9 +1643,6 @@ class EconomyCog(commands.Cog):
         embed.description = (
             f"Your balance: {format_currency(balance, currency_emoji)}"
         )
-        tax_rate = await market_tax_rate(self.db, interaction.guild_id)
-        if tax_rate > 0:
-            embed.description += f" · Market Tax {format_percent(tax_rate)} on trades between players"
         add_multi_field(embed, f"Server · Sell · Buy · Stock · {currency_emoji} each", lines)
 
         # The player books. Aggregated per material rather than listed row by
