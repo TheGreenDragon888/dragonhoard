@@ -79,6 +79,7 @@ from utils.receipts import (
     material_line,
 )
 from utils.guild_helpers import human_member_count
+from utils.government import format_vat, market_vat_rate, market_vat_units, pay_market_seller
 from utils.market_book import (
     SERVER,
     listed_drills,
@@ -868,6 +869,9 @@ class EconomyCog(commands.Cog):
 
                 total_value = fills_total(fills)
                 to_server = server_quantity(fills)
+                # Read once, so every leg of this trade is charged one rate.
+                vat_rate = await market_vat_rate(tx, interaction.guild_id)
+                vat_total = 0.0
 
                 await deduct_user_quantity(tx, interaction.user.id, item, quantity)
 
@@ -877,16 +881,20 @@ class EconomyCog(commands.Cog):
                         # currency for goods that enter its storage.
                         await adjust_server_stock(tx, interaction.guild_id, item, fill.quantity)
                         await record_minted(tx, interaction.guild_id, fill.total)
+                        await adjust_currency_balance(
+                            tx, interaction.guild_id, interaction.user.id, fill.total
+                        )
                     else:
                         # A player leg mints nothing: the buyer escrowed this
                         # currency when they placed the bid, and it moves from
-                        # that escrow to the seller. The goods go straight to
-                        # the buyer.
+                        # that escrow to the seller, less the Market VAT. The
+                        # goods go straight to the buyer.
                         await consume_order(tx, fill.row_id, fill.quantity)
                         await adjust_user_quantity(tx, fill.counterparty, item, fill.quantity)
-                    await adjust_currency_balance(
-                        tx, interaction.guild_id, interaction.user.id, fill.total
-                    )
+                        vat_total += await pay_market_seller(
+                            tx, interaction.guild_id, interaction.user.id,
+                            fill.price_units * fill.quantity, vat_rate,
+                        )
 
                 # ONLY the server's share. A player-to-player sale does not
                 # remove goods from the player sector, so crediting the board
@@ -921,6 +929,11 @@ class EconomyCog(commands.Cog):
         counterparty_lines = fill_lines(fills, currency_emoji, "to")
         if counterparty_lines:
             description += "\n" + "\n".join(counterparty_lines)
+        if vat_total > 0:
+            description += (
+                f"\n· {format_currency(vat_total, currency_emoji)} of that was "
+                f"{format_vat(vat_rate)} Market VAT"
+            )
         if completions > 0:
             # A second line on the same description rather than a separate
             # field - one sale triggering two payouts is a single event, not
@@ -941,10 +954,10 @@ class EconomyCog(commands.Cog):
             material_remaining=remaining,
             material_gained=False,
             currency_field="Received",
-            # Includes the job board bonus, if one landed - balance_after
-            # already reflects both credits, and this field is the amount
-            # that moved to get there, not just the sale's own half of it.
-            currency_amount=total_value + bonus,
+            # Includes the job board bonus, if one landed, and leaves out the
+            # Market VAT - balance_after already reflects both, and this field
+            # is the amount that moved to get there, not the sale's price.
+            currency_amount=total_value - vat_total + bonus,
             balance_after=new_balance,
             currency_gained=True,
             currency_emoji=currency_emoji,
@@ -1000,6 +1013,7 @@ class EconomyCog(commands.Cog):
                     return
 
                 total_cost = fills_total(fills)
+                vat_rate = await market_vat_rate(tx, interaction.guild_id)
                 balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
                 if balance < total_cost:
                     await interaction.response.send_message(
@@ -1022,10 +1036,12 @@ class EconomyCog(commands.Cog):
                     else:
                         # A player leg burns nothing. The goods were escrowed
                         # out of the seller's inventory when they listed them,
-                        # so only the currency moves here.
+                        # so only the currency moves here - to the seller, less
+                        # the Market VAT. The buyer paid the listed price.
                         await consume_listing(tx, fill.row_id, fill.quantity)
-                        await adjust_currency_balance(
-                            tx, interaction.guild_id, fill.counterparty, fill.total
+                        await pay_market_seller(
+                            tx, interaction.guild_id, fill.counterparty,
+                            fill.price_units * fill.quantity, vat_rate,
                         )
                     await adjust_user_quantity(tx, interaction.user.id, item, fill.quantity)
 
@@ -1108,7 +1124,8 @@ class EconomyCog(commands.Cog):
         The drill keeps its level, container and identity - it is the same
         drills row throughout, which is the whole reason a drill is listed by
         id rather than sold as a stack. Nothing is minted or burned; this is a
-        transfer between two players.
+        transfer between two players, with the Market VAT held out of the
+        seller's share.
         """
         try:
             listing_id = int(value[len(LISTING_VALUE_PREFIX):])
@@ -1154,7 +1171,10 @@ class EconomyCog(commands.Cog):
                     "SELECT * FROM drills WHERE drill_id = ?", (listing["drill_id"],)
                 )
                 await deduct_currency_balance(tx, interaction.guild_id, interaction.user.id, cost)
-                await adjust_currency_balance(tx, interaction.guild_id, listing["seller_id"], cost)
+                await pay_market_seller(
+                    tx, interaction.guild_id, listing["seller_id"], listing["price_units"],
+                    await market_vat_rate(tx, interaction.guild_id),
+                )
                 # Guarded on listed_id so two buyers inside one write lock
                 # cannot both claim it - the same shape as the claim that
                 # listed it in the first place.
@@ -1235,6 +1255,7 @@ class EconomyCog(commands.Cog):
                 )
                 if not claimed:
                     raise InsufficientQuantity(f"drill {drill_id} was taken while listing")
+                vat_rate = await market_vat_rate(tx, interaction.guild_id)
         except EntryLimitReached as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
@@ -1250,10 +1271,24 @@ class EconomyCog(commands.Cog):
             "🏷️ Listed", MARKET_COLOR,
             f"Listed {drill_emoji(row)} **{drill_label(row)}**. It comes off the market "
             f"{entry_expiry_text()} if it hasn't sold.",
-            [("Asking", f"{format_exact_currency(player_price_total(price_units, 1), currency_emoji)}")],
+            [("Asking", f"{format_exact_currency(player_price_total(price_units, 1), currency_emoji)}")]
+            + self._after_vat_field(price_units, vat_rate, currency_emoji),
             footer_note="/market cancel takes it back",
         )
         await respond(interaction, self.db, embed=embed)
+
+    @staticmethod
+    def _after_vat_field(gross_units: int, vat_rate: float, currency_emoji: str | None):
+        """A listing receipt's field for what the seller would receive if the
+        whole listing sold at today's Market VAT - none while there is no VAT.
+        Only today's: the VAT is charged at the rate in force when it sells."""
+        if vat_rate <= 0:
+            return []
+        net_units = gross_units - market_vat_units(gross_units, vat_rate)
+        return [(
+            f"You receive · {format_vat(vat_rate)} Market VAT today",
+            format_exact_currency(player_price_total(net_units, 1), currency_emoji),
+        )]
 
     async def _list_material(
         self, interaction: discord.Interaction, item: str, quantity: int, price_units: int
@@ -1296,6 +1331,7 @@ class EconomyCog(commands.Cog):
                      ENTRY_LIFETIME_MODIFIER),
                 )
                 remaining = await get_user_quantity(tx, interaction.user.id, item)
+                vat_rate = await market_vat_rate(tx, interaction.guild_id)
         except EntryLimitReached as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
@@ -1318,7 +1354,7 @@ class EconomyCog(commands.Cog):
                     + (f" ({format_price(player_price_total(price_units, quantity))} for all)"
                        if quantity > 1 else "")
                 )),
-            ],
+            ] + self._after_vat_field(price_units * quantity, vat_rate, currency_emoji),
             footer_note="/market cancel takes it back",
         )
         await respond(interaction, self.db, embed=embed)
@@ -1607,6 +1643,9 @@ class EconomyCog(commands.Cog):
         embed.description = (
             f"Your balance: {format_currency(balance, currency_emoji)}"
         )
+        vat_rate = await market_vat_rate(self.db, interaction.guild_id)
+        if vat_rate > 0:
+            embed.description += f" · Market VAT {format_vat(vat_rate)} on trades between players"
         add_multi_field(embed, f"Server · Sell · Buy · Stock · {currency_emoji} each", lines)
 
         # The player books. Aggregated per material rather than listed row by

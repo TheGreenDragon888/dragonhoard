@@ -130,6 +130,11 @@ CREATE TABLE IF NOT EXISTS server_config (
     tax_changed          TEXT,
     bond_rate_percent    INTEGER NOT NULL DEFAULT 0,
     bond_rate_changed    TEXT,
+    -- The Market VAT: the share of every player-to-player trade the government
+    -- keeps, out of what the seller receives. One of
+    -- utils/government.py: MARKET_VAT_PERCENTS, which are not all whole.
+    market_vat_percent   REAL NOT NULL DEFAULT 0.0,
+    market_vat_changed   TEXT,
     -- Currency the government holds. NOT burned: utils/db_helpers.py:
     -- circulating_currency adds both back, as it does order and bet escrow.
     -- The treasury is what the Mayor spends; the repayment pool is VAT
@@ -785,8 +790,9 @@ CREATE TABLE IF NOT EXISTS government_votes (
 -- owed_cents is principal plus the premium, fixed at sale; remaining_cents is
 -- what is still to be paid. frozen marks a holder who has left the server:
 -- payouts skip them and the debt cap ignores them until they are back.
--- tax_percent_at_sale is what stops the Treasurer cutting the Fee VAT below
--- the rate the latest bond was sold under while debt is owed.
+-- tax_percent_at_sale and market_vat_percent_at_sale are what stop the
+-- Treasurer cutting either VAT below the rate the latest bond was sold under
+-- while debt is owed.
 CREATE TABLE IF NOT EXISTS government_bonds (
     bond_id             INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id            INTEGER NOT NULL,
@@ -796,6 +802,7 @@ CREATE TABLE IF NOT EXISTS government_bonds (
     owed_cents          INTEGER NOT NULL,
     remaining_cents     INTEGER NOT NULL CHECK (remaining_cents >= 0),
     tax_percent_at_sale INTEGER NOT NULL,
+    market_vat_percent_at_sale REAL NOT NULL DEFAULT 0.0,
     frozen              INTEGER NOT NULL DEFAULT 0,
     sold_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );

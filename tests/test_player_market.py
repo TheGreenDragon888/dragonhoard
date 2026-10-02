@@ -907,6 +907,140 @@ class RoutingTests(MarketTestCase):
         self.assertEqual(await self.db.fetchall("SELECT * FROM market_listings"), [])
 
 
+
+class MarketVatTests(MarketTestCase):
+    """The Market VAT (utils/government.py: pay_market_seller): a share of every
+    player-to-player trade the government holds, out of what the SELLER
+    receives. The buyer pays the quoted price at any rate, and a trade with the
+    server carries none."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await self.set_vat(10.0)
+
+    async def set_vat(self, percent):
+        await self.db.execute(
+            "UPDATE server_config SET market_vat_percent = ? WHERE guild_id = ?", (percent, GUILD)
+        )
+
+    async def held(self):
+        row = await self.db.fetchone(
+            "SELECT treasury, repayment_pool FROM server_config WHERE guild_id = ?", (GUILD,)
+        )
+        return row["treasury"] + row["repayment_pool"]
+
+    async def test_buying_from_a_listing_pays_the_seller_less_the_vat(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        await self.list_item(BOB, "wiring", 0.50, 10)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
+
+        await self.buy(ALICE, "wiring", 10)
+
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), 95.0,
+                               msg="the buyer pays the listed price, nothing on top")
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), 4.5)
+        self.assertAlmostEqual(await self.held(), 0.5)
+
+    async def test_selling_into_a_bid_pays_the_seller_less_the_vat(self):
+        await adjust_currency_balance(self.db, GUILD, BOB, 100.0)
+        await self.order(BOB, "wiring", 10, 0.50)
+        await adjust_user_quantity(self.db, ALICE, "wiring", 10)
+
+        interaction = await self.sell(ALICE, "wiring", 10)
+
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), 4.5)
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), 95.0)
+        self.assertAlmostEqual(await self.held(), 0.5)
+        kwargs = interaction.response.send_message.call_args.kwargs
+        embed = (kwargs.get("embeds") or [kwargs["embed"]])[0]
+        received = next(f for f in embed.fields if f.name == "Received")
+        self.assertIn("4.50", received.value, "the receipt shows what actually arrived")
+        self.assertIn("10% Market VAT", embed.description)
+
+    async def test_a_listed_drill_pays_its_seller_less_the_vat(self):
+        await self.list_drill_directly(BOB, 250.0)
+        row = await self.db.fetchone("SELECT listing_id FROM market_listings")
+        await adjust_currency_balance(self.db, GUILD, ALICE, 1000.0)
+
+        await self.buy(ALICE, f"listing:{row['listing_id']}", 1)
+
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), 750.0)
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), 225.0)
+        self.assertAlmostEqual(await self.held(), 25.0)
+
+    async def test_a_sale_to_the_server_carries_none(self):
+        material = next(iter(SERVER_ONLY_MATERIALS))
+        await adjust_user_quantity(self.db, ALICE, material, 1)
+        minted_before, _ = await self.totals()
+        await self.sell(ALICE, material, 1)
+        minted_after, _ = await self.totals()
+        self.assertAlmostEqual(minted_after - minted_before, sale_unit_price(material))
+        self.assertEqual(await self.held(), 0.0)
+
+    async def test_a_purchase_from_the_server_carries_none(self):
+        material = next(iter(SERVER_ONLY_MATERIALS))
+        await adjust_server_stock(self.db, GUILD, material, 5)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
+        _, burned_before = await self.totals()
+        await self.buy(ALICE, material, 1)
+        _, burned_after = await self.totals()
+        self.assertAlmostEqual(burned_after - burned_before, 100.0 - await get_currency_balance(self.db, GUILD, ALICE))
+        self.assertEqual(await self.held(), 0.0)
+
+    async def test_the_vat_mints_and_burns_nothing(self):
+        await adjust_user_quantity(self.db, BOB, "ruby", 2)
+        await self.list_item(BOB, "ruby", 4000.0, 2)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 10_000.0)
+        circulating_before = await circulating_currency_for(self.db, GUILD)
+        totals_before = await self.totals()
+
+        await self.buy(ALICE, "ruby", 2)
+
+        self.assertEqual(await self.totals(), totals_before)
+        self.assertAlmostEqual(
+            await circulating_currency_for(self.db, GUILD), circulating_before, places=9,
+            msg="held VAT is still in circulation",
+        )
+
+    async def test_the_rate_is_the_one_in_force_when_it_sells(self):
+        await self.set_vat(0.0)
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        await self.list_item(BOB, "wiring", 1.00, 10)
+        await self.set_vat(20.0)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
+
+        await self.buy(ALICE, "wiring", 10)
+
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), 8.0)
+
+    async def test_a_fraction_of_a_unit_stays_with_the_seller(self):
+        # 3 units at 6.25% is 0.1875 of a unit of VAT, which rounds down to 0.
+        await self.set_vat(6.25)
+        await adjust_user_quantity(self.db, BOB, "wiring", 3)
+        await self.list_item(BOB, "wiring", 0.0001, 3)
+        await adjust_currency_balance(self.db, GUILD, ALICE, 1.0)
+
+        await self.buy(ALICE, "wiring", 3)
+
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), 0.0003)
+        self.assertEqual(await self.held(), 0.0)
+
+    async def test_the_listing_receipt_shows_what_the_seller_would_receive(self):
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        interaction = await self.list_item(BOB, "wiring", 0.50, 10)
+        kwargs = interaction.response.send_message.call_args.kwargs
+        embed = (kwargs.get("embeds") or [kwargs["embed"]])[0]
+        field = next(f for f in embed.fields if "Market VAT" in f.name)
+        self.assertIn("4.5", field.value)
+
+    async def test_no_vat_leaves_the_listing_receipt_as_it_was(self):
+        await self.set_vat(0.0)
+        await adjust_user_quantity(self.db, BOB, "wiring", 10)
+        interaction = await self.list_item(BOB, "wiring", 0.50, 10)
+        kwargs = interaction.response.send_message.call_args.kwargs
+        embed = (kwargs.get("embeds") or [kwargs["embed"]])[0]
+        self.assertFalse(any("Market VAT" in f.name for f in embed.fields))
+
 class ListedDrillTests(MarketTestCase):
     """A listed drill is escrowed, and every command that acts on a drill has
     to refuse it - otherwise it can be placed, upgraded or scrapped out from

@@ -2,7 +2,8 @@
 
 Every server elects a **Mayor** and a **Treasurer** each week. The Treasurer
 sets what the machines charge and how much of it the government keeps (the
-Fee VAT); the Mayor spends that VAT, and money borrowed against it, on
+Fee VAT), and how much of every trade between players it keeps (the Market
+VAT); the Mayor spends that VAT, and money borrowed against it, on
 projects. The purpose is community engagement - a server has something to
 argue about and organise around - and, for large servers, a way past the
 machine-level cost wall.
@@ -52,6 +53,7 @@ Tests: `tests/test_government.py`.
 | --- | --- | --- |
 | Fee multiplier, per machine | x0.25, x0.5, x0.625, x0.8, x1, x1.25, x1.6, x2, x4 | x1 |
 | Fee VAT | 0-100% | 0% |
+| Market VAT | 0%, 2.5%, 5%, 6.25%, 8%, 10%, 12.5%, 16%, 20%, 40%, 100% | 0% |
 | Bond rate (a one-time premium) | 0-5% | 0% |
 
 A machine's fee is its `config.py` default times its multiplier
@@ -81,6 +83,36 @@ burning. Taken out of the amount rather than added to it is what a VAT is. The
 column is still `server_config.tax_percent`; renaming it would have cost a
 migration and changed nothing a player sees.
 
+### The Market VAT
+
+A share of every **player-to-player** trade - a `/market buy` from a listing,
+a `/market sell` into a bid, a listed drill - held by the government exactly as
+Fee VAT is (`pay_market_seller`, the one place it is charged). It is a VAT for
+the same reason: it comes out of what the seller receives, and the buyer pays
+the price on the listing or the bid whatever the rate.
+
+- **Only between players.** Those are the trades the server facilitates rather
+  than takes part in. A sale to the server or a purchase from it is untouched,
+  so nothing here changes what mining and selling earn, or the job board's
+  arithmetic (docs/market.md section 1).
+- **Preset steps, not any number**, picked the way the fee multipliers are and
+  built from them: the fee ladder times ten (`MARKET_VAT_PERCENTS`). 10% sits
+  where x1 does, 5% to 20% splits each doubling in three with an exact inverse
+  for every raise, 2.5% and 40% are whole doublings beyond that, and 0% (off)
+  and 100% bound the range. Not every step is a whole percent, so the column
+  is a REAL, validated against the ladder as the multipliers are.
+- **No lock-in.** A trade is charged the rate in force when it happens, not the
+  rate when the listing or bid was posted - the same as a fee is charged at the
+  rate in force when the job is queued. The once-a-day limit applies to it like
+  every other setting.
+- **Rounding.** The VAT is computed per leg in whole `PLAYER_PRICE_SCALE`
+  units, rounded down (`market_vat_units`), so the seller's share and the VAT
+  add back up to exactly what the buyer paid.
+- **It repays bonds and counts toward the debt cap** like Fee VAT, through the
+  same `collect_tax`. Bondholders lend against it too, so it has its own floor
+  (`market_vat_floor`, from `government_bonds.market_vat_percent_at_sale`).
+  Bonds sold before it existed were lent against none and set no floor.
+
 Removing `/setup fee` discarded every server's custom fee. In the production
 backup of 2026-08-30 (`/opt/dragonhoard/data/backup-2026-08-30-022248.db`, a
 live figure not reproducible from this repo) that changed 7 of 24 servers,
@@ -94,7 +126,9 @@ including one that had switched the press off with a fee of 999.
   burned, banked to the machine's level and counted toward mining slots.
 - The VAT share is **held**, not burned: in the repayment pool while the
   server owes active creditors, in the treasury otherwise. It levels no
-  machine and counts toward nothing until the Mayor spends it.
+  machine and counts toward nothing until the Mayor spends it. The same goes
+  for Market VAT, which mints and burns nothing when it is taken: the buyer's
+  currency is split between the seller and the government.
 - `spend_treasury` is the only way money leaves the treasury, and every caller
   is a project, so every such payment is a burn (and counts toward mining
   slots). `pay_bondholders` is the only way money leaves the repayment pool.
@@ -107,6 +141,12 @@ treasury, the Mayor's project burns X, and later X of VAT that would have been
 burned repays the player instead. The total burned is unchanged; it only
 happens sooner. `tests/test_government.py: SupplyTests` runs that cycle and
 checks it.
+
+Market VAT is not part of that argument, because none of it would have been
+burned: without it, the seller would have kept it. So it is a new sink rather
+than an earlier one - what the Mayor spends of it is currency that leaves the
+economy where before it stayed in a player's balance, and what repays a bond
+goes from one player to another.
 
 **The one leak is the premium.** At the 5% cap a bond's premium is 5/105 -
 4.76% - of what repays it, and that currency, which would have been burned,

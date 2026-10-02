@@ -57,8 +57,10 @@ from utils.government import (
     BOND_DENOMINATIONS_CENTS,
     DEBT_CAP_DAYS,
     FEE_MULTIPLIERS,
+    MARKET_VAT_PERCENTS,
     MAX_BOND_RATE_PERCENT,
     VOTER_DRILL_DAYS,
+    format_vat,
 )
 
 # What one batch of Steel actually costs, for the blast furnace page below.
@@ -504,6 +506,10 @@ _add(ManualSection(
         "**Ores and smelted metals trade only with the server.** You can still sell and "
         "buy them, but not list or bid for them, so every sale can count toward the job "
         "board. Gemstones, components, containers and drills can go up at any price.\n\n"
+        "**Trades between players carry the Market VAT**, if your Treasurer has set one "
+        "(`/help government`). It comes out of what the seller receives - the buyer always "
+        "pays the price on the listing or the bid - and it's charged at whatever the rate is "
+        "when the trade happens. Selling to or buying from the server never carries it.\n\n"
         "**Selling is the only way currency comes into existence.** There's no payout for "
         "chatting and no daily handout - if you want money, you mine and you sell. Money "
         "leaves again through the fees you pay to the machines you use, and when "
@@ -889,7 +895,10 @@ _add(ManualSection(
         + ", ".join(f"x{m:g}" for m in FEE_MULTIPLIERS) + ", and a **Fee VAT** of 0-100% of every "
         "fee goes to the government instead of being destroyed. It's a VAT, not a charge on "
         "top: you pay the same fee whatever the rate, and the rate only decides how much of "
-        "it the government keeps. Each setting can change once a day.\n\n"
+        "it the government keeps. The Treasurer also sets a **Market VAT** of "
+        + ", ".join(format_vat(p) for p in MARKET_VAT_PERCENTS) + " on every trade between "
+        "players, taken out of what the seller receives. Each setting can change once a "
+        "day.\n\n"
         "**The Mayor spends it.** VAT lands in the treasury, and the Mayor spends it on "
         "projects: funding a machine's level, an **Infrastructure Enhancement** (doubles one "
         f"machine's speed on top of its level - {ENHANCEMENT_PRICE_BASE:,.0f} for the first, "
@@ -911,6 +920,10 @@ _add(ManualSection(
         ManualCommand("/treasurer feevat", "/treasurer feevat <percent>",
                       "Sets the Fee VAT on every machine fee. Treasurer only. It can't drop below "
                       "the rate bonds were last sold at while the server owes on them."),
+        ManualCommand("/treasurer marketvat", "/treasurer marketvat <percent>",
+                      "Sets the Market VAT on every trade between players. Treasurer only. It "
+                      "can't drop below the rate bonds were last sold at while the server owes "
+                      "on them."),
         ManualCommand("/treasurer bondrate", "/treasurer bondrate <percent>",
                       f"Sets the premium new bonds repay, 0-{MAX_BOND_RATE_PERCENT}%. Treasurer only."),
         ManualCommand("/mayor fund", "/mayor fund <machine> <amount>",
@@ -933,7 +946,7 @@ _add(ManualSection(
             "A bond lends the server money now and is repaid out of VAT: "
             + ", ".join(format_bond(c) for c in BOND_DENOMINATIONS_CENTS) + ", plus the "
             "Treasurer's premium, fixed when you buy. While the server owes anything, **all** "
-            "of its VAT repays bondholders - every hour, split in proportion to what each is "
+            "of both VATs repays bondholders - every hour, split in proportion to what each is "
             f"still owed. The server can't owe more than its last {DEBT_CAP_DAYS} days of VAT. "
             "Leave the server and your bonds are frozen, not lost: they pick up again when you "
             "come back.",

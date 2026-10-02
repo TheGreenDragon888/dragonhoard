@@ -42,6 +42,7 @@ from utils.db_helpers import (
 )
 from utils.government import (
     FEE_MULTIPLIERS,
+    MARKET_VAT_PERCENTS,
     MAYOR,
     TREASURER,
     GovernmentError,
@@ -66,7 +67,10 @@ from utils.government import (
     pay_bondholders,
     set_bond_rate,
     set_fee_multiplier,
+    market_vat_units,
+    pay_market_seller,
     set_fee_vat,
+    set_market_vat,
     start_bonanza,
     tax_collected,
 )
@@ -220,6 +224,82 @@ class FeeLadderTests(unittest.TestCase):
     def test_the_ladder_is_ascending_and_centred_on_the_default(self):
         self.assertEqual(list(FEE_MULTIPLIERS), sorted(FEE_MULTIPLIERS))
         self.assertEqual(FEE_MULTIPLIERS[len(FEE_MULTIPLIERS) // 2], 1.0)
+
+
+class MarketVatLadderTests(unittest.TestCase):
+    def test_it_is_the_fee_ladder_times_ten_between_off_and_all(self):
+        # The ladder the design chose: x1 sits at 10%, and 0% and 100% bound it.
+        self.assertEqual(
+            MARKET_VAT_PERCENTS, (0.0,) + tuple(m * 10 for m in FEE_MULTIPLIERS) + (100.0,)
+        )
+        self.assertEqual(list(MARKET_VAT_PERCENTS), sorted(MARKET_VAT_PERCENTS))
+
+    def test_the_middle_steps_have_exact_inverses_around_ten(self):
+        for percent in MARKET_VAT_PERCENTS:
+            if 5 <= percent <= 20:
+                with self.subTest(percent=percent):
+                    self.assertIn(100 / percent, MARKET_VAT_PERCENTS)
+
+    def test_the_seller_and_the_vat_add_back_to_the_price(self):
+        for percent in MARKET_VAT_PERCENTS:
+            for gross in (0, 1, 3, 7, 9_999, 10_000, 123_457, 10**12):
+                with self.subTest(percent=percent, gross=gross):
+                    vat = market_vat_units(gross, percent)
+                    self.assertGreaterEqual(vat, 0)
+                    # Never more than the rate, and never a whole unit less.
+                    self.assertLessEqual(vat * 100, gross * percent)
+                    self.assertGreater((vat + 1) * 100, gross * percent)
+
+    def test_all_of_it_is_all_of_it(self):
+        self.assertEqual(market_vat_units(12_345, 100.0), 12_345)
+
+
+class MarketVatTests(_GovernmentTestCase):
+    async def set_vat(self, percent, actor=TREASURER_ID, now=THURSDAY):
+        async with self.db.transaction() as tx:
+            await set_market_vat(tx, GUILD, actor, percent, now)
+
+    async def test_only_the_treasurer_may_set_it(self):
+        with self.assertRaises(GovernmentError):
+            await self.set_vat(10.0, actor=ALICE)
+        await self.set_vat(10.0)
+        self.assertEqual((await self.cfg())["market_vat_percent"], 10.0)
+
+    async def test_it_must_be_one_of_the_steps(self):
+        with self.assertRaises(GovernmentError):
+            await self.set_vat(7.0)
+
+    async def test_it_changes_once_per_game_day(self):
+        await self.set_vat(10.0)
+        with self.assertRaises(GovernmentError):
+            await self.set_vat(12.5, now=THURSDAY + timedelta(hours=1))
+        await self.set_vat(12.5, now=FRIDAY)
+        self.assertEqual((await self.cfg())["market_vat_percent"], 12.5)
+
+    async def test_it_cannot_drop_below_the_rate_bonds_were_sold_at(self):
+        await self.set(market_vat_percent=10.0)
+        await self.open_sale(500)
+        bond = await self.buy(BOB, 500)
+        row = await self.db.fetchone(
+            "SELECT market_vat_percent_at_sale FROM government_bonds WHERE bond_id = ?", (bond.bond_id,)
+        )
+        self.assertEqual(row["market_vat_percent_at_sale"], 10.0)
+        with self.assertRaises(GovernmentError):
+            await self.set_vat(8.0)
+        await self.set_vat(12.5)
+
+    async def test_it_repays_bondholders_and_counts_toward_the_cap(self):
+        await self.open_sale(500)
+        await self.buy(BOB, 500)
+        pool_before = (await self.cfg())["repayment_pool"]
+        async with self.db.transaction() as tx:
+            vat = await pay_market_seller(tx, GUILD, ALICE, 50_000, 10.0, THURSDAY)
+        self.assertAlmostEqual(vat, 0.5)
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, ALICE), STARTING_BALANCE + 4.5)
+        self.assertAlmostEqual((await self.cfg())["repayment_pool"] - pool_before, 0.5)
+        self.assertAlmostEqual(
+            await tax_collected(self.db, GUILD, 1, THURSDAY + timedelta(days=1)), 0.5
+        )
 
 
 class SupplyTests(_GovernmentTestCase):
@@ -771,6 +851,17 @@ class CogTests(_GovernmentTestCase):
                 self.assertIsNone(i.refusal)
                 self.assertEqual((await self.cfg())["furnace_fee_multiplier"], multiplier)
 
+    async def test_every_market_vat_step_can_be_chosen_through_the_command(self):
+        for percent in MARKET_VAT_PERCENTS:
+            with self.subTest(percent=percent):
+                await self.set(market_vat_changed=None)
+                i = FakeInteraction(TREASURER_ID)
+                await GovernmentCog.treasurer_marketvat.callback(
+                    self.cog, i, app_commands.Choice(name=f"{percent:g}%", value=str(percent)),
+                )
+                self.assertIsNone(i.refusal)
+                self.assertEqual((await self.cfg())["market_vat_percent"], percent)
+
     async def test_a_sub_cent_fee_is_quoted_exactly(self):
         i = FakeInteraction(TREASURER_ID)
         await GovernmentCog.treasurer_fee.callback(
@@ -812,6 +903,7 @@ class CogTests(_GovernmentTestCase):
         self.assertEqual(len(machines.splitlines()), 5)
         self.assertIn("Hydraulic Press", machines)
         self.assertTrue(i.embed.title.startswith("Fee VAT "))
+        self.assertIn("Market VAT 0%", i.embed.title)
 
     async def test_the_mayor_funds_slots_and_a_bond_is_bought(self):
         await self.set(treasury=10.0)

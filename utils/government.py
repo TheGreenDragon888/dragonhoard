@@ -18,6 +18,9 @@ a burn or as a bond repayment.
   the server owes bondholders - rather than burned. utils/db_helpers.py:
   circulating_currency counts both, the way it counts order and bet escrow.
 
+  The Market VAT is the same arrangement on player-to-player trades: a share
+  of what the seller would have received is held instead (pay_market_seller).
+
   Money leaves the treasury through spend_treasury and nothing else, and every
   caller of that is a project, so every such payment is a burn. Money leaves
   the repayment pool through pay_bondholders and nothing else. So over a whole
@@ -41,6 +44,7 @@ from data.materials import (
     MINING_SLOT_ENHANCEMENT_MULTIPLIER,
     bonanza_price,
     enhancement_price,
+    player_price_total,
 )
 from utils.betting import apportion
 from utils.db_helpers import (
@@ -84,6 +88,22 @@ FEE_MULTIPLIERS = (0.25, 0.5, 0.625, 0.8, 1.0, 1.25, 1.6, 2.0, 4.0)
 # the rate only decides how much of it is held instead of burned. Stored in
 # server_config.tax_percent, the column's name from before it was called that.
 MAX_FEE_VAT_PERCENT = 100
+
+# The Market VAT: the share of every player-to-player trade the government
+# keeps, taken out of what the seller receives - the buyer pays the price they
+# were quoted at any rate. Only trades between players carry it, because those
+# are the ones the server facilitates rather than takes part in; a sale to or a
+# purchase from the server is untouched. Charged at whatever rate is in force
+# when the trade happens - a listing does not lock in the rate it was posted
+# under.
+#
+# Fixed steps chosen the way FEE_MULTIPLIERS are, and in fact built from them:
+# the fee ladder times ten, so 10% sits where x1 does, 5% to 20% splits each
+# doubling in three with an exact inverse for every raise, and 2.5% and 40%
+# are whole doublings outside that. 0% switches it off, and 100% is the top of
+# the range. tests/test_government.py checks the ladder against the fee one.
+MARKET_VAT_PERCENTS = (0.0, 2.5, 5.0, 6.25, 8.0, 10.0, 12.5, 16.0, 20.0, 40.0, 100.0)
+MAX_MARKET_VAT_PERCENT = 100.0
 # The ceiling on the bond premium. It is the only currency this whole feature
 # lets escape being burned, so it is what bounds the leak (see the module
 # docstring).
@@ -253,6 +273,53 @@ async def charge_machine_fee(
     await collect_tax(db, guild_id, tax, now)
 
 
+def format_vat(percent: float) -> str:
+    """A VAT rate for a player to read: 10%, 6.25%."""
+    return f"{percent:g}%"
+
+
+def market_vat_units(gross_units: int, percent: float) -> int:
+    """The Market VAT on a trade worth `gross_units` (PLAYER_PRICE_SCALE units).
+
+    Integer throughout, in basis points, so the seller's share and the VAT are
+    both whole units and add back up to exactly what the buyer paid. Rounded
+    down, so a fraction of a unit stays with the seller. 100% is special-cased
+    for the reason charge_machine_fee's is.
+    """
+    if percent >= MAX_MARKET_VAT_PERCENT:
+        return gross_units
+    return gross_units * round(percent * 100) // 10_000
+
+
+async def market_vat_rate(db: _Executor, guild_id: int) -> float:
+    """The Market VAT in force. Read once per trade, inside its transaction,
+    so every leg of one trade is charged the same rate."""
+    row = await db.fetchone("SELECT market_vat_percent FROM server_config WHERE guild_id = ?", (guild_id,))
+    return row["market_vat_percent"] if row else 0.0
+
+
+async def pay_market_seller(
+    db: _Executor, guild_id: int, seller_id: int, gross_units: int, percent: float,
+    now: datetime | None = None,
+) -> float:
+    """Pays a player the proceeds of a player-to-player trade worth
+    `gross_units`, less the Market VAT, and holds the VAT through collect_tax -
+    into the repayment pool or the treasury, and toward the debt cap, exactly
+    as Fee VAT is. The one funnel every player-to-player payment passes
+    through. Returns the VAT taken, in currency.
+
+    Nothing is minted or burned: the buyer's currency is split between the
+    seller and the government, and circulating_currency counts both.
+    """
+    vat_units = market_vat_units(gross_units, percent)
+    await adjust_currency_balance(
+        db, guild_id, seller_id, player_price_total(gross_units - vat_units, 1)
+    )
+    vat = player_price_total(vat_units, 1)
+    await collect_tax(db, guild_id, vat, now)
+    return vat
+
+
 async def tax_collected(db: _Executor, guild_id: int, days: int, now: datetime | None = None) -> float:
     """The tax this server collected over the `days` game days before today.
     Today is left out: it is not over, and a cap that grew through the day
@@ -367,6 +434,41 @@ async def set_fee_vat(tx: _Executor, guild_id: int, actor_id: int, percent: int,
     )
 
 
+async def market_vat_floor(db: _Executor, guild_id: int) -> float:
+    """fee_vat_floor for the Market VAT. It repays bondholders as Fee VAT
+    does, so they lent against it too."""
+    row = await db.fetchone(
+        f"SELECT market_vat_percent_at_sale FROM government_bonds WHERE guild_id = ? "
+        f"AND {OWED_BONDS_SQL} AND frozen = 0 ORDER BY bond_id DESC LIMIT 1",
+        (guild_id,),
+    )
+    return row["market_vat_percent_at_sale"] if row else 0.0
+
+
+async def set_market_vat(
+    tx: _Executor, guild_id: int, actor_id: int, percent: float, now: datetime | None = None,
+) -> None:
+    if percent not in MARKET_VAT_PERCENTS:
+        raise GovernmentError(
+            "The Market VAT must be one of "
+            + ", ".join(format_vat(p) for p in MARKET_VAT_PERCENTS) + "."
+        )
+    await ensure_server_row(tx, guild_id)
+    await require_office(tx, guild_id, actor_id, TREASURER)
+    row = await tx.fetchone("SELECT market_vat_changed FROM server_config WHERE guild_id = ?", (guild_id,))
+    _refuse_second_change(row["market_vat_changed"], "Market VAT", now)
+    floor = await market_vat_floor(tx, guild_id)
+    if percent < floor:
+        raise GovernmentError(
+            f"The server owes bondholders who lent at a {format_vat(floor)} Market VAT, so the "
+            f"Market VAT can't go below {format_vat(floor)} until they are repaid."
+        )
+    await tx.execute(
+        "UPDATE server_config SET market_vat_percent = ?, market_vat_changed = ? WHERE guild_id = ?",
+        (percent, game_date(now), guild_id),
+    )
+
+
 async def set_bond_rate(tx: _Executor, guild_id: int, actor_id: int, percent: int, now: datetime | None = None) -> None:
     if not 0 <= percent <= MAX_BOND_RATE_PERCENT:
         raise GovernmentError(f"The bond rate must be between 0% and {MAX_BOND_RATE_PERCENT}%.")
@@ -474,7 +576,7 @@ async def buy_bond(
         raise GovernmentError("That isn't a bond denomination.")
     await ensure_server_row(tx, guild_id)
     cfg = await tx.fetchone(
-        "SELECT bond_sale_cents, bond_rate_percent, tax_percent FROM server_config "
+        "SELECT bond_sale_cents, bond_rate_percent, tax_percent, market_vat_percent FROM server_config "
         "WHERE guild_id = ?",
         (guild_id,),
     )
@@ -505,9 +607,10 @@ async def buy_bond(
     )
     bond_id = await tx.execute(
         "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
-        "owed_cents, remaining_cents, tax_percent_at_sale, sold_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "owed_cents, remaining_cents, tax_percent_at_sale, market_vat_percent_at_sale, sold_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (guild_id, buyer_id, denomination_cents, cfg["bond_rate_percent"], owed, owed,
-         cfg["tax_percent"], sqlite_timestamp(now or clock_now())),
+         cfg["tax_percent"], cfg["market_vat_percent"], sqlite_timestamp(now or clock_now())),
     )
     return BondPurchase(bond_id, denomination_cents, owed, cfg["bond_rate_percent"])
 
@@ -1062,6 +1165,7 @@ class GovernmentStatus(NamedTuple):
     mayor: int | None
     treasurer: int | None
     fee_vat_percent: int
+    market_vat_percent: float
     bond_rate_percent: int
     multipliers: dict[str, float]
     enhancements: dict[str, int]
@@ -1081,6 +1185,7 @@ async def government_status(db: _Executor, guild_id: int, now: datetime | None =
         mayor=cfg["mayor_id"],
         treasurer=cfg["treasurer_id"],
         fee_vat_percent=cfg["tax_percent"],
+        market_vat_percent=cfg["market_vat_percent"],
         bond_rate_percent=cfg["bond_rate_percent"],
         multipliers={m: cfg[f"{m}_fee_multiplier"] for m in MACHINES},
         enhancements={m: cfg[f"{m}_enhancement_level"] for m in MACHINES},

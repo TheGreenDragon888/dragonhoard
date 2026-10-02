@@ -69,6 +69,13 @@ Treasurer's fee multiplier (x0.25 to x4) sets how big the sink is in the first
 place, which until 1.4 was an admin's `/setup fee`. Held VAT is counted in
 circulation, like order and bet escrow, until it is spent.
 
+**The Market VAT is a new sink, not a delayed one.** The Treasurer can take a
+preset share of every player-to-player trade, out of what the seller receives.
+Trades with the server never carry it, so the faucet - selling to the server -
+pays exactly what it did, and nothing in section 1's job board argument moves.
+What the Mayor spends of it burns currency that would otherwise have stayed
+with a player. See docs/government.md section 2.
+
 Faucets, meanwhile, should always be tied to genuine economic activity —
 mining, smelting, crafting, or trading — rather than passive presence.
 Currency entering the economy should reflect real production or effort,

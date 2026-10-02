@@ -856,5 +856,61 @@ class EntryExpiryMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
 
 
+class MarketVatMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """The Market VAT added two server_config columns and one to
+    government_bonds. A 1.4 database has none of them; opening it adds all
+    three, every server starts with no Market VAT, and every bond already sold
+    was lent against none - so none of them puts a floor under it.
+
+    The old shape is made the way EntryExpiryMigrationTests makes its own:
+    open a fresh database and drop the columns back out.
+    """
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        conn.execute("ALTER TABLE server_config DROP COLUMN market_vat_percent")
+        conn.execute("ALTER TABLE server_config DROP COLUMN market_vat_changed")
+        conn.execute("ALTER TABLE government_bonds DROP COLUMN market_vat_percent_at_sale")
+        conn.execute("INSERT INTO server_config (guild_id, tax_percent) VALUES (?, 20)", (GUILD,))
+        conn.execute(
+            "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
+            "owed_cents, remaining_cents, tax_percent_at_sale) VALUES (?, ?, 500, 0, 500, 500, 20)",
+            (GUILD, USER),
+        )
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_every_server_starts_with_no_market_vat(self):
+        row = await self.db.fetchone("SELECT * FROM server_config WHERE guild_id = ?", (GUILD,))
+        self.assertEqual(row["market_vat_percent"], 0.0)
+        self.assertIsNone(row["market_vat_changed"])
+        self.assertEqual(row["tax_percent"], 20, "the Fee VAT is untouched")
+
+    async def test_existing_bonds_put_no_floor_under_it(self):
+        from utils.government import fee_vat_floor, market_vat_floor
+
+        self.assertEqual(await market_vat_floor(self.db, GUILD), 0.0)
+        self.assertEqual(await fee_vat_floor(self.db, GUILD), 20)
+
+    async def test_opening_it_again_changes_nothing(self):
+        await self.db.init_schema()
+        row = await self.db.fetchone("SELECT market_vat_percent_at_sale FROM government_bonds")
+        self.assertEqual(row["market_vat_percent_at_sale"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -322,7 +322,7 @@ projects.
 **The player market (1.4)**: `/market list` and `/market order` put players'
 own asks and bids on two per-guild books (`market_listings`, `market_orders`),
 and `/market buy`/`/market sell` route across both before falling back to the
-server (`utils/market_book.py`). Four things there are load-bearing and easy
+server (`utils/market_book.py`). Five things there are load-bearing and easy
 to break:
 
 - **Only the server's share of a sale may credit the job board.** A player-to-
@@ -340,6 +340,11 @@ to break:
   to an hour; a query without the condition would let it be bought, filled or
   counted. Handing one back goes through `return_listing`/`refund_order`, the one
   place each book's escrow is returned (cancel, expiry and guild removal).
+- **A player-to-player payment goes through `pay_market_seller`**
+  (`utils/government.py`), which pays the seller less the Market VAT and holds
+  the VAT like Fee VAT. Write `adjust_currency_balance` for a seller and the
+  VAT is skipped. The buyer always pays the quoted price; a trade with the
+  server never carries it.
 - **Order escrow is not a burn.** It leaves `server_currency_balances` but not
   the economy, so `circulating_currency` in `utils/db_helpers.py` adds it back -
   one function, two consumers (`/economy status` and `web/queries.py`), the same

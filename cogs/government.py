@@ -8,6 +8,7 @@ Implements the server government (1.4):
                                                      the debt and the projects
   - /treasurer fee <machine> <multiplier>          - Treasurer only
   - /treasurer feevat <percent>
+  - /treasurer marketvat <percent>
   - /treasurer bondrate <percent>
   - /mayor fund <machine> <amount>                 - Mayor only
   - /mayor enhance <machine>
@@ -67,6 +68,7 @@ from utils.government import (
     BOND_DENOMINATIONS_CENTS,
     FEE_MULTIPLIERS,
     MAX_BOND_RATE_PERCENT,
+    MARKET_VAT_PERCENTS,
     MAX_FEE_VAT_PERCENT,
     MAYOR,
     OFFICE_LABELS,
@@ -81,6 +83,7 @@ from utils.government import (
     count_election,
     frozen_holders,
     fund_machine,
+    format_vat,
     fund_mining_slots,
     game_date,
     game_midnight,
@@ -96,6 +99,7 @@ from utils.government import (
     set_bond_rate,
     set_fee_multiplier,
     set_fee_vat,
+    set_market_vat,
     start_bonanza,
     voting_open,
 )
@@ -111,6 +115,10 @@ MACHINE_CHOICES = [
 # round-tripped.
 MULTIPLIER_CHOICES = [
     app_commands.Choice(name=f"x{multiplier:g}", value=str(multiplier)) for multiplier in FEE_MULTIPLIERS
+]
+# Strings for the same reason, since 6.25 is one of them.
+MARKET_VAT_CHOICES = [
+    app_commands.Choice(name=format_vat(percent), value=str(percent)) for percent in MARKET_VAT_PERCENTS
 ]
 DENOMINATION_CHOICES = [
     app_commands.Choice(name=format_currency(cents / 100), value=cents)
@@ -242,7 +250,8 @@ class GovernmentCog(commands.Cog):
         # fields are figures. Until 1.4.1 the title repeated the header and the
         # fees and projects were two five-line lists naming every machine twice.
         embed = make_embed(
-            f"Fee VAT {status.fee_vat_percent}% · Bond rate {status.bond_rate_percent}%",
+            f"Fee VAT {status.fee_vat_percent}% · Market VAT {format_vat(status.market_vat_percent)} · "
+            f"Bond rate {status.bond_rate_percent}%",
             GOVERNMENT_COLOR,
         )
         if interaction.guild is not None:
@@ -362,6 +371,18 @@ class GovernmentCog(commands.Cog):
             lambda tx: set_fee_vat(tx, interaction.guild_id, interaction.user.id, percent),
             "🏛️ Fee VAT Set",
             f"The Fee VAT is now **{percent}%** of every machine fee.",
+        )
+
+    @treasurer_group.command(name="marketvat", description="Set the share of every trade between players the government keeps (once a day)")
+    @app_commands.describe(percent="Taken out of what the seller receives, not added to what the buyer pays")
+    @app_commands.choices(percent=MARKET_VAT_CHOICES)
+    async def treasurer_marketvat(self, interaction: discord.Interaction, percent: app_commands.Choice[str]):
+        value = float(percent.value)
+        await self._treasurer_action(
+            interaction,
+            lambda tx: set_market_vat(tx, interaction.guild_id, interaction.user.id, value),
+            "🏛️ Market VAT Set",
+            f"The Market VAT is now **{format_vat(value)}** of every trade between players.",
         )
 
     @treasurer_group.command(name="bondrate", description="Set the premium new bonds repay (once a day)")

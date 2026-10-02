@@ -539,6 +539,8 @@ class Database(_Executor):
                 ("tax_changed", "TEXT"),
                 ("bond_rate_percent", "INTEGER NOT NULL DEFAULT 0"),
                 ("bond_rate_changed", "TEXT"),
+                ("market_vat_percent", "REAL NOT NULL DEFAULT 0.0"),
+                ("market_vat_changed", "TEXT"),
                 ("treasury", "REAL NOT NULL DEFAULT 0.0"),
                 ("repayment_pool", "REAL NOT NULL DEFAULT 0.0"),
                 ("mayor_id", "INTEGER"),
@@ -552,6 +554,18 @@ class Database(_Executor):
             for column, definition in government_columns:
                 if column not in config_columns:
                     conn.execute(f"ALTER TABLE server_config ADD COLUMN {column} {definition}")
+
+            # The Market VAT's floor (utils/government.py: market_vat_floor)
+            # reads the rate each bond was sold under. A plain add with a
+            # default, introspection-gated like the columns above. Every bond
+            # already sold gets 0, which is right: there was no Market VAT when
+            # it was sold, so it was lent against none.
+            bond_columns = {row[1] for row in conn.execute("PRAGMA table_info(government_bonds)")}
+            if "market_vat_percent_at_sale" not in bond_columns:
+                conn.execute(
+                    "ALTER TABLE government_bonds "
+                    "ADD COLUMN market_vat_percent_at_sale REAL NOT NULL DEFAULT 0.0"
+                )
 
             # The per-server fee columns, which 1.4 replaced with a multiplier
             # on the config.py default. Dropped rather than left unread: the
