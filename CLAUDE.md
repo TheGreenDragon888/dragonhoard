@@ -15,9 +15,9 @@ See README.md for the full player-facing rundown of the loop and command list.
 **Code is written on a development machine, on the `beta` branch or a branch
 that merges into it — never on the server.** The server's two checkouts are
 deployment targets that only pull from GitHub: `/opt/dragonhoard-beta` follows
-`beta` (`update-beta.sh`, by hand, or by an optional two-minute timer) and
-`/opt/dragonhoard` follows `main` (`update.sh`, by hand). A push to `beta` is
-what the beta bot runs next, and with the timer on it is the deploy: push only
+`beta` and `/opt/dragonhoard` follows `main`, and each updates only when the
+owner runs its script by hand (`update-beta.sh`, `update.sh`). A push to `beta`
+is what the beta bot runs the next time `update-beta.sh` is run: push only
 when asked. `main` only ever moves by a fast-forward
 release from `beta` or a hotfix, and `beta` is never squashed or rebased into
 it. See docs/testing.md for the full workflow, backups, and rollback.

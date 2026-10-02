@@ -4,10 +4,8 @@
 #
 # Usage:  /opt/dragonhoard-beta/update-beta.sh
 #
-# Run it over SSH after pushing to beta. Or install the optional timer
-# (docs/testing.md Part 1e), which runs it every two minutes so that pushing
-# to beta is the whole deploy. See docs/testing.md Part 6 for each step
-# explained.
+# Run it over SSH after pushing to beta - beta only updates when you do. See
+# docs/testing.md Part 6 for each step explained.
 
 # Stop at the first failing command, the same as update.sh.
 set -e
@@ -43,12 +41,7 @@ main() {
     new=$(git rev-parse origin/beta)
 
     if [ "$old" = "$new" ]; then
-        # Only say so when a person ran this in a terminal; the optional timer
-        # runs it every two minutes and the journal doesn't need a line for
-        # each one.
-        if [ -t 1 ]; then
-            echo "Already up to date: $(git --no-pager log --oneline -1)"
-        fi
+        echo "Already up to date: $(git --no-pager log --oneline -1)"
         return 0
     fi
 
@@ -84,9 +77,9 @@ main() {
     systemctl status dragonhoard-beta --no-pager -n 20 || true
 }
 
-# A service you stopped on purpose ("inactive") stays stopped: this runs every
-# couple of minutes, and would otherwise start beta back up in the middle of
-# something like docs/testing.md Part 5's database swap. A running,
+# A service you stopped on purpose ("inactive") stays stopped, rather than
+# starting beta back up in the middle of something like docs/testing.md
+# Part 5's database swap. A running,
 # crash-looping or crashed service is restarted, so a pushed fix revives it.
 # A service that isn't installed at all also reads "inactive" and is skipped.
 restart_unless_stopped() {
@@ -96,9 +89,7 @@ restart_unless_stopped() {
     if [ "$state" = "inactive" ]; then
         echo "    $unit is stopped - leaving it stopped. It runs the new code when you start it."
     else
-        # Run by hand, this asks for your password. Under the optional timer,
-        # /etc/sudoers.d/dragonhoard-beta (docs/testing.md Part 1e) allows
-        # these two commands, and nothing else, without one.
+        # Asks for your password: restarting a service needs sudo.
         sudo systemctl restart "$unit"
         echo "    restarted $unit"
     fi

@@ -9,8 +9,8 @@ database, not the Discord application.
 |---|---|---|---|
 | Directory | `/opt/dragonhoard` | `/opt/dragonhoard-beta` | wherever you cloned it |
 | Git branch | `main` | `beta` | `beta`, or a branch of it |
-| Gets new code by | `update.sh`, run by hand | `update-beta.sh`, run by hand (or by a timer - 1e) | you writing it |
-| Discord app | Dragonhoard | Dragonhoard Beta | none - see 1f |
+| Gets new code by | `update.sh`, run by hand | `update-beta.sh`, run by hand | you writing it |
+| Discord app | Dragonhoard | Dragonhoard Beta | none - see 1e |
 | Database | `data/dragonhoard.db` | `data/dragonhoard-beta.db` | none - each test builds its own |
 | systemd service | `dragonhoard` | `dragonhoard-beta` | - |
 | Runs as user | `dragonbot` | `isaac` | you |
@@ -173,62 +173,11 @@ If the addresses start with `git@github.com:`, switch them to HTTPS:
 git remote set-url origin https://github.com/TheGreenDragon888/dragonhoard.git
 ```
 
-The repository is public, so fetching over HTTPS needs no key and no password
-(and if you ever turn on the timer in 1e, it fetches with nobody around to
-unlock an SSH key). It also means this checkout can no longer push, and it shouldn't need
+The repository is public, so fetching over HTTPS needs no key and no
+password. It also means this checkout can no longer push, and it shouldn't need
 to: code only arrives here.
 
-### 1e. Optional, for later: automatic beta updates
-
-**Skip this for now.** Running `update-beta.sh` yourself after a push (Part 2)
-is the simpler setup, and it's the one the rest of this document assumes. Come
-back here only if SSH-ing in to run it gets tedious: this sets up a timer that
-runs the same script every two minutes, so a `git push` alone updates beta -
-even one made from somewhere you can't SSH from, like merging a branch on
-GitHub from your phone. Nothing else in the workflow changes.
-
-Three files in `deploy/` do this. They are copied out of the checkout into the
-system, so if one of them ever changes in git, copy it again.
-
-First, allow `isaac` to restart the two beta services without a password, since
-the timer runs with nobody there to type one:
-
-```bash
-cd /opt/dragonhoard-beta
-command -v systemctl                                        # should print /usr/bin/systemctl
-sudo visudo -cf deploy/sudoers-dragonhoard-beta             # check the file before installing it
-sudo install -m 0440 -o root -g root deploy/sudoers-dragonhoard-beta /etc/sudoers.d/dragonhoard-beta
-sudo -k; sudo -n systemctl restart dragonhoard-beta && echo "rule works"
-```
-
-- `command -v systemctl` shows where `systemctl` lives. The rule names that
-  exact path; if yours prints something else, change the file to match.
-- `visudo -cf` checks a sudoers file for mistakes (`-c` check only, `-f` this
-  file). A broken file in `/etc/sudoers.d` can stop `sudo` working at all, so
-  always check before installing.
-- `install` copies the file and sets its owner and permissions in one step;
-  `0440` (read-only, owner and group only) is what sudo requires of these files.
-- `sudo -k` forgets your recent password, and `-n` makes sudo fail rather than
-  ask for one - so if this prints `rule works`, the rule did it, not your
-  password. If it says `a password is required`, the rule isn't matching.
-
-The rule allows exactly `systemctl restart dragonhoard-beta` and
-`systemctl restart dragonhoard-beta-web`, and nothing else.
-
-Then install the timer:
-
-```bash
-sudo cp deploy/dragonhoard-beta-update.service deploy/dragonhoard-beta-update.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now dragonhoard-beta-update.timer
-systemctl list-timers dragonhoard-beta-update.timer
-```
-
-You enable the **timer**, not the service: the timer is what starts the service
-every two minutes. `list-timers` shows when it last ran (`LAST`) and will next
-run (`NEXT`). Part 6 explains what each run does.
-
-### 1f. Set up your own computer
+### 1e. Set up your own computer
 
 Install:
 
@@ -344,8 +293,7 @@ ssh isaac@<server-ip>                    # log in to the server
 new commits into `/opt/dragonhoard-beta`, installs new requirements if any
 changed, and restarts the beta bot. It asks for your password when it
 restarts the bot - restarting a service needs `sudo`. Part 6 explains each
-step. (If you've set up the timer in 1e, skip the SSH: the timer does this
-within two minutes of the push.)
+step. Beta only changes when you run this: pushing alone deploys nothing.
 
 Meanwhile GitHub runs the test suite on it (`.github/workflows/tests.yml`): a green tick
 or red cross appears next to the commit on GitHub, and the **Actions** tab has
@@ -605,8 +553,8 @@ otherwise be left behind referring to a database that no longer exists.)
 
 ## Part 6: What `update-beta.sh` actually does
 
-You run `/opt/dragonhoard-beta/update-beta.sh` over SSH after a push (or the
-timer from 1e runs it every two minutes, as `isaac`). If there's nothing new it
+You run `/opt/dragonhoard-beta/update-beta.sh` over SSH after a push - nothing
+else runs it. If there's nothing new it
 says `Already up to date` and stops. When there is something new, step by
 step:
 
@@ -663,24 +611,6 @@ up the new code whenever you start it.
 The script does **not** run the tests - GitHub does that on every push, which
 is what keeps them off the server.
 
-If you've set up the timer (1e), here is where to look:
-
-```bash
-journalctl -u dragonhoard-beta-update -n 30          # what recent runs did
-systemctl status dragonhoard-beta-update             # did the last run fail?
-systemctl list-timers dragonhoard-beta-update.timer  # when it runs next
-```
-
-To pause automatic updates (say, to hold beta on one version while you test
-it), stop the timer; start it again to resume. A stopped timer comes back at the
-next reboot; `sudo systemctl disable --now dragonhoard-beta-update.timer` stops
-it and keeps it off until you `enable --now` it again.
-
-```bash
-sudo systemctl stop dragonhoard-beta-update.timer
-sudo systemctl start dragonhoard-beta-update.timer
-```
-
 ## Command reference
 
 Everything takes a service name, so the only difference between operating on
@@ -696,5 +626,3 @@ live and beta is which name you type.
 | Live logs | `journalctl -u dragonhoard -f` | `journalctl -u dragonhoard-beta -f` |
 | Recent logs | `journalctl -u dragonhoard -n 50` | `journalctl -u dragonhoard-beta -n 50` |
 | Errors only | `journalctl -u dragonhoard -p err` | `journalctl -u dragonhoard-beta -p err` |
-| Updater log (timer only) | - | `journalctl -u dragonhoard-beta-update -n 30` |
-| Pause auto-updates (timer only) | - | `sudo systemctl stop dragonhoard-beta-update.timer` |
