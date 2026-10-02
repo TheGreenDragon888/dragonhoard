@@ -2,8 +2,8 @@
 
 Every server elects a **Mayor** and a **Treasurer** each week. The Treasurer
 sets what the machines charge and how much of it the government keeps (the
-Fee VAT), and how much of every trade between players it keeps (the Market
-VAT); the Mayor spends that VAT, and money borrowed against it, on
+Fee Share), and how much of every trade between players it keeps (the Market
+Tax); the Mayor spends that revenue, and money borrowed against it, on
 projects. The purpose is community engagement - a server has something to
 argue about and organise around - and, for large servers, a way past the
 machine-level cost wall.
@@ -44,7 +44,7 @@ Tests: `tests/test_government.py`.
 - **Ties** go to the incumbent, then to whoever reached the tied count first
   (the latest `cast_at` among their votes), then to the lower id - never to
   chance.
-- **No recall.** A Treasurer who sets x4 fees and 100% Fee VAT lasts until the next
+- **No recall.** A Treasurer who sets x4 fees and 100% Fee Share lasts until the next
   Friday; the weekly term is the remedy.
 
 ## 2. The Treasurer's settings
@@ -52,7 +52,7 @@ Tests: `tests/test_government.py`.
 | Setting | Values | Default |
 | --- | --- | --- |
 | Fee multiplier, per machine | x0.25, x0.5, x0.625, x0.8, x1, x1.25, x1.6, x2, x4 | x1 |
-| Fee VAT and Market VAT, each | 0%, 2.5%, 5%, 6.25%, 8%, 10%, 12.5%, 16%, 20%, 40%, 100% | 0% |
+| Fee Share and Market Tax, each | 0%, 2.5%, 5%, 6.25%, 8%, 10%, 12.5%, 16%, 20%, 40%, 100% | 0% |
 | Bond rate (a one-time premium) | 0-5% | 0% |
 
 A machine's fee is its `config.py` default times its multiplier
@@ -71,38 +71,46 @@ Each setting (each machine's multiplier separately) may change **once per game
 day**. Without that, a Treasurer could set x0.25, queue their own jobs - fees
 are charged at queue time - and set x4 again.
 
-While the server owes active creditors, neither VAT can drop below the rate in
-force when the most recent bond still owed was sold (`vat_floor`). Bondholders
-lent against that VAT, and it is the only thing that repays them.
+While the server owes active creditors, neither rate can drop below the rate in
+force when the most recent bond still owed was sold (`rate_floor`). Bondholders
+lent against that revenue, and it is the only thing that repays them.
 
-**One command, one ladder.** Both VATs are set with `/treasurer vat <fee|market>
-<percent>` from the same steps (`VAT_PERCENTS`), picked the way the fee
+**One command, one ladder.** Both rates are set with `/treasurer rate
+<fee-share|market-tax> <percent>` from the same steps (`RATE_PERCENTS`), picked the way the fee
 multipliers are and built from them: the fee ladder times ten. 10% sits where
 x1 does, 5% to 20% splits each doubling in three with an exact inverse for
 every raise, 2.5% and 40% are whole doublings beyond that, and 0% (off) and
-100% bound the range. Each VAT still changes once a day on its own.
+100% bound the range. Each rate still changes once a day on its own.
 
-Until then Fee VAT was any whole percent, set with its own command. When it
+Until then Fee Share was any whole percent, set with its own command. When it
 moved onto the steps, every rate between two of them was rounded **down** to
 the step below - a server's rate and each bond's record of it alike, so no
 bond's floor was left above every rate a Treasurer could set
-(`_migrate_fee_vat_to_steps`, user_version 7). Some steps are not whole; the
-INTEGER columns that hold Fee VAT store those as REAL, which SQLite allows.
+(`_migrate_fee_share_to_steps`, user_version 7). Some steps are not whole; the
+INTEGER columns that hold Fee Share store those as REAL, which SQLite allows.
 
-**Why "VAT".** Until the rename it was called the tax, which read as a charge
-on top of the fee. It never was one: the player pays the same fee at any rate,
-and the rate only decides how much of it the government holds instead of
-burning. Taken out of the amount rather than added to it is what a VAT is. The
-column is still `server_config.tax_percent`; renaming it would have cost a
-migration and changed nothing a player sees.
+**The names.** 1.4 called the Fee Share "the tax", which read as a charge on
+top of the fee. It never was one: the player pays the same fee at any rate, and
+the rate only decides how much of it the government keeps instead of burning -
+the government's share of the fee, hence the name. On beta both rates were
+briefly called VATs (Fee VAT, Market VAT), on the reasoning that a VAT is taken
+out of a price rather than added to it. That reasoning was wrong: whether a
+price shows a tax included or added on top is only how it is displayed, and a
+value-added tax is something else - charged at every stage of a supply chain,
+with each business crediting the tax it paid on its inputs, so only the value
+each stage adds is taxed. Neither rate works that way. The Fee Share is a share
+of a fee, and the Market Tax is a transaction tax on the seller, the same kind
+of cut MMO auction houses take. The column is still `server_config.tax_percent`
+because released databases have it; renaming it would cost a migration and
+change nothing a player sees.
 
-### The Market VAT
+### The Market Tax
 
-A share of every **player-to-player** trade - a `/market buy` from a listing,
-a `/market sell` into a bid, a listed drill - held by the government exactly as
-Fee VAT is (`pay_market_seller`, the one place it is charged). It is a VAT for
-the same reason: it comes out of what the seller receives, and the buyer pays
-the price on the listing or the bid whatever the rate.
+A transaction tax on every **player-to-player** trade - a `/market buy` from a
+listing, a `/market sell` into a bid, a listed drill - held by the government
+exactly as the Fee Share is (`pay_market_seller`, the one place it is charged).
+It comes out of what the seller receives; the buyer pays the price on the
+listing or the bid whatever the rate.
 
 - **Only between players.** Those are the trades the server facilitates rather
   than takes part in. A sale to the server or a purchase from it is untouched,
@@ -112,12 +120,13 @@ the price on the listing or the bid whatever the rate.
   rate when the listing or bid was posted - the same as a fee is charged at the
   rate in force when the job is queued. The once-a-day limit applies to it like
   every other setting.
-- **Rounding.** The VAT is computed per leg in whole `PLAYER_PRICE_SCALE`
-  units, rounded down (`market_vat_units`), so the seller's share and the VAT
+- **Rounding.** The tax is computed per leg in whole `PLAYER_PRICE_SCALE`
+  units, rounded down (`market_tax_units`), so the seller's share and the tax
   add back up to exactly what the buyer paid.
-- **It repays bonds and counts toward the debt cap** like Fee VAT, through the
-  same `collect_tax`. Bondholders lend against it too, so it has its own floor
-  (`vat_floor`, from `government_bonds.market_vat_percent_at_sale`).
+- **It repays bonds and counts toward the debt cap** like the Fee Share,
+  through the same `collect_revenue`. Bondholders lend against it too, so it
+  has its own floor (`rate_floor`, from
+  `government_bonds.market_tax_percent_at_sale`).
   Bonds sold before it existed were lent against none and set no floor.
 
 Removing `/setup fee` discarded every server's custom fee. In the production
@@ -129,12 +138,13 @@ including one that had switched the press off with a fee of 999.
 
 **Currency leaves the government only as a burn or as a bond repayment.**
 
-- A fee's share left after VAT is handled exactly as a whole fee was before 1.4:
-  burned, banked to the machine's level and counted toward mining slots.
-- The VAT share is **held**, not burned: in the repayment pool while the
+- What is left of a fee after the Fee Share is handled exactly as a whole fee
+  was before 1.4: burned, banked to the machine's level and counted toward
+  mining slots.
+- The Fee Share is **held**, not burned: in the repayment pool while the
   server owes active creditors, in the treasury otherwise. It levels no
   machine and counts toward nothing until the Mayor spends it. The same goes
-  for Market VAT, which mints and burns nothing when it is taken: the buyer's
+  for the Market Tax, which mints and burns nothing when it is taken: the buyer's
   currency is split between the seller and the government.
 - `spend_treasury` is the only way money leaves the treasury, and every caller
   is a project, so every such payment is a burn (and counts toward mining
@@ -144,12 +154,12 @@ including one that had switched the press off with a fee of 999.
   economy.
 
 Why that keeps the supply where it was: a bond moves X from a player to the
-treasury, the Mayor's project burns X, and later X of VAT that would have been
-burned repays the player instead. The total burned is unchanged; it only
+treasury, the Mayor's project burns X, and later X of Fee Share that would
+have been burned repays the player instead. The total burned is unchanged; it only
 happens sooner. `tests/test_government.py: SupplyTests` runs that cycle and
 checks it.
 
-Market VAT is not part of that argument, because none of it would have been
+The Market Tax is not part of that argument, because none of it would have been
 burned: without it, the seller would have kept it. So it is a new sink rather
 than an earlier one - what the Mayor spends of it is currency that leaves the
 economy where before it stayed in a player's balance, and what repays a bond
@@ -159,7 +169,7 @@ goes from one player to another.
 4.76% - of what repays it, and that currency, which would have been burned,
 goes to a player. That ceiling is what `MAX_BOND_RATE_PERCENT` exists to hold.
 
-At 100% Fee VAT, machines stop levelling from use entirely and level only as fast
+At 100% Fee Share, machines stop levelling from use entirely and level only as fast
 as the Mayor funds them. That is a political choice the design leaves to the
 server.
 
@@ -170,23 +180,23 @@ server.
   2026-08-30 production backup no server's players held more than 77.46
   between them. Revisit against live data as servers grow.
 - **The premium** is fixed at sale; a later rate change affects only later
-  bonds. A running rate could grow a debt faster than a low VAT repays it.
+  bonds. A running rate could grow a debt faster than low revenue repays it.
 - **The cap:** a sale is refused if the debt still owed to active creditors
-  plus the new bond (premium included) would exceed the VAT collected over the
+  plus the new bond (premium included) would exceed the revenue collected over the
   previous `DEBT_CAP_DAYS` (7) complete game days - "a server can repay
   everything within a week". Today is excluded: it is not over. A server with
-  no VAT history cannot sell bonds at all, so a new government's first week is
+  no revenue history cannot sell bonds at all, so a new government's first week is
   bond-free. Checked when the Mayor opens a sale, enforced at every purchase.
 - **Sales** belong to a Mayor: `/mayor bonds <amount>` opens one (replacing any
   open sale), and it is cancelled when the Mayor changes. The debt belongs to
   the server and carries over.
-- **Repayment:** while anything is owed to active creditors, *all* VAT goes to
+- **Repayment:** while anything is owed to active creditors, *all* revenue goes to
   the repayment pool, and once an hour the pool is split pro-rata on each
   creditor's **remaining** balance - so every active creditor is repaid by the
   same final payout - in whole cents by `apportion()`, the same function that
   splits a bet's pot. The fraction of a cent it cannot split waits for the next
   payout. Once everybody active is repaid, the rest of the pool moves to the
-  treasury and new VAT follows it.
+  treasury and new revenue follows it.
 - **Officeholders may buy bonds.** Repayment is pro-rata, so nobody is paid
   first; the premium leak is capped either way.
 - **Leaving freezes, never voids.** A departed creditor's bonds are skipped by
@@ -225,7 +235,7 @@ machine by levelling it means climbing from level L to 2L, which on
 97,500 from level 4 and 2,440,625 from level 5. Against income it is not: in
 the production backups of 2026-08-18 and 2026-08-30 (11.14 days apart; live
 figures) the busiest server banked 85.3 of fees a week, so 1,000 is 11.7 weeks
-of its entire fee flow at 100% Fee VAT. That was judged right for a feature meant
+of its entire fee flow at 100% Fee Share. That was judged right for a feature meant
 to be a large, congested server's multi-week goal.
 
 Enhancements raise speed only, not the queue cap.
@@ -267,6 +277,6 @@ multiplies with enhancements.
 ## 6. Ruled out
 
 - **A lottery seeded from the treasury.** It would be the one project that is
-  not a burn - VAT money handed to one player - and was removed from this
+  not a burn - government revenue handed to one player - and was removed from this
   feature set. A `/lottery` command may come separately.
 - **Voiding debts when a creditor leaves** - see Bonds.

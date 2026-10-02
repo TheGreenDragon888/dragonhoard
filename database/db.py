@@ -539,8 +539,8 @@ class Database(_Executor):
                 ("tax_changed", "TEXT"),
                 ("bond_rate_percent", "INTEGER NOT NULL DEFAULT 0"),
                 ("bond_rate_changed", "TEXT"),
-                ("market_vat_percent", "REAL NOT NULL DEFAULT 0.0"),
-                ("market_vat_changed", "TEXT"),
+                ("market_tax_percent", "REAL NOT NULL DEFAULT 0.0"),
+                ("market_tax_changed", "TEXT"),
                 ("treasury", "REAL NOT NULL DEFAULT 0.0"),
                 ("repayment_pool", "REAL NOT NULL DEFAULT 0.0"),
                 ("mayor_id", "INTEGER"),
@@ -551,20 +551,34 @@ class Database(_Executor):
                 ("election_counted", "TEXT"),
                 ("election_announced", "TEXT"),
             ]
+            # The Market Tax was the Market VAT for its first days on beta, under
+            # market_vat_* columns. Renamed in place, so a beta database keeps
+            # its rates rather than gaining a second, empty set beside them.
+            # No released database ever had these columns.
+            bond_columns = {row[1] for row in conn.execute("PRAGMA table_info(government_bonds)")}
+            for table, columns, old, new in (
+                ("server_config", config_columns, "market_vat_percent", "market_tax_percent"),
+                ("server_config", config_columns, "market_vat_changed", "market_tax_changed"),
+                ("government_bonds", bond_columns, "market_vat_percent_at_sale", "market_tax_percent_at_sale"),
+            ):
+                if old in columns:
+                    conn.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+                    columns.discard(old)
+                    columns.add(new)
+
             for column, definition in government_columns:
                 if column not in config_columns:
                     conn.execute(f"ALTER TABLE server_config ADD COLUMN {column} {definition}")
 
-            # The Market VAT's floor (utils/government.py: vat_floor)
+            # The Market Tax's floor (utils/government.py: rate_floor)
             # reads the rate each bond was sold under. A plain add with a
             # default, introspection-gated like the columns above. Every bond
-            # already sold gets 0, which is right: there was no Market VAT when
+            # already sold gets 0, which is right: there was no Market Tax when
             # it was sold, so it was lent against none.
-            bond_columns = {row[1] for row in conn.execute("PRAGMA table_info(government_bonds)")}
-            if "market_vat_percent_at_sale" not in bond_columns:
+            if "market_tax_percent_at_sale" not in bond_columns:
                 conn.execute(
                     "ALTER TABLE government_bonds "
-                    "ADD COLUMN market_vat_percent_at_sale REAL NOT NULL DEFAULT 0.0"
+                    "ADD COLUMN market_tax_percent_at_sale REAL NOT NULL DEFAULT 0.0"
                 )
 
             # The per-server fee columns, which 1.4 replaced with a multiplier
@@ -673,12 +687,12 @@ class Database(_Executor):
             if version < 6:
                 self._migrate_return_server_only_entries(conn)
 
-            # Fee VAT moved from any whole percent onto the steps the Market
-            # VAT uses (utils/government.py: VAT_PERCENTS). A rate between two
+            # Fee Share moved from any whole percent onto the steps the Market
+            # Tax uses (utils/government.py: RATE_PERCENTS). A rate between two
             # steps is a value, not a shape, so the schema can't tell whether
             # this has run: gated on user_version.
             if version < 7:
-                self._migrate_fee_vat_to_steps(conn)
+                self._migrate_fee_share_to_steps(conn)
 
             # server_mining_pool.carry banked the fraction of a gemstone a pool
             # had accrued from the daily top-up. The bag replaced that outright
@@ -937,13 +951,13 @@ class Database(_Executor):
     SERVER_ONLY_RETURN_LINES = 20
 
     @staticmethod
-    def _migrate_fee_vat_to_steps(conn: sqlite3.Connection):
-        """Rounds every Fee VAT that is not one of the steps down to the step
+    def _migrate_fee_share_to_steps(conn: sqlite3.Connection):
+        """Rounds every Fee Share that is not one of the steps down to the step
         below it - the server's rate, and the rate each bond recorded at its
         sale, so a bond's floor never sits above every rate a Treasurer could
-        set. Down rather than to the nearest, as decided when /treasurer vat
-        replaced /treasurer feevat (docs/government.md section 2)."""
-        from utils.government import VAT_PERCENTS, vat_step_at_or_below
+        set. Down rather than to the nearest, as decided when one command came
+        to set both rates (docs/government.md section 2)."""
+        from utils.government import RATE_PERCENTS, rate_step_at_or_below
 
         conn.execute("BEGIN")
         try:
@@ -951,10 +965,10 @@ class Database(_Executor):
                                   ("government_bonds", "tax_percent_at_sale")):
                 rates = [row[0] for row in conn.execute(f"SELECT DISTINCT {column} FROM {table}")]
                 for rate in rates:
-                    if rate not in VAT_PERCENTS:
+                    if rate not in RATE_PERCENTS:
                         conn.execute(
                             f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
-                            (vat_step_at_or_below(rate), rate),
+                            (rate_step_at_or_below(rate), rate),
                         )
             conn.execute("PRAGMA user_version = 7")
             conn.execute("COMMIT")

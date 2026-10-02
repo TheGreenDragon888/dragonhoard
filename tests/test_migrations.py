@@ -377,8 +377,8 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         way, so the schema can't say whether they've run): 4 gave pools and
         drills a per-material composition, and 5 replaced the daily allowance
         with a full bag. 1.4.1 adds 6, which hands back player-book entries for
-        the materials that became server-only, and 7 moves every Fee VAT onto
-        the VAT steps."""
+        the materials that became server-only, and 7 moves every Fee Share onto
+        the rate steps."""
         row = await self.db.fetchone("PRAGMA user_version")
         self.assertEqual(row[0], 7)
 
@@ -857,10 +857,10 @@ class EntryExpiryMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
 
 
-class MarketVatMigrationTests(unittest.IsolatedAsyncioTestCase):
-    """The Market VAT added two server_config columns and one to
+class MarketTaxMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """The Market Tax added two server_config columns and one to
     government_bonds. A 1.4 database has none of them; opening it adds all
-    three, every server starts with no Market VAT, and every bond already sold
+    three, every server starts with no Market Tax, and every bond already sold
     was lent against none - so none of them puts a floor under it.
 
     The old shape is made the way EntryExpiryMigrationTests makes its own:
@@ -876,9 +876,9 @@ class MarketVatMigrationTests(unittest.IsolatedAsyncioTestCase):
         db.close()
 
         conn = sqlite3.connect(self.path)
-        conn.execute("ALTER TABLE server_config DROP COLUMN market_vat_percent")
-        conn.execute("ALTER TABLE server_config DROP COLUMN market_vat_changed")
-        conn.execute("ALTER TABLE government_bonds DROP COLUMN market_vat_percent_at_sale")
+        conn.execute("ALTER TABLE server_config DROP COLUMN market_tax_percent")
+        conn.execute("ALTER TABLE server_config DROP COLUMN market_tax_changed")
+        conn.execute("ALTER TABLE government_bonds DROP COLUMN market_tax_percent_at_sale")
         conn.execute("INSERT INTO server_config (guild_id, tax_percent) VALUES (?, 20)", (GUILD,))
         conn.execute(
             "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
@@ -895,26 +895,26 @@ class MarketVatMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.db.close()
         self._dir.cleanup()
 
-    async def test_every_server_starts_with_no_market_vat(self):
+    async def test_every_server_starts_with_no_market_tax(self):
         row = await self.db.fetchone("SELECT * FROM server_config WHERE guild_id = ?", (GUILD,))
-        self.assertEqual(row["market_vat_percent"], 0.0)
-        self.assertIsNone(row["market_vat_changed"])
-        self.assertEqual(row["tax_percent"], 20, "the Fee VAT is untouched")
+        self.assertEqual(row["market_tax_percent"], 0.0)
+        self.assertIsNone(row["market_tax_changed"])
+        self.assertEqual(row["tax_percent"], 20, "the Fee Share is untouched")
 
     async def test_existing_bonds_put_no_floor_under_it(self):
-        from utils.government import FEE_VAT, MARKET_VAT, vat_floor
+        from utils.government import FEE_SHARE, MARKET_TAX, rate_floor
 
-        self.assertEqual(await vat_floor(self.db, GUILD, MARKET_VAT), 0.0)
-        self.assertEqual(await vat_floor(self.db, GUILD, FEE_VAT), 20)
+        self.assertEqual(await rate_floor(self.db, GUILD, MARKET_TAX), 0.0)
+        self.assertEqual(await rate_floor(self.db, GUILD, FEE_SHARE), 20)
 
     async def test_opening_it_again_changes_nothing(self):
         await self.db.init_schema()
-        row = await self.db.fetchone("SELECT market_vat_percent_at_sale FROM government_bonds")
-        self.assertEqual(row["market_vat_percent_at_sale"], 0.0)
+        row = await self.db.fetchone("SELECT market_tax_percent_at_sale FROM government_bonds")
+        self.assertEqual(row["market_tax_percent_at_sale"], 0.0)
 
 
-class FeeVatStepMigrationTests(unittest.IsolatedAsyncioTestCase):
-    """Fee VAT moved from any whole percent onto VAT_PERCENTS. Every rate off
+class FeeShareStepMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """Fee Share moved from any whole percent onto RATE_PERCENTS. Every rate off
     the steps - a server's and each bond's record of it - is rounded down to
     the step below, and rates already on a step are left alone.
 
@@ -969,6 +969,61 @@ class FeeVatStepMigrationTests(unittest.IsolatedAsyncioTestCase):
         await self.db.init_schema()
         row = await self.db.fetchone("SELECT tax_percent FROM server_config WHERE guild_id = 2")
         self.assertEqual(row["tax_percent"], 15, "a later open must not touch it again")
+
+
+class MarketVatColumnRenameTests(unittest.IsolatedAsyncioTestCase):
+    """The Market Tax was the Market VAT for its first days on beta, in
+    market_vat_* columns. Opening such a database renames them in place: the
+    rates survive, and no second, empty set appears beside them."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        for table, new, old in (
+            ("server_config", "market_tax_percent", "market_vat_percent"),
+            ("server_config", "market_tax_changed", "market_vat_changed"),
+            ("government_bonds", "market_tax_percent_at_sale", "market_vat_percent_at_sale"),
+        ):
+            conn.execute(f"ALTER TABLE {table} RENAME COLUMN {new} TO {old}")
+        conn.execute(
+            "INSERT INTO server_config (guild_id, market_vat_percent, market_vat_changed) "
+            "VALUES (?, 12.5, '2026-10-01')",
+            (GUILD,),
+        )
+        conn.execute(
+            "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
+            "owed_cents, remaining_cents, tax_percent_at_sale, market_vat_percent_at_sale) "
+            "VALUES (?, ?, 500, 0, 500, 500, 0, 8.0)",
+            (GUILD, USER),
+        )
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_the_rates_survive_under_the_new_names(self):
+        row = await self.db.fetchone("SELECT * FROM server_config WHERE guild_id = ?", (GUILD,))
+        self.assertEqual(row["market_tax_percent"], 12.5)
+        self.assertEqual(row["market_tax_changed"], "2026-10-01")
+        bond = await self.db.fetchone("SELECT market_tax_percent_at_sale FROM government_bonds")
+        self.assertEqual(bond["market_tax_percent_at_sale"], 8.0)
+
+    async def test_no_old_column_is_left_behind(self):
+        for table in ("server_config", "government_bonds"):
+            columns = {r[1] for r in await self.db.fetchall(f"PRAGMA table_info({table})")}
+            with self.subTest(table=table):
+                self.assertFalse({c for c in columns if "market_vat" in c})
 
 
 if __name__ == "__main__":

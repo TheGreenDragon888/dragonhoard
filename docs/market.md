@@ -59,17 +59,17 @@ back here is that a heavily-betting server is redistributing, not inflating,
 and none of the figures in section 4 should move because of it.
 
 **The server government (1.4) delays the sink rather than shrinking it.** The
-elected Treasurer's Fee VAT diverts a share of every fee from being burned
+elected Treasurer's Fee Share diverts part of every fee from being burned
 into a treasury the Mayor spends. Every project the Mayor can buy is a burn,
-and a bond only lets the burn happen before the VAT that repays it arrives, so over
+and a bond only lets the burn happen before the revenue that repays it arrives, so over
 a whole cycle a server burns what its fees would have burned anyway - see
 docs/government.md section 3. Two things do change. The bond premium, at most
 5/105 of each repayment, is currency that escapes the sink for good. And the
 Treasurer's fee multiplier (x0.25 to x4) sets how big the sink is in the first
-place, which until 1.4 was an admin's `/setup fee`. Held VAT is counted in
+place, which until 1.4 was an admin's `/setup fee`. Held revenue is counted in
 circulation, like order and bet escrow, until it is spent.
 
-**The Market VAT is a new sink, not a delayed one.** The Treasurer can take a
+**The Market Tax is a new sink, not a delayed one.** The Treasurer can take a
 preset share of every player-to-player trade, out of what the seller receives.
 Trades with the server never carry it, so the faucet - selling to the server -
 pays exactly what it did, and nothing in section 1's job board argument moves.

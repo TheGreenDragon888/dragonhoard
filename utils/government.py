@@ -1,8 +1,8 @@
 """
 utils/government.py
 
-The server government (1.4): an elected Mayor and Treasurer, the VAT that
-funds them, the bonds that let them spend ahead of it, and the projects they
+The server government (1.4): an elected Mayor and Treasurer, the revenue
+that funds them, the bonds that let them spend ahead of it, and the projects they
 spend on. See docs/government.md for the design and the reasoning behind every
 number here; cogs/government.py owns the slash commands and the embeds.
 
@@ -13,12 +13,12 @@ connection.
 THE ONE RULE THIS MODULE EXISTS TO KEEP: currency leaves the government only as
 a burn or as a bond repayment.
 
-  A fee used to be burned outright. Now the Treasurer's Fee VAT diverts a share
-  of it, and that share is HELD - in the treasury, or in the repayment pool while
+  A fee used to be burned outright. Now the Treasurer's Fee Share diverts part
+  of it, and that part is HELD - in the treasury, or in the repayment pool while
   the server owes bondholders - rather than burned. utils/db_helpers.py:
   circulating_currency counts both, the way it counts order and bet escrow.
 
-  The Market VAT is the same arrangement on player-to-player trades: a share
+  The Market Tax is the same arrangement on player-to-player trades: a share
   of what the seller would have received is held instead (pay_market_seller).
 
   Money leaves the treasury through spend_treasury and nothing else, and every
@@ -83,51 +83,52 @@ OFFICE_LABELS = {MAYOR: "Mayor", TREASURER: "Treasurer"}
 # utils/formatting.py: format_exact_price shows in full.
 FEE_MULTIPLIERS = (0.25, 0.5, 0.625, 0.8, 1.0, 1.25, 1.6, 2.0, 4.0)
 
-# The government's two VATs. Both are VATs rather than charges on top: the
-# payer pays the same at any rate, and the rate only decides how much of it the
-# government holds.
+# The government's two rates - its revenue. Neither is a charge on top of
+# anything:
 #
-#   FEE VAT - a share of every machine fee, held instead of burned. Stored in
-#   server_config.tax_percent, the column's name from before it was called a
-#   VAT.
+#   FEE SHARE - the government's share of every machine fee, held instead of
+#   burned. The player pays the same fee at any rate; the rate only decides how
+#   much of it the government keeps. Stored in server_config.tax_percent, the
+#   column's name from 1.4, when it was called the tax.
 #
-#   MARKET VAT - a share of every player-to-player trade, out of what the
-#   seller receives. Only trades between players carry it, because those are
+#   MARKET TAX - a transaction tax on every player-to-player trade, taken out
+#   of what the seller receives; the buyer pays the quoted price at any rate.
+#   Only trades between players carry it, because those are
 #   the ones the server facilitates rather than takes part in; a sale to or a
 #   purchase from the server is untouched. Charged at whatever rate is in force
 #   when the trade happens - a listing does not lock in the rate it was posted
 #   under.
-FEE_VAT = "fee"
-MARKET_VAT = "market"
-VAT_KINDS = (FEE_VAT, MARKET_VAT)
-VAT_LABELS = {FEE_VAT: "Fee VAT", MARKET_VAT: "Market VAT"}
+FEE_SHARE = "fee-share"
+MARKET_TAX = "market-tax"
+RATE_KINDS = (FEE_SHARE, MARKET_TAX)
+RATE_LABELS = {FEE_SHARE: "Fee Share", MARKET_TAX: "Market Tax"}
 # Each kind's server_config rate column, the column that stamps the day it
 # last changed, and the government_bonds column recording it at each sale.
-_VAT_COLUMNS = {
-    FEE_VAT: ("tax_percent", "tax_changed", "tax_percent_at_sale"),
-    MARKET_VAT: ("market_vat_percent", "market_vat_changed", "market_vat_percent_at_sale"),
+_RATE_COLUMNS = {
+    FEE_SHARE: ("tax_percent", "tax_changed", "tax_percent_at_sale"),
+    MARKET_TAX: ("market_tax_percent", "market_tax_changed", "market_tax_percent_at_sale"),
 }
 
-# The steps either VAT may be set to - one list for both, so /treasurer vat
+# The steps either rate may be set to - one list for both, so /treasurer rate
 # offers one dropdown whichever it sets. Fixed steps chosen the way
 # FEE_MULTIPLIERS are, and in fact built from them: the fee ladder times ten,
 # so 10% sits where x1 does, 5% to 20% splits each doubling in three with an
 # exact inverse for every raise, and 2.5% and 40% are whole doublings outside
-# that. 0% switches a VAT off, and 100% is the top of the range.
+# that. 0% switches a rate off, and 100% is the top of the range.
 # tests/test_government.py checks the ladder against the fee one.
 #
-# Fee VAT was any whole percent until it moved onto this list, and a rate that
+# Fee Share was any whole percent until it moved onto this list, and a rate that
 # was not on it was rounded down to the step below (database/db.py:
-# _migrate_fee_vat_to_steps). Some steps are not whole, which the INTEGER
-# columns that hold Fee VAT store as REAL - SQLite's INTEGER affinity keeps a
+# _migrate_fee_share_to_steps). Some steps are not whole, which the INTEGER
+# columns that hold Fee Share store as REAL - SQLite's INTEGER affinity keeps a
 # value that would not convert losslessly (tests/test_migrations.py pins it).
-VAT_PERCENTS = (0.0, 2.5, 5.0, 6.25, 8.0, 10.0, 12.5, 16.0, 20.0, 40.0, 100.0)
-MAX_VAT_PERCENT = 100.0
+RATE_PERCENTS = (0.0, 2.5, 5.0, 6.25, 8.0, 10.0, 12.5, 16.0, 20.0, 40.0, 100.0)
+MAX_RATE_PERCENT = 100.0
 
 
-def vat_step_at_or_below(percent: float) -> float:
-    """The highest step in VAT_PERCENTS that is not above `percent`."""
-    return max(step for step in VAT_PERCENTS if step <= percent)
+def rate_step_at_or_below(percent: float) -> float:
+    """The highest step in RATE_PERCENTS that is not above `percent`."""
+    return max(step for step in RATE_PERCENTS if step <= percent)
 
 
 # The ceiling on the bond premium. It is the only currency this whole feature
@@ -140,13 +141,13 @@ MAX_BOND_RATE_PERCENT = 5
 # players held more than 77.46 between them (docs/government.md).
 BOND_DENOMINATIONS_CENTS = (100, 500, 1_000, 5_000)
 
-# Outstanding debt may not exceed the tax collected over this many previous
+# Outstanding debt may not exceed the revenue collected over this many previous
 # game days - "a server can repay everything it owes within a week".
 DEBT_CAP_DAYS = 7
 
-# How long a day's tax total is kept. Only the last DEBT_CAP_DAYS are ever
+# How long a day's revenue total is kept. Only the last DEBT_CAP_DAYS are ever
 # read; the rest is margin.
-TAX_HISTORY_DAYS = 30
+REVENUE_HISTORY_DAYS = 30
 
 # Voting happens on this weekday (Monday is 0), all day on the game clock, and
 # is counted at the midnight that ends it.
@@ -165,7 +166,7 @@ VOTER_DRILL_DAYS = 7
 OWED_BONDS_SQL = "remaining_cents > 0"
 
 # Rounding slack for comparing float currency against the cent it is meant to
-# be. The treasury accumulates tax a fraction of a cent at a time.
+# be. The treasury accumulates revenue a fraction of a cent at a time.
 _EPSILON = 1e-9
 
 
@@ -227,12 +228,12 @@ def next_game_midnight(now: datetime | None = None) -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Tax
+# Revenue: the Fee Share and the Market Tax
 # ---------------------------------------------------------------------------
 
 async def has_active_debt(db: _Executor, guild_id: int) -> bool:
     """Whether the server owes anything to a creditor who is still here.
-    While it does, every unit of tax goes to repaying them."""
+    While it does, every unit of revenue goes to repaying them."""
     row = await db.fetchone(
         f"SELECT 1 FROM government_bonds WHERE guild_id = ? AND {OWED_BONDS_SQL} "
         f"AND frozen = 0 LIMIT 1",
@@ -241,10 +242,11 @@ async def has_active_debt(db: _Executor, guild_id: int) -> bool:
     return row is not None
 
 
-async def collect_tax(db: _Executor, guild_id: int, amount: float, now: datetime | None = None):
-    """Takes `amount` of tax into the government: into the repayment pool while
-    the server owes active creditors, the treasury otherwise. Also adds it to
-    today's tax total, which the debt cap is measured against."""
+async def collect_revenue(db: _Executor, guild_id: int, amount: float, now: datetime | None = None):
+    """Takes `amount` of revenue - either rate's - into the government: into
+    the repayment pool while the server owes active creditors, the treasury
+    otherwise. Also adds it to today's revenue total, which the debt cap is
+    measured against."""
     if amount <= 0:
         return
     column = "repayment_pool" if await has_active_debt(db, guild_id) else "treasury"
@@ -266,9 +268,9 @@ async def charge_machine_fee(
     """Charges a player a machine's fee, and sends every part of it where it
     belongs. The one funnel every machine fee passes through.
 
-    The tax share is held by the government (collect_tax). The rest is what a
+    The Fee Share is held by the government (collect_revenue). The rest is what a
     whole fee was before 1.4: burned, and banked to the machine's level and the
-    server's mining slots (bank_infrastructure_fee). Taxed money reaches mining
+    server's mining slots (bank_infrastructure_fee). The share reaches mining
     slots later, when the Mayor spends it - counting it now as well would count
     it twice.
 
@@ -289,39 +291,39 @@ async def charge_machine_fee(
 
     cfg = await db.fetchone("SELECT tax_percent FROM server_config WHERE guild_id = ?", (guild_id,))
     percent = cfg["tax_percent"] if cfg else 0
-    # 100% is special-cased so the untaxed share is exactly zero rather than
+    # 100% is special-cased so the burned part is exactly zero rather than
     # whatever amount - amount * 100 / 100 rounds to.
-    tax = amount if percent >= MAX_VAT_PERCENT else amount * percent / 100
-    kept = amount - tax
+    share = amount if percent >= MAX_RATE_PERCENT else amount * percent / 100
+    kept = amount - share
 
     await record_burned(db, guild_id, kept)
     await bank_infrastructure_fee(db, guild_id, machine, kept)
-    await collect_tax(db, guild_id, tax, now)
+    await collect_revenue(db, guild_id, share, now)
 
 
-def format_vat(percent: float) -> str:
-    """A VAT rate for a player to read: 10%, 6.25%."""
+def format_percent(percent: float) -> str:
+    """A government rate for a player to read: 10%, 6.25%."""
     return f"{percent:g}%"
 
 
-def market_vat_units(gross_units: int, percent: float) -> int:
-    """The Market VAT on a trade worth `gross_units` (PLAYER_PRICE_SCALE units).
+def market_tax_units(gross_units: int, percent: float) -> int:
+    """The Market Tax on a trade worth `gross_units` (PLAYER_PRICE_SCALE units).
 
-    Integer throughout, in basis points, so the seller's share and the VAT are
+    Integer throughout, in basis points, so the seller's share and the tax are
     both whole units and add back up to exactly what the buyer paid. Rounded
     down, so a fraction of a unit stays with the seller. 100% is special-cased
     for the reason charge_machine_fee's is.
     """
-    if percent >= MAX_VAT_PERCENT:
+    if percent >= MAX_RATE_PERCENT:
         return gross_units
     return gross_units * round(percent * 100) // 10_000
 
 
-async def market_vat_rate(db: _Executor, guild_id: int) -> float:
-    """The Market VAT in force. Read once per trade, inside its transaction,
+async def market_tax_rate(db: _Executor, guild_id: int) -> float:
+    """The Market Tax in force. Read once per trade, inside its transaction,
     so every leg of one trade is charged the same rate."""
-    row = await db.fetchone("SELECT market_vat_percent FROM server_config WHERE guild_id = ?", (guild_id,))
-    return row["market_vat_percent"] if row else 0.0
+    row = await db.fetchone("SELECT market_tax_percent FROM server_config WHERE guild_id = ?", (guild_id,))
+    return row["market_tax_percent"] if row else 0.0
 
 
 async def pay_market_seller(
@@ -329,27 +331,28 @@ async def pay_market_seller(
     now: datetime | None = None,
 ) -> float:
     """Pays a player the proceeds of a player-to-player trade worth
-    `gross_units`, less the Market VAT, and holds the VAT through collect_tax -
-    into the repayment pool or the treasury, and toward the debt cap, exactly
-    as Fee VAT is. The one funnel every player-to-player payment passes
-    through. Returns the VAT taken, in currency.
+    `gross_units`, less the Market Tax, and holds the tax through
+    collect_revenue - into the repayment pool or the treasury, and toward the
+    debt cap, exactly as the Fee Share is. The one funnel every
+    player-to-player payment passes through. Returns the tax taken, in
+    currency.
 
     Nothing is minted or burned: the buyer's currency is split between the
     seller and the government, and circulating_currency counts both.
     """
-    vat_units = market_vat_units(gross_units, percent)
+    tax_units = market_tax_units(gross_units, percent)
     await adjust_currency_balance(
-        db, guild_id, seller_id, player_price_total(gross_units - vat_units, 1)
+        db, guild_id, seller_id, player_price_total(gross_units - tax_units, 1)
     )
-    vat = player_price_total(vat_units, 1)
-    await collect_tax(db, guild_id, vat, now)
-    return vat
+    tax = player_price_total(tax_units, 1)
+    await collect_revenue(db, guild_id, tax, now)
+    return tax
 
 
-async def tax_collected(db: _Executor, guild_id: int, days: int, now: datetime | None = None) -> float:
-    """The tax this server collected over the `days` game days before today.
+async def revenue_collected(db: _Executor, guild_id: int, days: int, now: datetime | None = None) -> float:
+    """The revenue this server collected over the `days` game days before today.
     Today is left out: it is not over, and a cap that grew through the day
-    would let a sale land on tax that has only just arrived."""
+    would let a sale land on revenue that has only just arrived."""
     today = game_now(now).date()
     first = (today - timedelta(days=days)).isoformat()
     row = await db.fetchone(
@@ -360,8 +363,8 @@ async def tax_collected(db: _Executor, guild_id: int, days: int, now: datetime |
     return row["total"]
 
 
-async def prune_tax_history(db: _Executor, now: datetime | None = None) -> None:
-    cutoff = (game_now(now).date() - timedelta(days=TAX_HISTORY_DAYS)).isoformat()
+async def prune_revenue_history(db: _Executor, now: datetime | None = None) -> None:
+    cutoff = (game_now(now).date() - timedelta(days=REVENUE_HISTORY_DAYS)).isoformat()
     await db.execute("DELETE FROM government_tax_daily WHERE day < ?", (cutoff,))
 
 
@@ -428,12 +431,12 @@ async def set_fee_multiplier(
     )
 
 
-async def vat_floor(db: _Executor, guild_id: int, kind: str) -> float:
-    """The lowest a VAT may be set while the server owes active creditors: the
-    rate in force when the most recent bond still owed was sold. Both VATs
+async def rate_floor(db: _Executor, guild_id: int, kind: str) -> float:
+    """The lowest a rate may be set while the server owes active creditors:
+    the rate in force when the most recent bond still owed was sold. Both rates
     repay bondholders, so they lent against both, and they are the only thing
     that repays them."""
-    at_sale = _VAT_COLUMNS[kind][2]
+    at_sale = _RATE_COLUMNS[kind][2]
     row = await db.fetchone(
         f"SELECT {at_sale} FROM government_bonds WHERE guild_id = ? "
         f"AND {OWED_BONDS_SQL} AND frozen = 0 ORDER BY bond_id DESC LIMIT 1",
@@ -442,27 +445,27 @@ async def vat_floor(db: _Executor, guild_id: int, kind: str) -> float:
     return row[at_sale] if row else 0.0
 
 
-async def set_vat(
+async def set_rate(
     tx: _Executor, guild_id: int, actor_id: int, kind: str, percent: float,
     now: datetime | None = None,
 ) -> None:
-    if kind not in VAT_KINDS:
-        raise ValueError(f"unknown VAT {kind!r}")
-    label = VAT_LABELS[kind]
-    if percent not in VAT_PERCENTS:
+    if kind not in RATE_KINDS:
+        raise ValueError(f"unknown rate {kind!r}")
+    label = RATE_LABELS[kind]
+    if percent not in RATE_PERCENTS:
         raise GovernmentError(
-            f"The {label} must be one of " + ", ".join(format_vat(p) for p in VAT_PERCENTS) + "."
+            f"The {label} must be one of " + ", ".join(format_percent(p) for p in RATE_PERCENTS) + "."
         )
-    rate, changed, _ = _VAT_COLUMNS[kind]
+    rate, changed, _ = _RATE_COLUMNS[kind]
     await ensure_server_row(tx, guild_id)
     await require_office(tx, guild_id, actor_id, TREASURER)
     row = await tx.fetchone(f"SELECT {changed} FROM server_config WHERE guild_id = ?", (guild_id,))
     _refuse_second_change(row[changed], label, now)
-    floor = await vat_floor(tx, guild_id, kind)
+    floor = await rate_floor(tx, guild_id, kind)
     if percent < floor:
         raise GovernmentError(
-            f"The server owes bondholders who lent at a {format_vat(floor)} {label}, so the "
-            f"{label} can't go below {format_vat(floor)} until they are repaid."
+            f"The server owes bondholders who lent at a {format_percent(floor)} {label}, so the "
+            f"{label} can't go below {format_percent(floor)} until they are repaid."
         )
     await tx.execute(
         f"UPDATE server_config SET {rate} = ?, {changed} = ? WHERE guild_id = ?",
@@ -517,9 +520,9 @@ async def frozen_debt_cents(db: _Executor, guild_id: int) -> int:
 
 
 async def debt_cap_cents(db: _Executor, guild_id: int, now: datetime | None = None) -> int:
-    """The most the server may owe: its tax over the previous DEBT_CAP_DAYS,
+    """The most the server may owe: its revenue over the previous DEBT_CAP_DAYS,
     in whole cents, rounded down."""
-    return int(await tax_collected(db, guild_id, DEBT_CAP_DAYS, now) * 100 + _EPSILON)
+    return int(await revenue_collected(db, guild_id, DEBT_CAP_DAYS, now) * 100 + _EPSILON)
 
 
 async def _money(tx: _Executor, guild_id: int, amount: float) -> str:
@@ -554,7 +557,7 @@ async def open_bond_sale(
         if owed_if_sold > room:
             raise GovernmentError(
                 f"Selling that much would leave the server owing more than it collected in "
-                f"VAT over the last {DEBT_CAP_DAYS} days. It has room for "
+                f"revenue over the last {DEBT_CAP_DAYS} days. It has room for "
                 f"{await _money(tx, guild_id, max(0, room) / 100)} more debt, interest included."
             )
     await tx.execute(
@@ -577,7 +580,7 @@ async def buy_bond(
         raise GovernmentError("That isn't a bond denomination.")
     await ensure_server_row(tx, guild_id)
     cfg = await tx.fetchone(
-        "SELECT bond_sale_cents, bond_rate_percent, tax_percent, market_vat_percent FROM server_config "
+        "SELECT bond_sale_cents, bond_rate_percent, tax_percent, market_tax_percent FROM server_config "
         "WHERE guild_id = ?",
         (guild_id,),
     )
@@ -591,7 +594,7 @@ async def buy_bond(
     room = await debt_cap_cents(tx, guild_id, now) - await outstanding_debt_cents(tx, guild_id)
     if owed > room:
         raise GovernmentError(
-            f"The server can't take on that much debt: it may owe no more than its VAT over "
+            f"The server can't take on that much debt: it may owe no more than its revenue over "
             f"the last {DEBT_CAP_DAYS} days, and has room for {await _money(tx, guild_id, max(0, room) / 100)}, "
             f"interest included."
         )
@@ -608,10 +611,10 @@ async def buy_bond(
     )
     bond_id = await tx.execute(
         "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
-        "owed_cents, remaining_cents, tax_percent_at_sale, market_vat_percent_at_sale, sold_at) "
+        "owed_cents, remaining_cents, tax_percent_at_sale, market_tax_percent_at_sale, sold_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (guild_id, buyer_id, denomination_cents, cfg["bond_rate_percent"], owed, owed,
-         cfg["tax_percent"], cfg["market_vat_percent"], sqlite_timestamp(now or clock_now())),
+         cfg["tax_percent"], cfg["market_tax_percent"], sqlite_timestamp(now or clock_now())),
     )
     return BondPurchase(bond_id, denomination_cents, owed, cfg["bond_rate_percent"])
 
@@ -641,7 +644,7 @@ async def pay_bondholders(tx: _Executor, guild_id: int) -> dict[int, int]:
     was lent, so every active creditor is repaid by the same final payout.
 
     Once every active creditor is repaid, whatever is left in the pool moves to
-    the treasury - and collect_tax sends new tax there too - until somebody is
+    the treasury - and collect_revenue sends new revenue there too - until somebody is
     owed again.
     """
     cfg = await tx.fetchone("SELECT repayment_pool FROM server_config WHERE guild_id = ?", (guild_id,))
@@ -1165,8 +1168,8 @@ async def guilds_with_bonanza(db: _Executor, now: datetime | None = None) -> set
 class GovernmentStatus(NamedTuple):
     mayor: int | None
     treasurer: int | None
-    fee_vat_percent: float
-    market_vat_percent: float
+    fee_share_percent: float
+    market_tax_percent: float
     bond_rate_percent: int
     multipliers: dict[str, float]
     enhancements: dict[str, int]
@@ -1185,8 +1188,8 @@ async def government_status(db: _Executor, guild_id: int, now: datetime | None =
     return GovernmentStatus(
         mayor=cfg["mayor_id"],
         treasurer=cfg["treasurer_id"],
-        fee_vat_percent=cfg["tax_percent"],
-        market_vat_percent=cfg["market_vat_percent"],
+        fee_share_percent=cfg["tax_percent"],
+        market_tax_percent=cfg["market_tax_percent"],
         bond_rate_percent=cfg["bond_rate_percent"],
         multipliers={m: cfg[f"{m}_fee_multiplier"] for m in MACHINES},
         enhancements={m: cfg[f"{m}_enhancement_level"] for m in MACHINES},

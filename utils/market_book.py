@@ -17,7 +17,7 @@ here than anywhere else in the codebase:
   the other, and the player sector holds the same total of both afterwards -
   exactly the status a /donate player transfer has (cogs/donate.py). Only the
   SERVER leg touches record_minted/record_burned. Calling either for a player
-  leg would report a server printing money it merely moved. The Market VAT
+  leg would report a server printing money it merely moved. The Market Tax
   does not change that: it splits the buyer's currency between the seller and
   the government (utils/government.py: pay_market_seller), and
   circulating_currency counts what the government holds.

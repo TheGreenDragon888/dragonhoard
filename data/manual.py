@@ -57,10 +57,10 @@ from utils.government import (
     BOND_DENOMINATIONS_CENTS,
     DEBT_CAP_DAYS,
     FEE_MULTIPLIERS,
-    VAT_PERCENTS,
+    RATE_PERCENTS,
     MAX_BOND_RATE_PERCENT,
     VOTER_DRILL_DAYS,
-    format_vat,
+    format_percent,
 )
 
 # What one batch of Steel actually costs, for the blast furnace page below.
@@ -506,7 +506,7 @@ _add(ManualSection(
         "**Ores and smelted metals trade only with the server.** You can still sell and "
         "buy them, but not list or bid for them, so every sale can count toward the job "
         "board. Gemstones, components, containers and drills can go up at any price.\n\n"
-        "**Trades between players carry the Market VAT**, if your Treasurer has set one "
+        "**Trades between players carry the Market Tax**, if your Treasurer has set one "
         "(`/help government`). It comes out of what the seller receives - the buyer always "
         "pays the price on the listing or the bid - and it's charged at whatever the rate is "
         "when the trade happens. Selling to or buying from the server never carries it.\n\n"
@@ -893,13 +893,14 @@ _add(ManualSection(
         "Treasurer ballot's winner just became Mayor, the next one down gets it.\n\n"
         "**The Treasurer sets the money.** Each machine's fee is its default times "
         + ", ".join(f"x{m:g}" for m in FEE_MULTIPLIERS) + ", and the Treasurer sets two "
-        "VATs, each one of " + ", ".join(format_vat(p) for p in VAT_PERCENTS) + ": a **Fee "
-        "VAT**, the share of every fee that goes to the government instead of being "
-        "destroyed, and a **Market VAT**, the share of every trade between players that does. "
-        "Both are VATs, not charges on top: you pay the same fee and the same price whatever "
-        "the rate - the Market VAT comes out of what the seller receives. Each setting can "
-        "change once a day.\n\n"
-        "**The Mayor spends it.** VAT lands in the treasury, and the Mayor spends it on "
+        "rates, each one of " + ", ".join(format_percent(p) for p in RATE_PERCENTS) + ". "
+        "The **Fee Share** is the government's share of every machine fee, kept instead of "
+        "being destroyed. It doesn't raise the fee: you pay the same whatever the rate, and "
+        "it only decides how much of it the government keeps. The **Market Tax** is a cut of "
+        "every trade between players, taken out of what the seller receives - the buyer pays "
+        "the price on the listing or the bid, and trades with the server never carry it. "
+        "Each setting can change once a day.\n\n"
+        "**The Mayor spends it.** Both land in the treasury, and the Mayor spends it on "
         "projects: funding a machine's level, an **Infrastructure Enhancement** (doubles one "
         f"machine's speed on top of its level - {ENHANCEMENT_PRICE_BASE:,.0f} for the first, "
         f"{ENHANCEMENT_PRICE_STEP} times as much for each after), a **Mining Slot "
@@ -911,14 +912,14 @@ _add(ManualSection(
     ),
     commands=(
         ManualCommand("/government status", "/government status",
-                      "Who holds office, the fees and VAT, the treasury and the debt, and what "
+                      "Who holds office, the fees and rates, the treasury and the debt, and what "
                       "each project costs right now."),
         ManualCommand("/vote mayor", "/vote mayor <member>", "Votes for a Mayor. Thursdays only."),
         ManualCommand("/vote treasurer", "/vote treasurer <member>", "Votes for a Treasurer. Thursdays only."),
         ManualCommand("/treasurer fee", "/treasurer fee <machine> <multiplier>",
                       "Sets one machine's fee as a multiple of its default. Treasurer only."),
-        ManualCommand("/treasurer vat", "/treasurer vat <fee|market> <percent>",
-                      "Sets the Fee VAT or the Market VAT. Treasurer only. Neither can drop "
+        ManualCommand("/treasurer rate", "/treasurer rate <fee-share|market-tax> <percent>",
+                      "Sets the Fee Share or the Market Tax. Treasurer only. Neither can drop "
                       "below the rate bonds were last sold at while the server owes on them."),
         ManualCommand("/treasurer bondrate", "/treasurer bondrate <percent>",
                       f"Sets the premium new bonds repay, 0-{MAX_BOND_RATE_PERCENT}%. Treasurer only."),
@@ -939,11 +940,11 @@ _add(ManualSection(
     notes=(
         (
             "Bonds",
-            "A bond lends the server money now and is repaid out of VAT: "
+            "A bond lends the server money now and is repaid out of its revenue: "
             + ", ".join(format_bond(c) for c in BOND_DENOMINATIONS_CENTS) + ", plus the "
             "Treasurer's premium, fixed when you buy. While the server owes anything, **all** "
-            "of both VATs repays bondholders - every hour, split in proportion to what each is "
-            f"still owed. The server can't owe more than its last {DEBT_CAP_DAYS} days of VAT. "
+            "of the Fee Share and Market Tax repays bondholders - every hour, split in proportion to what each is "
+            f"still owed. The server can't owe more than its last {DEBT_CAP_DAYS} days of revenue. "
             "Leave the server and your bonds are frozen, not lost: they pick up again when you "
             "come back.",
         ),

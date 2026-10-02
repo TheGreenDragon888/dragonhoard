@@ -7,7 +7,7 @@ Implements the server government (1.4):
                                                      settings, the treasury,
                                                      the debt and the projects
   - /treasurer fee <machine> <multiplier>          - Treasurer only
-  - /treasurer vat <fee|market> <percent>
+  - /treasurer rate <fee-share|market-tax> <percent>
   - /treasurer bondrate <percent>
   - /mayor fund <machine> <amount>                 - Mayor only
   - /mayor enhance <machine>
@@ -67,13 +67,13 @@ from utils.government import (
     BOND_DENOMINATIONS_CENTS,
     FEE_MULTIPLIERS,
     MAX_BOND_RATE_PERCENT,
-    FEE_VAT,
+    FEE_SHARE,
     MAYOR,
     OFFICE_LABELS,
     TREASURER,
-    VAT_KINDS,
-    VAT_LABELS,
-    VAT_PERCENTS,
+    RATE_KINDS,
+    RATE_LABELS,
+    RATE_PERCENTS,
     GovernmentError,
     announce_voting,
     bonanza_quote,
@@ -84,7 +84,7 @@ from utils.government import (
     count_election,
     frozen_holders,
     fund_machine,
-    format_vat,
+    format_percent,
     fund_mining_slots,
     game_date,
     game_midnight,
@@ -96,10 +96,10 @@ from utils.government import (
     next_voting_day,
     open_bond_sale,
     pay_bondholders,
-    prune_tax_history,
+    prune_revenue_history,
     set_bond_rate,
     set_fee_multiplier,
-    set_vat,
+    set_rate,
     start_bonanza,
     voting_open,
 )
@@ -117,10 +117,11 @@ MULTIPLIER_CHOICES = [
     app_commands.Choice(name=f"x{multiplier:g}", value=str(multiplier)) for multiplier in FEE_MULTIPLIERS
 ]
 # Strings for the same reason, since 6.25 is one of them.
-VAT_CHOICES = [
-    app_commands.Choice(name=format_vat(percent), value=str(percent)) for percent in VAT_PERCENTS
+RATE_CHOICES = [
+    app_commands.Choice(name=format_percent(percent), value=str(percent)) for percent in RATE_PERCENTS
 ]
-VAT_KIND_CHOICES = [app_commands.Choice(name=VAT_LABELS[kind], value=kind) for kind in VAT_KINDS]
+# Named by the value itself, so the dropdown reads fee-share and market-tax.
+RATE_KIND_CHOICES = [app_commands.Choice(name=kind, value=kind) for kind in RATE_KINDS]
 DENOMINATION_CHOICES = [
     app_commands.Choice(name=format_currency(cents / 100), value=cents)
     for cents in BOND_DENOMINATIONS_CENTS
@@ -154,7 +155,7 @@ class GovernmentCog(commands.Cog):
     government_group = app_commands.Group(name="government", description="This server's Mayor, Treasurer and treasury")
     treasurer_group = app_commands.Group(name="treasurer", description="The Treasurer's settings (Treasurer only)")
     mayor_group = app_commands.Group(name="mayor", description="The Mayor's projects (Mayor only)")
-    bonds_group = app_commands.Group(name="bonds", description="Lend this server currency and be repaid out of its VAT")
+    bonds_group = app_commands.Group(name="bonds", description="Lend this server currency and be repaid out of its revenue")
 
     # -----------------------------------------------------------------------
     # Membership, and the lazy count
@@ -237,7 +238,7 @@ class GovernmentCog(commands.Cog):
     # /government status
     # -----------------------------------------------------------------------
 
-    @government_group.command(name="status", description="Who holds office, the VAT, the treasury and the projects")
+    @government_group.command(name="status", description="Who holds office, the rates, the treasury and the projects")
     async def government_status_command(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
         await self._count_if_due(interaction.guild, interaction.guild_id)
@@ -251,7 +252,7 @@ class GovernmentCog(commands.Cog):
         # fields are figures. Until 1.4.1 the title repeated the header and the
         # fees and projects were two five-line lists naming every machine twice.
         embed = make_embed(
-            f"Fee VAT {format_vat(status.fee_vat_percent)} · Market VAT {format_vat(status.market_vat_percent)} · "
+            f"Fee Share {format_percent(status.fee_share_percent)} · Market Tax {format_percent(status.market_tax_percent)} · "
             f"Bond rate {status.bond_rate_percent}%",
             GOVERNMENT_COLOR,
         )
@@ -361,23 +362,23 @@ class GovernmentCog(commands.Cog):
             f"{FEE_UNITS.get(machine.value, 'item')} (x{value:g}).",
         )
 
-    @treasurer_group.command(name="vat", description="Set the Fee VAT or the Market VAT (each once a day)")
+    @treasurer_group.command(name="rate", description="Set the Fee Share or the Market Tax (each once a day)")
     @app_commands.describe(
-        kind="Fee: a share of every machine fee. Market: a share of every trade between players",
-        percent="Taken out of the fee or the seller's proceeds, never added on top",
+        kind="fee-share: of every machine fee. market-tax: of every trade between players",
+        percent="Never added on top: a share of the fee, or a cut of the seller's proceeds",
     )
-    @app_commands.choices(kind=VAT_KIND_CHOICES, percent=VAT_CHOICES)
-    async def treasurer_vat(
+    @app_commands.choices(kind=RATE_KIND_CHOICES, percent=RATE_CHOICES)
+    async def treasurer_rate(
         self, interaction: discord.Interaction,
         kind: app_commands.Choice[str], percent: app_commands.Choice[str],
     ):
         value = float(percent.value)
-        what = "every machine fee" if kind.value == FEE_VAT else "every trade between players"
+        what = "every machine fee" if kind.value == FEE_SHARE else "every trade between players"
         await self._treasurer_action(
             interaction,
-            lambda tx: set_vat(tx, interaction.guild_id, interaction.user.id, kind.value, value),
-            f"🏛️ {VAT_LABELS[kind.value]} Set",
-            f"The {VAT_LABELS[kind.value]} is now **{format_vat(value)}** of {what}.",
+            lambda tx: set_rate(tx, interaction.guild_id, interaction.user.id, kind.value, value),
+            f"🏛️ {RATE_LABELS[kind.value]} Set",
+            f"The {RATE_LABELS[kind.value]} is now **{format_percent(value)}** of {what}.",
         )
 
     @treasurer_group.command(name="bondrate", description="Set the premium new bonds repay (once a day)")
@@ -535,7 +536,7 @@ class GovernmentCog(commands.Cog):
             f"You lent the server **{_cents(bond.principal_cents, emoji)}**.",
             [
                 ("Lent", currency_line(bond.principal_cents / 100, balance, emoji, gained=False)),
-                ("Repays", f"{_cents(bond.owed_cents, emoji)} · {bond.rate_percent}% on top, hourly from VAT"),
+                ("Repays", f"{_cents(bond.owed_cents, emoji)} · {bond.rate_percent}% on top, hourly from revenue"),
             ],
             footer_note="/bonds holdings shows what is still owed",
         )
@@ -615,7 +616,7 @@ class GovernmentCog(commands.Cog):
                 continue
             await self._guarded("unfreezing bonds", guild_id, self._unfreeze, guild_id, holder_id)
 
-        await prune_tax_history(self.db)
+        await prune_revenue_history(self.db)
 
     async def _guarded(self, what: str, guild_id: int, step, *args):
         try:

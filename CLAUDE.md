@@ -145,7 +145,7 @@ that render those numbers to a player take a `unit` argument for that reason
 
 Every fee a cog charges goes through `charge_machine_fee`
 (utils/government.py), which takes it from the player, holds the Treasurer's
-Fee VAT share for the government, and burns and banks the rest through
+Fee Share for the government, and burns and banks the rest through
 `bank_infrastructure_fee` - the single place a fee turns into progress: it
 credits `<machine>_fees_collected`, re-levels that machine, and re-checks the
 server's mining slots. Do not write either step in a cog. Mining slots (1.3) are the
@@ -170,7 +170,8 @@ an elected Mayor and Treasurer. Admins have no say in it - that is why
 clock, counted at the midnight that ends it, both lazily by any government
 command and by an hourly loop that also pays bondholders. The rule the module
 keeps: **currency leaves the government only as a burn or a bond repayment.**
-VAT is held, not burned, in `treasury` or `repayment_pool`, so
+Its revenue (the Fee Share and the Market Tax) is held, not burned, in
+`treasury` or `repayment_pool`, so
 `circulating_currency` counts both (the same argument as order escrow);
 `spend_treasury` is the one way money leaves the treasury, and every caller is
 a project, so every such payment is a burn. The bond premium is the one leak.
@@ -341,9 +342,9 @@ to break:
   counted. Handing one back goes through `return_listing`/`refund_order`, the one
   place each book's escrow is returned (cancel, expiry and guild removal).
 - **A player-to-player payment goes through `pay_market_seller`**
-  (`utils/government.py`), which pays the seller less the Market VAT and holds
-  the VAT like Fee VAT. Write `adjust_currency_balance` for a seller and the
-  VAT is skipped. The buyer always pays the quoted price; a trade with the
+  (`utils/government.py`), which pays the seller less the Market Tax and holds
+  the tax like the Fee Share. Write `adjust_currency_balance` for a seller and
+  the tax is skipped. The buyer always pays the quoted price; a trade with the
   server never carries it.
 - **Order escrow is not a burn.** It leaves `server_currency_balances` but not
   the economy, so `circulating_currency` in `utils/db_helpers.py` adds it back -

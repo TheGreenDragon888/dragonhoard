@@ -123,23 +123,24 @@ CREATE TABLE IF NOT EXISTS server_config (
     factory_enhancement_level       INTEGER NOT NULL DEFAULT 0,
     press_enhancement_level         INTEGER NOT NULL DEFAULT 0,
     scrapper_enhancement_level      INTEGER NOT NULL DEFAULT 0,
-    -- The Fee VAT - the share of every machine fee that goes to the
-    -- government instead of being burned - named before it was called a VAT.
-    -- One of utils/government.py: VAT_PERCENTS; the steps that are not whole
+    -- The Fee Share - the share of every machine fee that goes to the
+    -- government instead of being burned - named from 1.4, when it was called
+    -- the tax.
+    -- One of utils/government.py: RATE_PERCENTS; the steps that are not whole
     -- are stored as REAL despite the INTEGER declaration, which SQLite allows.
     -- Then the bond premium, in whole percent.
     tax_percent          INTEGER NOT NULL DEFAULT 0,
     tax_changed          TEXT,
     bond_rate_percent    INTEGER NOT NULL DEFAULT 0,
     bond_rate_changed    TEXT,
-    -- The Market VAT: the share of every player-to-player trade the government
-    -- keeps, out of what the seller receives. One of
-    -- utils/government.py: VAT_PERCENTS, which are not all whole.
-    market_vat_percent   REAL NOT NULL DEFAULT 0.0,
-    market_vat_changed   TEXT,
+    -- The Market Tax: a transaction tax on every player-to-player trade, taken
+    -- out of what the seller receives. One of
+    -- utils/government.py: RATE_PERCENTS, which are not all whole.
+    market_tax_percent   REAL NOT NULL DEFAULT 0.0,
+    market_tax_changed   TEXT,
     -- Currency the government holds. NOT burned: utils/db_helpers.py:
     -- circulating_currency adds both back, as it does order and bet escrow.
-    -- The treasury is what the Mayor spends; the repayment pool is VAT
+    -- The treasury is what the Mayor spends; the repayment pool is revenue
     -- collected while the server owes bondholders, paid out hourly.
     treasury             REAL NOT NULL DEFAULT 0.0,
     repayment_pool       REAL NOT NULL DEFAULT 0.0,
@@ -783,7 +784,7 @@ CREATE TABLE IF NOT EXISTS government_votes (
     PRIMARY KEY (guild_id, voting_day, office, voter_id)
 );
 
--- A bond: currency a player lent the server, repaid out of VAT.
+-- A bond: currency a player lent the server, repaid out of its revenue.
 --
 -- Integer cents for the reason prediction_wagers.stake_cents is: repayment
 -- divides one pool between every creditor (utils/betting.py: apportion) and
@@ -792,8 +793,8 @@ CREATE TABLE IF NOT EXISTS government_votes (
 -- owed_cents is principal plus the premium, fixed at sale; remaining_cents is
 -- what is still to be paid. frozen marks a holder who has left the server:
 -- payouts skip them and the debt cap ignores them until they are back.
--- tax_percent_at_sale and market_vat_percent_at_sale are what stop the
--- Treasurer cutting either VAT below the rate the latest bond was sold under
+-- tax_percent_at_sale and market_tax_percent_at_sale are what stop the
+-- Treasurer cutting either rate below the one the latest bond was sold under
 -- while debt is owed.
 CREATE TABLE IF NOT EXISTS government_bonds (
     bond_id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -804,7 +805,7 @@ CREATE TABLE IF NOT EXISTS government_bonds (
     owed_cents          INTEGER NOT NULL,
     remaining_cents     INTEGER NOT NULL CHECK (remaining_cents >= 0),
     tax_percent_at_sale INTEGER NOT NULL,
-    market_vat_percent_at_sale REAL NOT NULL DEFAULT 0.0,
+    market_tax_percent_at_sale REAL NOT NULL DEFAULT 0.0,
     frozen              INTEGER NOT NULL DEFAULT 0,
     sold_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -814,9 +815,10 @@ CREATE TABLE IF NOT EXISTS government_bonds (
 CREATE INDEX IF NOT EXISTS idx_government_bonds_owed
     ON government_bonds (guild_id) WHERE remaining_cents > 0;
 
--- VAT collected per server per game day. What the bond debt cap is measured
--- against: debt may not exceed the previous 7 days' VAT. Pruned past
--- utils/government.py: TAX_HISTORY_DAYS.
+-- Revenue (Fee Share and Market Tax) collected per server per game day. What
+-- the bond debt cap is measured against: debt may not exceed the previous 7
+-- days' revenue. Pruned past
+-- utils/government.py: REVENUE_HISTORY_DAYS.
 CREATE TABLE IF NOT EXISTS government_tax_daily (
     guild_id  INTEGER NOT NULL,
     day       TEXT NOT NULL,         -- game date
