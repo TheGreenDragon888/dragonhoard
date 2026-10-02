@@ -57,7 +57,7 @@ from utils.government import (
     BOND_DENOMINATIONS_CENTS,
     DEBT_CAP_DAYS,
     FEE_MULTIPLIERS,
-    MARKET_VAT_PERCENTS,
+    VAT_PERCENTS,
     MAX_BOND_RATE_PERCENT,
     VOTER_DRILL_DAYS,
     format_vat,
@@ -892,13 +892,13 @@ _add(ManualSection(
         "Mayor until somebody votes for somebody else. The Mayor is decided first; if the "
         "Treasurer ballot's winner just became Mayor, the next one down gets it.\n\n"
         "**The Treasurer sets the money.** Each machine's fee is its default times "
-        + ", ".join(f"x{m:g}" for m in FEE_MULTIPLIERS) + ", and a **Fee VAT** of 0-100% of every "
-        "fee goes to the government instead of being destroyed. It's a VAT, not a charge on "
-        "top: you pay the same fee whatever the rate, and the rate only decides how much of "
-        "it the government keeps. The Treasurer also sets a **Market VAT** of "
-        + ", ".join(format_vat(p) for p in MARKET_VAT_PERCENTS) + " on every trade between "
-        "players, taken out of what the seller receives. Each setting can change once a "
-        "day.\n\n"
+        + ", ".join(f"x{m:g}" for m in FEE_MULTIPLIERS) + ", and the Treasurer sets two "
+        "VATs, each one of " + ", ".join(format_vat(p) for p in VAT_PERCENTS) + ": a **Fee "
+        "VAT**, the share of every fee that goes to the government instead of being "
+        "destroyed, and a **Market VAT**, the share of every trade between players that does. "
+        "Both are VATs, not charges on top: you pay the same fee and the same price whatever "
+        "the rate - the Market VAT comes out of what the seller receives. Each setting can "
+        "change once a day.\n\n"
         "**The Mayor spends it.** VAT lands in the treasury, and the Mayor spends it on "
         "projects: funding a machine's level, an **Infrastructure Enhancement** (doubles one "
         f"machine's speed on top of its level - {ENHANCEMENT_PRICE_BASE:,.0f} for the first, "
@@ -917,13 +917,9 @@ _add(ManualSection(
         ManualCommand("/vote treasurer", "/vote treasurer <member>", "Votes for a Treasurer. Thursdays only."),
         ManualCommand("/treasurer fee", "/treasurer fee <machine> <multiplier>",
                       "Sets one machine's fee as a multiple of its default. Treasurer only."),
-        ManualCommand("/treasurer feevat", "/treasurer feevat <percent>",
-                      "Sets the Fee VAT on every machine fee. Treasurer only. It can't drop below "
-                      "the rate bonds were last sold at while the server owes on them."),
-        ManualCommand("/treasurer marketvat", "/treasurer marketvat <percent>",
-                      "Sets the Market VAT on every trade between players. Treasurer only. It "
-                      "can't drop below the rate bonds were last sold at while the server owes "
-                      "on them."),
+        ManualCommand("/treasurer vat", "/treasurer vat <fee|market> <percent>",
+                      "Sets the Fee VAT or the Market VAT. Treasurer only. Neither can drop "
+                      "below the rate bonds were last sold at while the server owes on them."),
         ManualCommand("/treasurer bondrate", "/treasurer bondrate <percent>",
                       f"Sets the premium new bonds repay, 0-{MAX_BOND_RATE_PERCENT}%. Treasurer only."),
         ManualCommand("/mayor fund", "/mayor fund <machine> <amount>",

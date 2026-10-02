@@ -555,7 +555,7 @@ class Database(_Executor):
                 if column not in config_columns:
                     conn.execute(f"ALTER TABLE server_config ADD COLUMN {column} {definition}")
 
-            # The Market VAT's floor (utils/government.py: market_vat_floor)
+            # The Market VAT's floor (utils/government.py: vat_floor)
             # reads the rate each bond was sold under. A plain add with a
             # default, introspection-gated like the columns above. Every bond
             # already sold gets 0, which is right: there was no Market VAT when
@@ -672,6 +672,13 @@ class Database(_Executor):
             # whether that has happened, so it is gated on user_version.
             if version < 6:
                 self._migrate_return_server_only_entries(conn)
+
+            # Fee VAT moved from any whole percent onto the steps the Market
+            # VAT uses (utils/government.py: VAT_PERCENTS). A rate between two
+            # steps is a value, not a shape, so the schema can't tell whether
+            # this has run: gated on user_version.
+            if version < 7:
+                self._migrate_fee_vat_to_steps(conn)
 
             # server_mining_pool.carry banked the fraction of a gemstone a pool
             # had accrued from the daily top-up. The bag replaced that outright
@@ -928,6 +935,32 @@ class Database(_Executor):
     # message listing them, not five.
     SERVER_ONLY_RETURN_NOTICE = "market_server_only_returned"
     SERVER_ONLY_RETURN_LINES = 20
+
+    @staticmethod
+    def _migrate_fee_vat_to_steps(conn: sqlite3.Connection):
+        """Rounds every Fee VAT that is not one of the steps down to the step
+        below it - the server's rate, and the rate each bond recorded at its
+        sale, so a bond's floor never sits above every rate a Treasurer could
+        set. Down rather than to the nearest, as decided when /treasurer vat
+        replaced /treasurer feevat (docs/government.md section 2)."""
+        from utils.government import VAT_PERCENTS, vat_step_at_or_below
+
+        conn.execute("BEGIN")
+        try:
+            for table, column in (("server_config", "tax_percent"),
+                                  ("government_bonds", "tax_percent_at_sale")):
+                rates = [row[0] for row in conn.execute(f"SELECT DISTINCT {column} FROM {table}")]
+                for rate in rates:
+                    if rate not in VAT_PERCENTS:
+                        conn.execute(
+                            f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
+                            (vat_step_at_or_below(rate), rate),
+                        )
+            conn.execute("PRAGMA user_version = 7")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
 
     @staticmethod
     def _migrate_return_server_only_entries(conn: sqlite3.Connection):

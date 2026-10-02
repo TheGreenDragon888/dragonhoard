@@ -377,9 +377,10 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         way, so the schema can't say whether they've run): 4 gave pools and
         drills a per-material composition, and 5 replaced the daily allowance
         with a full bag. 1.4.1 adds 6, which hands back player-book entries for
-        the materials that became server-only."""
+        the materials that became server-only, and 7 moves every Fee VAT onto
+        the VAT steps."""
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 6)
+        self.assertEqual(row[0], 7)
 
     async def test_the_daily_top_ups_bookkeeping_is_gone(self):
         # There is no daily event left for it to record, and a column nothing
@@ -775,9 +776,9 @@ class ServerOnlyEntriesMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2,000 Coal", buyer["body"])
         self.assertIn("24.00", buyer["body"])
 
-    async def test_it_lands_on_version_6_and_does_not_run_twice(self):
+    async def test_it_lands_on_the_current_version_and_does_not_run_twice(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 6)
+        self.assertEqual(row[0], 7)
         await self.db.init_schema()
         balance = await self.db.fetchone(
             "SELECT balance FROM server_currency_balances WHERE user_id = ?", (self.BUYER,)
@@ -901,15 +902,73 @@ class MarketVatMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["tax_percent"], 20, "the Fee VAT is untouched")
 
     async def test_existing_bonds_put_no_floor_under_it(self):
-        from utils.government import fee_vat_floor, market_vat_floor
+        from utils.government import FEE_VAT, MARKET_VAT, vat_floor
 
-        self.assertEqual(await market_vat_floor(self.db, GUILD), 0.0)
-        self.assertEqual(await fee_vat_floor(self.db, GUILD), 20)
+        self.assertEqual(await vat_floor(self.db, GUILD, MARKET_VAT), 0.0)
+        self.assertEqual(await vat_floor(self.db, GUILD, FEE_VAT), 20)
 
     async def test_opening_it_again_changes_nothing(self):
         await self.db.init_schema()
         row = await self.db.fetchone("SELECT market_vat_percent_at_sale FROM government_bonds")
         self.assertEqual(row["market_vat_percent_at_sale"], 0.0)
+
+
+class FeeVatStepMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """Fee VAT moved from any whole percent onto VAT_PERCENTS. Every rate off
+    the steps - a server's and each bond's record of it - is rounded down to
+    the step below, and rates already on a step are left alone.
+
+    The old state is a current database with user_version wound back to 6 and
+    whole-percent rates written in, which is all 1.4.1 ever stored.
+    """
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        for guild, rate in ((1, 0), (2, 15), (3, 33), (4, 20), (5, 100), (6, 99), (7, 1)):
+            conn.execute(
+                "INSERT INTO server_config (guild_id, tax_percent) VALUES (?, ?)", (guild, rate)
+            )
+        conn.execute(
+            "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
+            "owed_cents, remaining_cents, tax_percent_at_sale) VALUES (3, ?, 500, 0, 500, 500, 33)",
+            (USER,),
+        )
+        conn.execute("PRAGMA user_version = 6")
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_off_step_rates_round_down_and_steps_stay(self):
+        rows = await self.db.fetchall("SELECT guild_id, tax_percent FROM server_config ORDER BY guild_id")
+        self.assertEqual(
+            {row["guild_id"]: row["tax_percent"] for row in rows},
+            {1: 0, 2: 12.5, 3: 20, 4: 20, 5: 100, 6: 40, 7: 0},
+        )
+
+    async def test_a_bonds_floor_rounds_down_with_it(self):
+        row = await self.db.fetchone("SELECT tax_percent_at_sale FROM government_bonds")
+        self.assertEqual(row["tax_percent_at_sale"], 20)
+
+    async def test_it_runs_once(self):
+        row = await self.db.fetchone("PRAGMA user_version")
+        self.assertEqual(row[0], 7)
+        await self.db.execute("UPDATE server_config SET tax_percent = 15 WHERE guild_id = 2")
+        await self.db.init_schema()
+        row = await self.db.fetchone("SELECT tax_percent FROM server_config WHERE guild_id = 2")
+        self.assertEqual(row["tax_percent"], 15, "a later open must not touch it again")
 
 
 if __name__ == "__main__":

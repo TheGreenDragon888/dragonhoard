@@ -52,8 +52,7 @@ Tests: `tests/test_government.py`.
 | Setting | Values | Default |
 | --- | --- | --- |
 | Fee multiplier, per machine | x0.25, x0.5, x0.625, x0.8, x1, x1.25, x1.6, x2, x4 | x1 |
-| Fee VAT | 0-100% | 0% |
-| Market VAT | 0%, 2.5%, 5%, 6.25%, 8%, 10%, 12.5%, 16%, 20%, 40%, 100% | 0% |
+| Fee VAT and Market VAT, each | 0%, 2.5%, 5%, 6.25%, 8%, 10%, 12.5%, 16%, 20%, 40%, 100% | 0% |
 | Bond rate (a one-time premium) | 0-5% | 0% |
 
 A machine's fee is its `config.py` default times its multiplier
@@ -72,9 +71,23 @@ Each setting (each machine's multiplier separately) may change **once per game
 day**. Without that, a Treasurer could set x0.25, queue their own jobs - fees
 are charged at queue time - and set x4 again.
 
-While the server owes active creditors, the Fee VAT cannot drop below the rate
-in force when the most recent bond still owed was sold (`fee_vat_floor`).
-Bondholders lent against that VAT, and it is the only thing that repays them.
+While the server owes active creditors, neither VAT can drop below the rate in
+force when the most recent bond still owed was sold (`vat_floor`). Bondholders
+lent against that VAT, and it is the only thing that repays them.
+
+**One command, one ladder.** Both VATs are set with `/treasurer vat <fee|market>
+<percent>` from the same steps (`VAT_PERCENTS`), picked the way the fee
+multipliers are and built from them: the fee ladder times ten. 10% sits where
+x1 does, 5% to 20% splits each doubling in three with an exact inverse for
+every raise, 2.5% and 40% are whole doublings beyond that, and 0% (off) and
+100% bound the range. Each VAT still changes once a day on its own.
+
+Until then Fee VAT was any whole percent, set with its own command. When it
+moved onto the steps, every rate between two of them was rounded **down** to
+the step below - a server's rate and each bond's record of it alike, so no
+bond's floor was left above every rate a Treasurer could set
+(`_migrate_fee_vat_to_steps`, user_version 7). Some steps are not whole; the
+INTEGER columns that hold Fee VAT store those as REAL, which SQLite allows.
 
 **Why "VAT".** Until the rename it was called the tax, which read as a charge
 on top of the fee. It never was one: the player pays the same fee at any rate,
@@ -95,12 +108,6 @@ the price on the listing or the bid whatever the rate.
   than takes part in. A sale to the server or a purchase from it is untouched,
   so nothing here changes what mining and selling earn, or the job board's
   arithmetic (docs/market.md section 1).
-- **Preset steps, not any number**, picked the way the fee multipliers are and
-  built from them: the fee ladder times ten (`MARKET_VAT_PERCENTS`). 10% sits
-  where x1 does, 5% to 20% splits each doubling in three with an exact inverse
-  for every raise, 2.5% and 40% are whole doublings beyond that, and 0% (off)
-  and 100% bound the range. Not every step is a whole percent, so the column
-  is a REAL, validated against the ladder as the multipliers are.
 - **No lock-in.** A trade is charged the rate in force when it happens, not the
   rate when the listing or bid was posted - the same as a fee is charged at the
   rate in force when the job is queued. The once-a-day limit applies to it like
@@ -110,7 +117,7 @@ the price on the listing or the bid whatever the rate.
   add back up to exactly what the buyer paid.
 - **It repays bonds and counts toward the debt cap** like Fee VAT, through the
   same `collect_tax`. Bondholders lend against it too, so it has its own floor
-  (`market_vat_floor`, from `government_bonds.market_vat_percent_at_sale`).
+  (`vat_floor`, from `government_bonds.market_vat_percent_at_sale`).
   Bonds sold before it existed were lent against none and set no floor.
 
 Removing `/setup fee` discarded every server's custom fee. In the production

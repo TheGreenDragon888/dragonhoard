@@ -83,27 +83,53 @@ OFFICE_LABELS = {MAYOR: "Mayor", TREASURER: "Treasurer"}
 # utils/formatting.py: format_exact_price shows in full.
 FEE_MULTIPLIERS = (0.25, 0.5, 0.625, 0.8, 1.0, 1.25, 1.6, 2.0, 4.0)
 
-# The Fee VAT: the share of every machine fee the government keeps. It is a
-# VAT rather than a tax on top - the player pays the same fee at any rate, and
-# the rate only decides how much of it is held instead of burned. Stored in
-# server_config.tax_percent, the column's name from before it was called that.
-MAX_FEE_VAT_PERCENT = 100
-
-# The Market VAT: the share of every player-to-player trade the government
-# keeps, taken out of what the seller receives - the buyer pays the price they
-# were quoted at any rate. Only trades between players carry it, because those
-# are the ones the server facilitates rather than takes part in; a sale to or a
-# purchase from the server is untouched. Charged at whatever rate is in force
-# when the trade happens - a listing does not lock in the rate it was posted
-# under.
+# The government's two VATs. Both are VATs rather than charges on top: the
+# payer pays the same at any rate, and the rate only decides how much of it the
+# government holds.
 #
-# Fixed steps chosen the way FEE_MULTIPLIERS are, and in fact built from them:
-# the fee ladder times ten, so 10% sits where x1 does, 5% to 20% splits each
-# doubling in three with an exact inverse for every raise, and 2.5% and 40%
-# are whole doublings outside that. 0% switches it off, and 100% is the top of
-# the range. tests/test_government.py checks the ladder against the fee one.
-MARKET_VAT_PERCENTS = (0.0, 2.5, 5.0, 6.25, 8.0, 10.0, 12.5, 16.0, 20.0, 40.0, 100.0)
-MAX_MARKET_VAT_PERCENT = 100.0
+#   FEE VAT - a share of every machine fee, held instead of burned. Stored in
+#   server_config.tax_percent, the column's name from before it was called a
+#   VAT.
+#
+#   MARKET VAT - a share of every player-to-player trade, out of what the
+#   seller receives. Only trades between players carry it, because those are
+#   the ones the server facilitates rather than takes part in; a sale to or a
+#   purchase from the server is untouched. Charged at whatever rate is in force
+#   when the trade happens - a listing does not lock in the rate it was posted
+#   under.
+FEE_VAT = "fee"
+MARKET_VAT = "market"
+VAT_KINDS = (FEE_VAT, MARKET_VAT)
+VAT_LABELS = {FEE_VAT: "Fee VAT", MARKET_VAT: "Market VAT"}
+# Each kind's server_config rate column, the column that stamps the day it
+# last changed, and the government_bonds column recording it at each sale.
+_VAT_COLUMNS = {
+    FEE_VAT: ("tax_percent", "tax_changed", "tax_percent_at_sale"),
+    MARKET_VAT: ("market_vat_percent", "market_vat_changed", "market_vat_percent_at_sale"),
+}
+
+# The steps either VAT may be set to - one list for both, so /treasurer vat
+# offers one dropdown whichever it sets. Fixed steps chosen the way
+# FEE_MULTIPLIERS are, and in fact built from them: the fee ladder times ten,
+# so 10% sits where x1 does, 5% to 20% splits each doubling in three with an
+# exact inverse for every raise, and 2.5% and 40% are whole doublings outside
+# that. 0% switches a VAT off, and 100% is the top of the range.
+# tests/test_government.py checks the ladder against the fee one.
+#
+# Fee VAT was any whole percent until it moved onto this list, and a rate that
+# was not on it was rounded down to the step below (database/db.py:
+# _migrate_fee_vat_to_steps). Some steps are not whole, which the INTEGER
+# columns that hold Fee VAT store as REAL - SQLite's INTEGER affinity keeps a
+# value that would not convert losslessly (tests/test_migrations.py pins it).
+VAT_PERCENTS = (0.0, 2.5, 5.0, 6.25, 8.0, 10.0, 12.5, 16.0, 20.0, 40.0, 100.0)
+MAX_VAT_PERCENT = 100.0
+
+
+def vat_step_at_or_below(percent: float) -> float:
+    """The highest step in VAT_PERCENTS that is not above `percent`."""
+    return max(step for step in VAT_PERCENTS if step <= percent)
+
+
 # The ceiling on the bond premium. It is the only currency this whole feature
 # lets escape being burned, so it is what bounds the leak (see the module
 # docstring).
@@ -265,7 +291,7 @@ async def charge_machine_fee(
     percent = cfg["tax_percent"] if cfg else 0
     # 100% is special-cased so the untaxed share is exactly zero rather than
     # whatever amount - amount * 100 / 100 rounds to.
-    tax = amount if percent >= MAX_FEE_VAT_PERCENT else amount * percent / 100
+    tax = amount if percent >= MAX_VAT_PERCENT else amount * percent / 100
     kept = amount - tax
 
     await record_burned(db, guild_id, kept)
@@ -286,7 +312,7 @@ def market_vat_units(gross_units: int, percent: float) -> int:
     down, so a fraction of a unit stays with the seller. 100% is special-cased
     for the reason charge_machine_fee's is.
     """
-    if percent >= MAX_MARKET_VAT_PERCENT:
+    if percent >= MAX_VAT_PERCENT:
         return gross_units
     return gross_units * round(percent * 100) // 10_000
 
@@ -402,69 +428,44 @@ async def set_fee_multiplier(
     )
 
 
-async def fee_vat_floor(db: _Executor, guild_id: int) -> int:
-    """The lowest the Fee VAT may be set while the server owes active
-    creditors: the rate in force when the most recent bond still owed was sold.
-    Bondholders lent against that VAT, and it is the only thing that repays
-    them."""
+async def vat_floor(db: _Executor, guild_id: int, kind: str) -> float:
+    """The lowest a VAT may be set while the server owes active creditors: the
+    rate in force when the most recent bond still owed was sold. Both VATs
+    repay bondholders, so they lent against both, and they are the only thing
+    that repays them."""
+    at_sale = _VAT_COLUMNS[kind][2]
     row = await db.fetchone(
-        f"SELECT tax_percent_at_sale FROM government_bonds WHERE guild_id = ? "
+        f"SELECT {at_sale} FROM government_bonds WHERE guild_id = ? "
         f"AND {OWED_BONDS_SQL} AND frozen = 0 ORDER BY bond_id DESC LIMIT 1",
         (guild_id,),
     )
-    return row["tax_percent_at_sale"] if row else 0
+    return row[at_sale] if row else 0.0
 
 
-async def set_fee_vat(tx: _Executor, guild_id: int, actor_id: int, percent: int, now: datetime | None = None) -> None:
-    if not 0 <= percent <= MAX_FEE_VAT_PERCENT:
-        raise GovernmentError(f"The Fee VAT must be between 0% and {MAX_FEE_VAT_PERCENT}%.")
-    await ensure_server_row(tx, guild_id)
-    await require_office(tx, guild_id, actor_id, TREASURER)
-    row = await tx.fetchone("SELECT tax_changed FROM server_config WHERE guild_id = ?", (guild_id,))
-    _refuse_second_change(row["tax_changed"], "Fee VAT", now)
-    floor = await fee_vat_floor(tx, guild_id)
-    if percent < floor:
-        raise GovernmentError(
-            f"The server owes bondholders who lent at a {floor}% Fee VAT, so the Fee VAT "
-            f"can't go below {floor}% until they are repaid."
-        )
-    await tx.execute(
-        "UPDATE server_config SET tax_percent = ?, tax_changed = ? WHERE guild_id = ?",
-        (percent, game_date(now), guild_id),
-    )
-
-
-async def market_vat_floor(db: _Executor, guild_id: int) -> float:
-    """fee_vat_floor for the Market VAT. It repays bondholders as Fee VAT
-    does, so they lent against it too."""
-    row = await db.fetchone(
-        f"SELECT market_vat_percent_at_sale FROM government_bonds WHERE guild_id = ? "
-        f"AND {OWED_BONDS_SQL} AND frozen = 0 ORDER BY bond_id DESC LIMIT 1",
-        (guild_id,),
-    )
-    return row["market_vat_percent_at_sale"] if row else 0.0
-
-
-async def set_market_vat(
-    tx: _Executor, guild_id: int, actor_id: int, percent: float, now: datetime | None = None,
+async def set_vat(
+    tx: _Executor, guild_id: int, actor_id: int, kind: str, percent: float,
+    now: datetime | None = None,
 ) -> None:
-    if percent not in MARKET_VAT_PERCENTS:
+    if kind not in VAT_KINDS:
+        raise ValueError(f"unknown VAT {kind!r}")
+    label = VAT_LABELS[kind]
+    if percent not in VAT_PERCENTS:
         raise GovernmentError(
-            "The Market VAT must be one of "
-            + ", ".join(format_vat(p) for p in MARKET_VAT_PERCENTS) + "."
+            f"The {label} must be one of " + ", ".join(format_vat(p) for p in VAT_PERCENTS) + "."
         )
+    rate, changed, _ = _VAT_COLUMNS[kind]
     await ensure_server_row(tx, guild_id)
     await require_office(tx, guild_id, actor_id, TREASURER)
-    row = await tx.fetchone("SELECT market_vat_changed FROM server_config WHERE guild_id = ?", (guild_id,))
-    _refuse_second_change(row["market_vat_changed"], "Market VAT", now)
-    floor = await market_vat_floor(tx, guild_id)
+    row = await tx.fetchone(f"SELECT {changed} FROM server_config WHERE guild_id = ?", (guild_id,))
+    _refuse_second_change(row[changed], label, now)
+    floor = await vat_floor(tx, guild_id, kind)
     if percent < floor:
         raise GovernmentError(
-            f"The server owes bondholders who lent at a {format_vat(floor)} Market VAT, so the "
-            f"Market VAT can't go below {format_vat(floor)} until they are repaid."
+            f"The server owes bondholders who lent at a {format_vat(floor)} {label}, so the "
+            f"{label} can't go below {format_vat(floor)} until they are repaid."
         )
     await tx.execute(
-        "UPDATE server_config SET market_vat_percent = ?, market_vat_changed = ? WHERE guild_id = ?",
+        f"UPDATE server_config SET {rate} = ?, {changed} = ? WHERE guild_id = ?",
         (percent, game_date(now), guild_id),
     )
 
@@ -1164,7 +1165,7 @@ async def guilds_with_bonanza(db: _Executor, now: datetime | None = None) -> set
 class GovernmentStatus(NamedTuple):
     mayor: int | None
     treasurer: int | None
-    fee_vat_percent: int
+    fee_vat_percent: float
     market_vat_percent: float
     bond_rate_percent: int
     multipliers: dict[str, float]

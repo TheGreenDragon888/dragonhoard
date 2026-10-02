@@ -7,8 +7,7 @@ Implements the server government (1.4):
                                                      settings, the treasury,
                                                      the debt and the projects
   - /treasurer fee <machine> <multiplier>          - Treasurer only
-  - /treasurer feevat <percent>
-  - /treasurer marketvat <percent>
+  - /treasurer vat <fee|market> <percent>
   - /treasurer bondrate <percent>
   - /mayor fund <machine> <amount>                 - Mayor only
   - /mayor enhance <machine>
@@ -68,11 +67,13 @@ from utils.government import (
     BOND_DENOMINATIONS_CENTS,
     FEE_MULTIPLIERS,
     MAX_BOND_RATE_PERCENT,
-    MARKET_VAT_PERCENTS,
-    MAX_FEE_VAT_PERCENT,
+    FEE_VAT,
     MAYOR,
     OFFICE_LABELS,
     TREASURER,
+    VAT_KINDS,
+    VAT_LABELS,
+    VAT_PERCENTS,
     GovernmentError,
     announce_voting,
     bonanza_quote,
@@ -98,8 +99,7 @@ from utils.government import (
     prune_tax_history,
     set_bond_rate,
     set_fee_multiplier,
-    set_fee_vat,
-    set_market_vat,
+    set_vat,
     start_bonanza,
     voting_open,
 )
@@ -117,9 +117,10 @@ MULTIPLIER_CHOICES = [
     app_commands.Choice(name=f"x{multiplier:g}", value=str(multiplier)) for multiplier in FEE_MULTIPLIERS
 ]
 # Strings for the same reason, since 6.25 is one of them.
-MARKET_VAT_CHOICES = [
-    app_commands.Choice(name=format_vat(percent), value=str(percent)) for percent in MARKET_VAT_PERCENTS
+VAT_CHOICES = [
+    app_commands.Choice(name=format_vat(percent), value=str(percent)) for percent in VAT_PERCENTS
 ]
+VAT_KIND_CHOICES = [app_commands.Choice(name=VAT_LABELS[kind], value=kind) for kind in VAT_KINDS]
 DENOMINATION_CHOICES = [
     app_commands.Choice(name=format_currency(cents / 100), value=cents)
     for cents in BOND_DENOMINATIONS_CENTS
@@ -250,7 +251,7 @@ class GovernmentCog(commands.Cog):
         # fields are figures. Until 1.4.1 the title repeated the header and the
         # fees and projects were two five-line lists naming every machine twice.
         embed = make_embed(
-            f"Fee VAT {status.fee_vat_percent}% · Market VAT {format_vat(status.market_vat_percent)} · "
+            f"Fee VAT {format_vat(status.fee_vat_percent)} · Market VAT {format_vat(status.market_vat_percent)} · "
             f"Bond rate {status.bond_rate_percent}%",
             GOVERNMENT_COLOR,
         )
@@ -360,29 +361,23 @@ class GovernmentCog(commands.Cog):
             f"{FEE_UNITS.get(machine.value, 'item')} (x{value:g}).",
         )
 
-    @treasurer_group.command(name="feevat", description="Set the share of every machine fee the government keeps (once a day)")
-    @app_commands.describe(percent=f"0-{MAX_FEE_VAT_PERCENT}%, taken out of the fee rather than added to it")
-    async def treasurer_feevat(
+    @treasurer_group.command(name="vat", description="Set the Fee VAT or the Market VAT (each once a day)")
+    @app_commands.describe(
+        kind="Fee: a share of every machine fee. Market: a share of every trade between players",
+        percent="Taken out of the fee or the seller's proceeds, never added on top",
+    )
+    @app_commands.choices(kind=VAT_KIND_CHOICES, percent=VAT_CHOICES)
+    async def treasurer_vat(
         self, interaction: discord.Interaction,
-        percent: app_commands.Range[int, 0, MAX_FEE_VAT_PERCENT],
+        kind: app_commands.Choice[str], percent: app_commands.Choice[str],
     ):
-        await self._treasurer_action(
-            interaction,
-            lambda tx: set_fee_vat(tx, interaction.guild_id, interaction.user.id, percent),
-            "🏛️ Fee VAT Set",
-            f"The Fee VAT is now **{percent}%** of every machine fee.",
-        )
-
-    @treasurer_group.command(name="marketvat", description="Set the share of every trade between players the government keeps (once a day)")
-    @app_commands.describe(percent="Taken out of what the seller receives, not added to what the buyer pays")
-    @app_commands.choices(percent=MARKET_VAT_CHOICES)
-    async def treasurer_marketvat(self, interaction: discord.Interaction, percent: app_commands.Choice[str]):
         value = float(percent.value)
+        what = "every machine fee" if kind.value == FEE_VAT else "every trade between players"
         await self._treasurer_action(
             interaction,
-            lambda tx: set_market_vat(tx, interaction.guild_id, interaction.user.id, value),
-            "🏛️ Market VAT Set",
-            f"The Market VAT is now **{format_vat(value)}** of every trade between players.",
+            lambda tx: set_vat(tx, interaction.guild_id, interaction.user.id, kind.value, value),
+            f"🏛️ {VAT_LABELS[kind.value]} Set",
+            f"The {VAT_LABELS[kind.value]} is now **{format_vat(value)}** of {what}.",
         )
 
     @treasurer_group.command(name="bondrate", description="Set the premium new bonds repay (once a day)")

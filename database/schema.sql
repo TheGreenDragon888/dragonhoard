@@ -124,15 +124,17 @@ CREATE TABLE IF NOT EXISTS server_config (
     press_enhancement_level         INTEGER NOT NULL DEFAULT 0,
     scrapper_enhancement_level      INTEGER NOT NULL DEFAULT 0,
     -- The Fee VAT - the share of every machine fee that goes to the
-    -- government instead of being burned - in whole percent (named before it
-    -- was called a VAT), and the bond premium in whole percent.
+    -- government instead of being burned - named before it was called a VAT.
+    -- One of utils/government.py: VAT_PERCENTS; the steps that are not whole
+    -- are stored as REAL despite the INTEGER declaration, which SQLite allows.
+    -- Then the bond premium, in whole percent.
     tax_percent          INTEGER NOT NULL DEFAULT 0,
     tax_changed          TEXT,
     bond_rate_percent    INTEGER NOT NULL DEFAULT 0,
     bond_rate_changed    TEXT,
     -- The Market VAT: the share of every player-to-player trade the government
     -- keeps, out of what the seller receives. One of
-    -- utils/government.py: MARKET_VAT_PERCENTS, which are not all whole.
+    -- utils/government.py: VAT_PERCENTS, which are not all whole.
     market_vat_percent   REAL NOT NULL DEFAULT 0.0,
     market_vat_changed   TEXT,
     -- Currency the government holds. NOT burned: utils/db_helpers.py:

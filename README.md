@@ -45,7 +45,7 @@ And `/honk` plays a honk. No further questions.
 | `/jobboard` | Today's paid task for this server |
 | `/bet open\|place\|status\|resolve\|cancel` | Bet this server's currency on what happens next |
 | `/vote mayor\|treasurer`, `/government status` | This server's weekly election, and who holds office |
-| `/treasurer fee\|feevat\|marketvat\|bondrate` | The Treasurer's settings |
+| `/treasurer fee\|vat\|bondrate` | The Treasurer's settings |
 | `/mayor fund\|enhance\|slots\|bonanza\|bonds` | The Mayor's projects |
 | `/bonds buy\|holdings` | Lend the server currency, repaid out of VAT |
 | `/recipe factory\|furnace\|press\|scrapper` | The recipe book |

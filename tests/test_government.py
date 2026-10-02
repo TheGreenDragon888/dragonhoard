@@ -42,9 +42,11 @@ from utils.db_helpers import (
 )
 from utils.government import (
     FEE_MULTIPLIERS,
-    MARKET_VAT_PERCENTS,
+    FEE_VAT,
+    MARKET_VAT,
     MAYOR,
     TREASURER,
+    VAT_PERCENTS,
     GovernmentError,
     announce_voting,
     bonanza_quote,
@@ -69,8 +71,7 @@ from utils.government import (
     set_fee_multiplier,
     market_vat_units,
     pay_market_seller,
-    set_fee_vat,
-    set_market_vat,
+    set_vat,
     start_bonanza,
     tax_collected,
 )
@@ -226,22 +227,22 @@ class FeeLadderTests(unittest.TestCase):
         self.assertEqual(FEE_MULTIPLIERS[len(FEE_MULTIPLIERS) // 2], 1.0)
 
 
-class MarketVatLadderTests(unittest.TestCase):
+class VatLadderTests(unittest.TestCase):
     def test_it_is_the_fee_ladder_times_ten_between_off_and_all(self):
         # The ladder the design chose: x1 sits at 10%, and 0% and 100% bound it.
         self.assertEqual(
-            MARKET_VAT_PERCENTS, (0.0,) + tuple(m * 10 for m in FEE_MULTIPLIERS) + (100.0,)
+            VAT_PERCENTS, (0.0,) + tuple(m * 10 for m in FEE_MULTIPLIERS) + (100.0,)
         )
-        self.assertEqual(list(MARKET_VAT_PERCENTS), sorted(MARKET_VAT_PERCENTS))
+        self.assertEqual(list(VAT_PERCENTS), sorted(VAT_PERCENTS))
 
     def test_the_middle_steps_have_exact_inverses_around_ten(self):
-        for percent in MARKET_VAT_PERCENTS:
+        for percent in VAT_PERCENTS:
             if 5 <= percent <= 20:
                 with self.subTest(percent=percent):
-                    self.assertIn(100 / percent, MARKET_VAT_PERCENTS)
+                    self.assertIn(100 / percent, VAT_PERCENTS)
 
     def test_the_seller_and_the_vat_add_back_to_the_price(self):
-        for percent in MARKET_VAT_PERCENTS:
+        for percent in VAT_PERCENTS:
             for gross in (0, 1, 3, 7, 9_999, 10_000, 123_457, 10**12):
                 with self.subTest(percent=percent, gross=gross):
                     vat = market_vat_units(gross, percent)
@@ -257,7 +258,7 @@ class MarketVatLadderTests(unittest.TestCase):
 class MarketVatTests(_GovernmentTestCase):
     async def set_vat(self, percent, actor=TREASURER_ID, now=THURSDAY):
         async with self.db.transaction() as tx:
-            await set_market_vat(tx, GUILD, actor, percent, now)
+            await set_vat(tx, GUILD, actor, MARKET_VAT, percent, now)
 
     async def test_only_the_treasurer_may_set_it(self):
         with self.assertRaises(GovernmentError):
@@ -344,7 +345,7 @@ class TreasurerTests(_GovernmentTestCase):
             with self.subTest(actor=actor):
                 with self.assertRaises(GovernmentError):
                     async with self.db.transaction() as tx:
-                        await set_fee_vat(tx, GUILD, actor, 10, THURSDAY)
+                        await set_vat(tx, GUILD, actor, FEE_VAT, 10.0, THURSDAY)
 
     async def test_the_multiplier_must_be_one_of_the_steps(self):
         with self.assertRaises(GovernmentError):
@@ -367,12 +368,12 @@ class TreasurerTests(_GovernmentTestCase):
     async def test_the_game_day_turns_at_phoenix_midnight_not_utc(self):
         # 06:59 UTC Friday is still Thursday in Phoenix.
         async with self.db.transaction() as tx:
-            await set_fee_vat(tx, GUILD, TREASURER_ID, 10, THURSDAY)
+            await set_vat(tx, GUILD, TREASURER_ID, FEE_VAT, 10.0, THURSDAY)
         with self.assertRaises(GovernmentError):
             async with self.db.transaction() as tx:
-                await set_fee_vat(tx, GUILD, TREASURER_ID, 20, datetime(2026, 9, 25, 6, 59, tzinfo=timezone.utc))
+                await set_vat(tx, GUILD, TREASURER_ID, FEE_VAT, 20.0, datetime(2026, 9, 25, 6, 59, tzinfo=timezone.utc))
         async with self.db.transaction() as tx:
-            await set_fee_vat(tx, GUILD, TREASURER_ID, 20, datetime(2026, 9, 25, 7, 0, tzinfo=timezone.utc))
+            await set_vat(tx, GUILD, TREASURER_ID, FEE_VAT, 20.0, datetime(2026, 9, 25, 7, 0, tzinfo=timezone.utc))
 
     async def test_fee_vat_cannot_drop_below_the_rate_bonds_were_sold_at(self):
         await self.set(tax_percent=40)
@@ -380,9 +381,9 @@ class TreasurerTests(_GovernmentTestCase):
         await self.buy(BOB, 500)
         with self.assertRaises(GovernmentError):
             async with self.db.transaction() as tx:
-                await set_fee_vat(tx, GUILD, TREASURER_ID, 39, THURSDAY)
+                await set_vat(tx, GUILD, TREASURER_ID, FEE_VAT, 20.0, THURSDAY)
         async with self.db.transaction() as tx:
-            await set_fee_vat(tx, GUILD, TREASURER_ID, 60, THURSDAY)
+            await set_vat(tx, GUILD, TREASURER_ID, FEE_VAT, 100.0, THURSDAY)
 
     async def test_the_bond_rate_is_capped(self):
         with self.assertRaises(GovernmentError):
@@ -822,7 +823,11 @@ class CogTests(_GovernmentTestCase):
 
     async def test_a_player_who_is_not_treasurer_is_refused_privately(self):
         i = FakeInteraction(ALICE)
-        await GovernmentCog.treasurer_feevat.callback(self.cog, i, 10)
+        await GovernmentCog.treasurer_vat.callback(
+            self.cog, i,
+            app_commands.Choice(name="Fee VAT", value=FEE_VAT),
+            app_commands.Choice(name="10%", value="10.0"),
+        )
         self.assertIn("Only the Treasurer", i.refusal)
         self.assertTrue(i.response.send_message.call_args.kwargs["ephemeral"])
 
@@ -851,16 +856,34 @@ class CogTests(_GovernmentTestCase):
                 self.assertIsNone(i.refusal)
                 self.assertEqual((await self.cfg())["furnace_fee_multiplier"], multiplier)
 
-    async def test_every_market_vat_step_can_be_chosen_through_the_command(self):
-        for percent in MARKET_VAT_PERCENTS:
-            with self.subTest(percent=percent):
-                await self.set(market_vat_changed=None)
-                i = FakeInteraction(TREASURER_ID)
-                await GovernmentCog.treasurer_marketvat.callback(
-                    self.cog, i, app_commands.Choice(name=f"{percent:g}%", value=str(percent)),
-                )
-                self.assertIsNone(i.refusal)
-                self.assertEqual((await self.cfg())["market_vat_percent"], percent)
+    async def test_every_vat_step_can_be_chosen_for_either_vat(self):
+        # The choice travels as str(percent) and comes back through float(),
+        # and Fee VAT's column is declared INTEGER: every step, whole or not,
+        # has to come back out as itself for both.
+        for kind, column in ((FEE_VAT, "tax_percent"), (MARKET_VAT, "market_vat_percent")):
+            for percent in VAT_PERCENTS:
+                with self.subTest(kind=kind, percent=percent):
+                    await self.set(tax_changed=None, market_vat_changed=None)
+                    i = FakeInteraction(TREASURER_ID)
+                    await GovernmentCog.treasurer_vat.callback(
+                        self.cog, i,
+                        app_commands.Choice(name=kind, value=kind),
+                        app_commands.Choice(name=f"{percent:g}%", value=str(percent)),
+                    )
+                    self.assertIsNone(i.refusal)
+                    self.assertEqual((await self.cfg())[column], percent)
+
+    async def test_a_fractional_fee_vat_splits_the_fee_exactly(self):
+        await self.set(tax_percent=6.25)
+        await self.fee(16.0)
+        cfg = await self.cfg()
+        self.assertAlmostEqual(cfg["treasury"], 1.0)
+        self.assertAlmostEqual(cfg["currency_burned_total"], 15.0)
+
+    async def test_fee_vat_off_the_steps_is_refused(self):
+        with self.assertRaises(GovernmentError):
+            async with self.db.transaction() as tx:
+                await set_vat(tx, GUILD, TREASURER_ID, FEE_VAT, 15.0, THURSDAY)
 
     async def test_a_sub_cent_fee_is_quoted_exactly(self):
         i = FakeInteraction(TREASURER_ID)
