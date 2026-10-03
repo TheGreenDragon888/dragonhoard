@@ -53,7 +53,14 @@ from utils.db_helpers import (
     machine_fee,
     mining_slot_status,
 )
-from utils.embeds import GOVERNMENT_COLOR, MACHINE_DISPLAY, add_multi_field, machine_display, make_embed
+from utils.embeds import (
+    GOVERNMENT_COLOR,
+    MACHINE_DISPLAY,
+    add_multi_field,
+    footer_with,
+    machine_display,
+    make_embed,
+)
 from utils.formatting import (
     DEFAULT_CURRENCY_EMOJI,
     format_currency,
@@ -126,6 +133,12 @@ DENOMINATION_CHOICES = [
     app_commands.Choice(name=format_currency(cents / 100), value=cents)
     for cents in BOND_DENOMINATIONS_CENTS
 ]
+
+# The most bonds /bonds holdings lists before summing up the rest as "and N
+# more". A player can hold any number, and an embed over Discord's 6,000-
+# character ceiling fails the whole message (docs/stylization.md);
+# tests/test_government.py pins the worst case under it.
+BOND_LINES_SHOWN = 20
 
 # What one unit of each machine's fee buys, for the status page - the press
 # charges per press-day and the blast furnace per batch.
@@ -545,21 +558,53 @@ class GovernmentCog(commands.Cog):
     @bonds_group.command(name="holdings", description="The bonds this server still owes you")
     async def bonds_holdings(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
-        emoji = await self._currency_emoji(interaction.guild_id) or DEFAULT_CURRENCY_EMOJI
+        cfg = await self.db.fetchone(
+            "SELECT currency_emoji, bond_sale_cents, bond_rate_percent FROM server_config WHERE guild_id = ?",
+            (interaction.guild_id,),
+        )
+        emoji = cfg["currency_emoji"] or DEFAULT_CURRENCY_EMOJI
+        # Only bonds still owed, oldest first - the order they are repaid in.
         bonds = await bonds_held(self.db, interaction.guild_id, interaction.user.id)
-        embed = make_embed("🏛️ Your Bonds", GOVERNMENT_COLOR)
-        if not bonds:
-            embed.description = "This server owes you nothing."
-        else:
-            # The id leads in code format, as /market entries' rows do, and the
-            # currency is named once in the heading.
+
+        # Laid out the way a machine status page is (docs/stylization.md): the
+        # author line says whose bonds, the title is what the server owes this
+        # player, the description is the bond being repaid now, and the fields
+        # are figures. The title carries no currency emoji because a custom one
+        # renders as raw markup there; the field headings name it instead.
+        owed = sum(bond["remaining_cents"] for bond in bonds)
+        embed = make_embed(
+            f"{_units(owed)} owed to you" if bonds else "Nothing owed to you", GOVERNMENT_COLOR,
+        )
+        if interaction.guild is not None:
+            embed.set_author(name=f"🏛️ Bonds • {interaction.guild.name}")
+
+        repaying = next((bond for bond in bonds if not bond["frozen"]), None)
+        if repaying is not None:
+            embed.description = (
+                f"Repaying `#{repaying['bond_id']}` · "
+                f"**{_cents(repaying['remaining_cents'], emoji)}** to go"
+            )
+        if bonds:
+            # The id leads in code format, as /market entries' rows do.
             lines = [
                 f"`#{bond['bond_id']}` lent `{_units(bond['principal_cents'])}` · "
-                f"`{_units(bond['remaining_cents'])}` of `{_units(bond['owed_cents'])}` still to come"
+                f"`{_units(bond['remaining_cents'])}` of `{_units(bond['owed_cents'])}`"
+                + (" ◀ repaying" if bond is repaying else "")
                 + (" · frozen" if bond["frozen"] else "")
-                for bond in bonds
+                for bond in bonds[:BOND_LINES_SHOWN]
             ]
-            add_multi_field(embed, f"Bonds · {emoji}", lines)
+            if len(bonds) > BOND_LINES_SHOWN:
+                lines.append(f"and {len(bonds) - BOND_LINES_SHOWN} more")
+            add_multi_field(embed, f"Your bonds · {emoji}", lines)
+
+        if cfg["bond_sale_cents"]:
+            embed.add_field(
+                name=f"For sale · {emoji}", value=f"**{_units(cfg['bond_sale_cents'])}**", inline=True,
+            )
+            embed.add_field(name="Bond rate", value=f"{cfg['bond_rate_percent']}%", inline=True)
+        embed.set_footer(text=footer_with(
+            "/bonds buy lends more" if cfg["bond_sale_cents"] else "/help Government explains bonds"
+        ))
         await respond(interaction, self.db, embed=embed)
 
     # -----------------------------------------------------------------------

@@ -935,7 +935,8 @@ _add(ManualSection(
                       "Puts bonds up for sale, or withdraws the sale with 0. Mayor only."),
         ManualCommand("/bonds buy", "/bonds buy <denomination>",
                       "Lends the server currency from the Mayor's bond sale."),
-        ManualCommand("/bonds holdings", "/bonds holdings", "What the server still owes you."),
+        ManualCommand("/bonds holdings", "/bonds holdings",
+                      "What the server still owes you, and any bonds for sale."),
     ),
     notes=(
         (

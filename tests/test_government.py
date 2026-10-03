@@ -1009,6 +1009,63 @@ class CogTests(_GovernmentTestCase):
         await GovernmentCog.bonds_holdings.callback(self.cog, i)
         self.assertIn("`10.00`", i.embed.fields[0].value)
 
+    async def insert_bond(self, holder, principal, owed, remaining, frozen=0, bond_id=None):
+        return await self.db.execute(
+            "INSERT INTO government_bonds (bond_id, guild_id, holder_id, principal_cents, rate_percent, "
+            "owed_cents, remaining_cents, tax_percent_at_sale, frozen) VALUES (?, ?, ?, ?, 5, ?, ?, 0, ?)",
+            (bond_id, GUILD, holder, principal, owed, remaining, frozen),
+        )
+
+    async def holdings(self, user, guild_name="Hoard"):
+        i = FakeInteraction(user)
+        i.guild = SimpleNamespace(name=guild_name)
+        await GovernmentCog.bonds_holdings.callback(self.cog, i)
+        self.assertIsNone(i.refusal)
+        return i.embed
+
+    async def test_holdings_shows_bonds_still_owed_and_the_one_being_repaid(self):
+        repaid = await self.insert_bond(BOB, 500, 525, 0)
+        current = await self.insert_bond(BOB, 500, 525, 310)
+        later = await self.insert_bond(BOB, 2_000, 2_100, 2_100)
+        await self.insert_bond(CARA, 100, 105, 105)
+        await self.set(bond_sale_cents=4_000, bond_rate_percent=5)
+        embed = await self.holdings(BOB)
+        self.assertEqual(embed.author.name, "🏛️ Bonds • Hoard")
+        self.assertEqual(embed.title, "24.10 owed to you")
+        self.assertIn(f"`#{current}`", embed.description)
+        bonds = next(f for f in embed.fields if f.name.startswith("Your bonds"))
+        lines = bonds.value.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith(f"`#{current}`"))
+        self.assertTrue(lines[0].endswith("◀ repaying"))
+        self.assertTrue(lines[1].startswith(f"`#{later}`"))
+        self.assertNotIn(f"#{repaid}`", bonds.value)
+        self.assertNotIn("oldest", bonds.name.lower())
+        fields = {f.name.split(" · ")[0]: f.value for f in embed.fields}
+        self.assertEqual(fields["For sale"], "**40.00**")
+        self.assertEqual(fields["Bond rate"], "5%")
+
+    async def test_holdings_with_nothing_owed(self):
+        await self.insert_bond(BOB, 500, 525, 0)
+        embed = await self.holdings(BOB)
+        self.assertEqual(embed.title, "Nothing owed to you")
+        self.assertIsNone(embed.description)
+        self.assertEqual(embed.fields, [])
+
+    async def test_holdings_stays_under_discords_embed_ceiling(self):
+        # The longest of everything: an animated custom currency emoji, a
+        # 100-character server name, a sale open, and a hundred frozen 1,000
+        # bonds with seven-digit ids.
+        await self.set(
+            currency_emoji="<a:" + "E" * 32 + ":1234567890123456789>",
+            bond_sale_cents=100_000, bond_rate_percent=5,
+        )
+        for n in range(100):
+            await self.insert_bond(BOB, 100_000, 105_000, 105_000, frozen=1, bond_id=9_000_000 + n)
+        embed = await self.holdings(BOB, guild_name="N" * 100)
+        self.assertLessEqual(len(embed), 6_000)
+        self.assertTrue(embed.fields[-3].value.endswith("and 80 more"))
+
     async def test_the_loop_pays_bondholders(self):
         await self.db.execute(
             "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
