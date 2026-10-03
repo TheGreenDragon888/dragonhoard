@@ -43,7 +43,7 @@ And `/honk` plays a honk. No further questions.
 | `/press craft\|status\|queue` | Compress materials into gems |
 | `/scrapper scrap\|drill\|status\|queue` | Recycle components and drills back into materials |
 | `/jobboard` | Today's paid task for this server |
-| `/bet open\|place\|status\|resolve\|cancel` | Bet this server's currency on what happens next |
+| `/bet open\|place\|status\|close\|resolve\|cancel` | Bet this server's currency on what happens next |
 | `/vote mayor\|treasurer`, `/government status` | This server's weekly election, and who holds office |
 | `/treasurer fee\|rate\|bondrate` | The Treasurer's settings |
 | `/mayor fund\|enhance\|slots\|bonanza\|bonds` | The Mayor's projects |
@@ -95,7 +95,7 @@ dragonhoard/
     ├── press.py              # /press craft|status|queue (the hydraulic press)
     ├── scrapper.py           # /scrapper scrap|drill|status|queue (recycling)
     ├── jobboard.py           # /jobboard (the daily paid task)
-    ├── betting.py            # /bet open|place|status|resolve|cancel (prediction bets)
+    ├── betting.py            # /bet open|place|status|close|resolve|cancel (prediction bets)
     ├── government.py         # /vote, /government, /treasurer, /mayor, /bonds (the elected government)
     ├── recipe.py             # /recipe factory|furnace|press|scrapper (the recipe book; furnace covers both smelters)
     ├── manual.py             # /help, /manual, /man (the same manual under three names)

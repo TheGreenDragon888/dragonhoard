@@ -172,6 +172,27 @@ itself down in the reader's client without anything being rewritten.
 somebody's currency over a prediction they have forgotten making, and `/bet
 cancel` is the escape hatch rather than the routine path.
 
+### Closing early
+
+`/bet close` stops a bet taking wagers before its deadline. The bet is left in
+exactly the state its deadline passing would have put it in, `closed` and
+waiting to be resolved or cancelled, and `closes_at` is moved to the moment it
+ran (`utils/betting.py: close_bet`). Nothing about the pot changes: every stake
+stays escrowed, and the bet settles exactly as any other closed bet does.
+
+The player who opened the bet may close it, as may anyone with Manage Server.
+The creator is included so that a bet maker who has already announced the
+result can stop wagers while they wait for an admin to resolve it.
+
+One consequence follows from section 2. The creator is always on the For side,
+and closing freezes the pools, so a creator can choose to close at a moment
+when the odds favour them. That was accepted as the price of the case above.
+
+Because the creator has to be let through, the permission is checked inside the
+command (`cogs/betting.py: _may_close`) rather than by the `has_permissions`
+decorator the two commands below carry. It reads the same
+`interaction.permissions`, so "admin" means the same thing in all three.
+
 ### Resolution is an admin call
 
 `/bet resolve` and `/bet cancel` need Manage Server, the same permission every

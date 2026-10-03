@@ -65,11 +65,21 @@ class FakeClient:
 
 
 class FakeInteraction:
-    def __init__(self, user_id, db, guild_id=GUILD):
+    def __init__(self, user_id, db, guild_id=GUILD, permissions=None):
         self.guild_id = guild_id
         self.user = FakeUser(user_id)
         self.client = FakeClient(db)
         self.response = AsyncMock()
+        # What has_permissions reads, and what /bet close reads in its place.
+        # ADMIN holds Manage Server unless a test says otherwise; nobody else
+        # does.
+        if permissions is None:
+            permissions = (
+                discord.Permissions(manage_guild=True)
+                if user_id == ADMIN
+                else discord.Permissions.none()
+            )
+        self.permissions = permissions
 
     @property
     def sent(self):
@@ -137,6 +147,11 @@ class BettingTestCase(unittest.IsolatedAsyncioTestCase):
     async def cancel(self, bet_id, user=ADMIN):
         i = FakeInteraction(user, self.db)
         await BettingCog.bet_cancel.callback(self.cog, i, bet_id)
+        return i
+
+    async def close(self, bet_id, user, guild_id=GUILD):
+        i = FakeInteraction(user, self.db, guild_id=guild_id)
+        await BettingCog.bet_close.callback(self.cog, i, bet_id)
         return i
 
     async def status(self, user, bet_id=None):
@@ -272,6 +287,23 @@ class ConservationTests(BettingTestCase):
         self.assertAlmostEqual(
             await circulating_currency_for(self.db, GUILD), before, places=6
         )
+
+    async def test_closing_a_bet_early_moves_no_currency(self):
+        """/bet close only stops wagers. Every stake stays escrowed until the
+        bet settles, so no balance moves, nothing is minted or burned, and
+        circulating_currency still counts the pot."""
+        await self.open(ALICE, amount=100.0)
+        bet_id = await self.newest_bet_id()
+        await self.place(BOB, bet_id, AGAINST, 300.0)
+        balances = await self.balances()
+        totals = await self.totals()
+        supply = await circulating_currency_for(self.db, GUILD)
+
+        await self.close(bet_id, ALICE)
+
+        self.assertEqual(await self.balances(), balances)
+        self.assertEqual(await self.totals(), totals)
+        self.assertAlmostEqual(await circulating_currency_for(self.db, GUILD), supply, places=6)
 
     async def test_a_cancelled_bet_stops_counting_as_escrow(self):
         await self.open(ALICE, amount=500.0)
@@ -429,6 +461,148 @@ class StakeTests(BettingTestCase):
         await self.expire(bet_id)
         await self.resolve(bet_id, FOR)
         self.assertEqual((await fetch_bet(self.db, bet_id))["status"], "resolved")
+
+
+class CloseTests(BettingTestCase):
+    """/bet close: the bet's creator, or anyone with Manage Server, stops it
+    taking wagers before its deadline."""
+
+    async def open_bet(self):
+        await self.open(ALICE, amount=100.0)
+        bet_id = await self.newest_bet_id()
+        await self.place(BOB, bet_id, AGAINST, 100.0)
+        return bet_id
+
+    async def test_the_creator_can_close_their_own_bet(self):
+        bet_id = await self.open_bet()
+        interaction = await self.close(bet_id, ALICE)
+
+        self.assertIsNone(interaction.sent)
+        self.assertEqual((await fetch_bet(self.db, bet_id))["status"], "closed")
+        self.assertIn("waiting on an admin", interaction.embed.description)
+
+    async def test_an_admin_can_close_somebody_elses_bet(self):
+        bet_id = await self.open_bet()
+        await self.close(bet_id, ADMIN)
+        self.assertEqual((await fetch_bet(self.db, bet_id))["status"], "closed")
+
+    async def test_anybody_else_is_refused(self):
+        """Including a player with money on the bet - BOB is on the other
+        side of it."""
+        bet_id = await self.open_bet()
+        interaction = await self.close(bet_id, BOB)
+
+        self.assertIn("Only the player who opened this bet", interaction.sent)
+        self.assertEqual((await fetch_bet(self.db, bet_id))["status"], "open")
+
+    async def test_closing_moves_the_deadline_to_now(self):
+        """schema.sql describes a closed bet as one past its closes_at."""
+        bet_id = await self.open_bet()
+        await self.close(bet_id, ALICE)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        self.assertLessEqual((await fetch_bet(self.db, bet_id))["closes_at"], now)
+
+    async def test_a_closed_bet_takes_no_more_wagers(self):
+        bet_id = await self.open_bet()
+        await self.close(bet_id, ALICE)
+        interaction = await self.place(CARA, bet_id, FOR, 50.0)
+
+        self.assertIn("closed", interaction.sent)
+        self.assertAlmostEqual(
+            await get_currency_balance(self.db, GUILD, CARA), STARTING_BALANCE, places=6
+        )
+
+    async def test_a_bet_closed_early_still_resolves_and_pays_the_whole_pot(self):
+        bet_id = await self.open_bet()
+        await self.close(bet_id, ALICE)
+        await self.resolve(bet_id, FOR)
+
+        self.assertEqual((await fetch_bet(self.db, bet_id))["status"], "resolved")
+        self.assertAlmostEqual(
+            await get_currency_balance(self.db, GUILD, ALICE), STARTING_BALANCE + 100.0, places=6
+        )
+        self.assertAlmostEqual(
+            await get_currency_balance(self.db, GUILD, BOB), STARTING_BALANCE - 100.0, places=6
+        )
+
+    async def test_a_bet_closed_early_can_still_be_cancelled(self):
+        bet_id = await self.open_bet()
+        await self.close(bet_id, ALICE)
+        await self.cancel(bet_id)
+
+        self.assertEqual((await fetch_bet(self.db, bet_id))["status"], "cancelled")
+        for user in (ALICE, BOB):
+            self.assertAlmostEqual(
+                await get_currency_balance(self.db, GUILD, user), STARTING_BALANCE, places=6
+            )
+
+    async def test_a_bet_cannot_be_closed_twice(self):
+        bet_id = await self.open_bet()
+        await self.close(bet_id, ALICE)
+        interaction = await self.close(bet_id, ALICE)
+        self.assertIn("already closed", interaction.sent)
+
+    async def test_a_bet_past_its_deadline_is_already_closed(self):
+        bet_id = await self.open_bet()
+        await self.expire(bet_id)
+        interaction = await self.close(bet_id, ALICE)
+
+        self.assertIn("already closed", interaction.sent)
+
+    async def test_a_resolved_bet_cannot_be_closed(self):
+        bet_id = await self.open_bet()
+        await self.resolve(bet_id, FOR)
+        interaction = await self.close(bet_id, ALICE)
+        self.assertIn("already been resolved", interaction.sent)
+
+    async def test_a_cancelled_bet_cannot_be_closed(self):
+        bet_id = await self.open_bet()
+        await self.cancel(bet_id)
+        interaction = await self.close(bet_id, ALICE)
+        self.assertIn("cancelled", interaction.sent)
+
+    async def test_a_bet_cannot_be_closed_from_another_server(self):
+        """Not even by somebody with Manage Server there."""
+        await ensure_server_row(self.db, OTHER_GUILD)
+        bet_id = await self.open_bet()
+        interaction = await self.close(bet_id, ADMIN, guild_id=OTHER_GUILD)
+
+        self.assertIn("no bet with that number", interaction.sent)
+        self.assertEqual((await fetch_bet(self.db, bet_id))["status"], "open")
+
+    async def test_closing_tells_the_server_but_not_the_closer(self):
+        from utils.notifications import fetch_unseen
+        bet_id = await self.open_bet()
+        await self.close(bet_id, ALICE)
+
+        row = await self.db.fetchone(
+            "SELECT title, action_key FROM notifications WHERE scope = 'server' "
+            "AND guild_id = ? ORDER BY notification_id DESC",
+            (GUILD,),
+        )
+        self.assertEqual(row["title"], f"🎲 Bet #{bet_id} closed early")
+        self.assertIsNone(row["action_key"])
+        self.assertEqual(await fetch_unseen(self.db, ALICE, GUILD), [])
+        self.assertEqual(len(await fetch_unseen(self.db, CARA, GUILD)), 1)
+
+    async def choices(self, user):
+        interaction = FakeInteraction(user, self.db)
+        return [c.value for c in await BettingCog._closable_choices(self.cog, interaction, "")]
+
+    async def test_the_picker_offers_a_player_only_their_own_open_bets(self):
+        mine = await self.open_bet()
+        await self.open(BOB, prediction="Someone else's", amount=10.0)
+        theirs = await self.newest_bet_id()
+
+        self.assertEqual(await self.choices(ALICE), [mine])
+        self.assertEqual(sorted(await self.choices(ADMIN)), sorted([mine, theirs]))
+
+    async def test_the_picker_leaves_out_bets_that_are_no_longer_open(self):
+        expired = await self.open_bet()
+        await self.expire(expired)
+        closed = await self.open_bet()
+        await self.close(closed, ALICE)
+        self.assertEqual(await self.choices(ADMIN), [])
 
 
 class SettlementRefusalTests(BettingTestCase):
@@ -793,6 +967,12 @@ class PermissionTests(unittest.TestCase):
             with self.subTest(command=command.name):
                 self.assertTrue(command.checks, f"/bet {command.name} has no checks at all")
                 self.assertTrue(self._checked(command))
+
+    def test_closing_does_not_carry_the_decorator(self):
+        """/bet close checks Manage Server inside the command instead, because
+        the decorator would turn away the bet's creator. CloseTests covers what
+        the in-command check lets through."""
+        self.assertFalse(self._checked(BettingCog.bet_close))
 
     def test_placing_a_bet_does_not(self):
         for command in (BettingCog.bet_open, BettingCog.bet_place, BettingCog.bet_status):
