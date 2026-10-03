@@ -945,7 +945,8 @@ _add(ManualSection(
             + " and " + format_bond(BOND_DENOMINATIONS_CENTS[-1]) + ", and repay what they cost plus the "
             "Treasurer's premium, fixed when you buy. While the server owes anything, **all** "
             "of the Fee Share and Market Tax repays bondholders - every hour, split in proportion to what each is "
-            f"still owed. The server can't owe more than its last {DEBT_CAP_DAYS} days of revenue. "
+            "still owed, and your share pays off your oldest bond first. "
+            f"The server can't owe more than its last {DEBT_CAP_DAYS} days of revenue. "
             "Leave the server and your bonds are frozen, not lost: they pick up again when you "
             "come back.",
         ),

@@ -636,13 +636,21 @@ async def guilds_with_repayments(db: _Executor) -> list[int]:
 
 
 async def pay_bondholders(tx: _Executor, guild_id: int) -> dict[int, int]:
-    """Pays the repayment pool out to the server's active creditors, in
-    proportion to what each is still owed, and returns bond_id -> cents paid.
+    """Pays the repayment pool out to the server's active creditors and
+    returns bond_id -> cents paid.
+
+    Between creditors, in proportion to what each is still owed in total -
+    on what is still owed rather than on what was lent, so every active
+    creditor is repaid by the same final payout. Within one creditor's share,
+    oldest bond first: it pays off their earliest bond before the next one
+    gets anything, so somebody holding several bonds sees them finish one at
+    a time. Until it did, every bond was paid pro-rata on its own, and a
+    creditor's bonds all crept along together and finished only at the final
+    payout.
 
     Whole cents, split by utils/betting.py: apportion, so what is paid adds up
     to exactly what leaves the pool; the fraction of a cent left over stays in
-    it for the next payout. Pro-rata on what is still owed rather than on what
-    was lent, so every active creditor is repaid by the same final payout.
+    it for the next payout.
 
     Once every active creditor is repaid, whatever is left in the pool moves to
     the treasury - and collect_revenue sends new revenue there too - until somebody is
@@ -652,19 +660,27 @@ async def pay_bondholders(tx: _Executor, guild_id: int) -> dict[int, int]:
     pool = cfg["repayment_pool"] if cfg else 0.0
     if pool <= 0:
         return {}
+    # bond_id order is the order they were sold in, so each creditor's
+    # oldest bond comes first in the walk below.
     bonds = await tx.fetchall(
         f"SELECT bond_id, holder_id, remaining_cents FROM government_bonds "
-        f"WHERE guild_id = ? AND {OWED_BONDS_SQL} AND frozen = 0",
+        f"WHERE guild_id = ? AND {OWED_BONDS_SQL} AND frozen = 0 ORDER BY bond_id",
         (guild_id,),
     )
-    total_owed = sum(bond["remaining_cents"] for bond in bonds)
+    owed_by_holder: dict[int, int] = {}
+    for bond in bonds:
+        owed_by_holder[bond["holder_id"]] = owed_by_holder.get(bond["holder_id"], 0) + bond["remaining_cents"]
+    total_owed = sum(owed_by_holder.values())
     pay = min(int(pool * 100 + _EPSILON), total_owed)
 
-    shares = apportion([(bond["bond_id"], bond["remaining_cents"]) for bond in bonds], pay) if pay else {}
+    unspent = apportion(list(owed_by_holder.items()), pay) if pay else {}
+    shares: dict[int, int] = {}
     for bond in bonds:
-        share = shares.get(bond["bond_id"], 0)
+        share = min(unspent.get(bond["holder_id"], 0), bond["remaining_cents"])
         if not share:
             continue
+        unspent[bond["holder_id"]] -= share
+        shares[bond["bond_id"]] = share
         await tx.execute(
             "UPDATE government_bonds SET remaining_cents = remaining_cents - ? WHERE bond_id = ?",
             (share, bond["bond_id"]),
@@ -677,6 +693,9 @@ async def pay_bondholders(tx: _Executor, guild_id: int) -> dict[int, int]:
                 "The server has finished repaying one of your bonds. Every payment went "
                 "straight to your balance; `/bonds holdings` shows any you still hold.",
             )
+    # A creditor's share is never more than they are owed, so the walk spends
+    # all of it; anything unspent would leave the pool without reaching anyone.
+    assert not any(unspent.values()), f"unspent bond shares {unspent}"
 
     left = max(0.0, pool - pay / 100)
     if pay == total_owed:

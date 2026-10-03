@@ -199,8 +199,13 @@ server.
   splits a bet's pot. The fraction of a cent it cannot split waits for the next
   payout. Once everybody active is repaid, the rest of the pool moves to the
   treasury and new revenue follows it.
-- **Officeholders may buy bonds.** Repayment is pro-rata, so nobody is paid
-  first; the premium leak is capped either way.
+- **Oldest bond first.** A creditor's share pays off their earliest bond before
+  their next one gets anything, so somebody holding several sees them finish
+  one at a time. Until it did, every bond was split pro-rata on its own, and a
+  creditor's bonds all crept along together and finished only at the final
+  payout. The split *between* creditors is unchanged.
+- **Officeholders may buy bonds.** Repayment is pro-rata between creditors, so
+  nobody is paid first; the premium leak is capped either way.
 - **Leaving freezes, never voids.** A departed creditor's bonds are skipped by
   payouts and ignored by the cap until they return (`on_member_join`, or the
   hourly check for anybody who rejoined while the bot was down). Voiding would

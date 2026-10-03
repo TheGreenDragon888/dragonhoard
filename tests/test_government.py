@@ -467,6 +467,56 @@ class BondTests(_GovernmentTestCase):
         self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), STARTING_BALANCE + 6.67)
         self.assertAlmostEqual((await self.cfg())["repayment_pool"], 0.0)
 
+    async def owed_bond(self, holder, owed):
+        return await self.db.execute(
+            "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
+            "owed_cents, remaining_cents, tax_percent_at_sale) VALUES (?, ?, ?, 0, ?, ?, 0)",
+            (GUILD, holder, owed, owed, owed),
+        )
+
+    async def remaining(self, bond_id):
+        row = await self.db.fetchone(
+            "SELECT remaining_cents FROM government_bonds WHERE bond_id = ?", (bond_id,)
+        )
+        return row["remaining_cents"]
+
+    async def payout(self, pool):
+        await self.set(repayment_pool=pool)
+        async with self.db.transaction() as tx:
+            return await pay_bondholders(tx, GUILD)
+
+    async def test_a_creditors_oldest_bond_is_repaid_first(self):
+        first = await self.owed_bond(BOB, 525)
+        second = await self.owed_bond(BOB, 210)
+        third = await self.owed_bond(BOB, 2_100)
+        self.assertEqual(await self.payout(3.0), {first: 300})
+        self.assertEqual(await self.remaining(second), 210)
+        # The next payout finishes the first and spills into the second.
+        self.assertEqual(await self.payout(3.0), {first: 225, second: 75})
+        self.assertEqual(
+            [await self.remaining(b) for b in (first, second, third)], [0, 135, 2_100]
+        )
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), STARTING_BALANCE + 6.0)
+        notices = await self.db.fetchall(
+            "SELECT notice_key FROM user_notifications WHERE user_id = ? AND notice_key LIKE 'bond_repaid:%'",
+            (BOB,),
+        )
+        self.assertEqual([n["notice_key"] for n in notices], [f"bond_repaid:{first}"])
+
+    async def test_creditors_split_in_proportion_and_finish_together(self):
+        bob_first = await self.owed_bond(BOB, 500)
+        bob_second = await self.owed_bond(BOB, 500)
+        cara = await self.owed_bond(CARA, 500)
+        # Bob is owed 10.00 and Cara 5.00, so Bob takes two thirds - all of it
+        # on his first bond.
+        self.assertEqual(await self.payout(6.0), {bob_first: 400, cara: 200})
+        shares = await self.payout(9.0)
+        self.assertEqual(shares, {bob_first: 100, bob_second: 500, cara: 300})
+        self.assertEqual(await outstanding_debt_cents(self.db, GUILD), 0)
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), STARTING_BALANCE + 10.0)
+        self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, CARA), STARTING_BALANCE + 5.0)
+        self.assertAlmostEqual((await self.cfg())["repayment_pool"], 0.0)
+
     async def test_while_owed_all_tax_repays_and_after_it_the_treasury_gets_it(self):
         await self.set(tax_percent=100)
         await self.open_sale(100)
