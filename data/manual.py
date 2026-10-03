@@ -940,8 +940,9 @@ _add(ManualSection(
     notes=(
         (
             "Bonds",
-            "A bond lends the server money now and is repaid out of its revenue: "
-            + ", ".join(format_bond(c) for c in BOND_DENOMINATIONS_CENTS) + ", plus the "
+            "A bond lends the server money now and is repaid out of its revenue. Bonds come in "
+            + ", ".join(format_bond(c) for c in BOND_DENOMINATIONS_CENTS[:-1])
+            + " and " + format_bond(BOND_DENOMINATIONS_CENTS[-1]) + ", and repay what they cost plus the "
             "Treasurer's premium, fixed when you buy. While the server owes anything, **all** "
             "of the Fee Share and Market Tax repays bondholders - every hour, split in proportion to what each is "
             f"still owed. The server can't owe more than its last {DEBT_CAP_DAYS} days of revenue. "

@@ -136,10 +136,11 @@ def rate_step_at_or_below(percent: float) -> float:
 # docstring).
 MAX_BOND_RATE_PERCENT = 5
 
-# What a bond may be bought in, in cents. Small, because the economies they
-# sell into are: the production backup of 2026-08-30 had no server whose
-# players held more than 77.46 between them (docs/government.md).
-BOND_DENOMINATIONS_CENTS = (100, 500, 1_000, 5_000)
+# What a bond may be bought in, in cents: 1 to 1,000 units of the server's
+# currency. The debt cap decides which of them a server can actually sell - a
+# 1,000 bond needs at least 1,000 of revenue over the last DEBT_CAP_DAYS - so
+# the large ones only open up as a server grows (docs/government.md).
+BOND_DENOMINATIONS_CENTS = (100, 200, 500, 1_000, 2_000, 5_000, 10_000, 20_000, 50_000, 100_000)
 
 # Outstanding debt may not exceed the revenue collected over this many previous
 # game days - "a server can repay everything it owes within a week".

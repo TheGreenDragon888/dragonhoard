@@ -437,6 +437,21 @@ class BondTests(_GovernmentTestCase):
         self.assertEqual(row["remaining_cents"], 1_050)
         self.assertEqual(row["tax_percent_at_sale"], 20)
 
+    async def test_two_and_twenty_bonds_are_sold(self):
+        await self.set(bond_rate_percent=5)
+        await self.open_sale(2_200)
+        self.assertEqual((await self.buy(BOB, 200)).owed_cents, 210)
+        self.assertEqual((await self.buy(CARA, 2_000)).owed_cents, 2_100)
+
+    async def test_a_thousand_bond_needs_a_thousand_of_revenue(self):
+        await self.set(bond_sale_cents=100_000)
+        await self.record_revenue_days_ago(999.0, 1)
+        with self.assertRaises(GovernmentError):
+            await self.buy(BOB, 100_000)
+        await self.record_revenue_days_ago(1.0, 2)
+        bond = await self.buy(BOB, 100_000)
+        self.assertEqual(bond.owed_cents, 100_000)
+
     async def test_repayment_is_pro_rata_on_what_is_still_owed(self):
         # The design doc's worked split: 105.00 and 52.50 owed, a 10.00 pool.
         for holder, owed in ((BOB, 10_500), (CARA, 5_250)):

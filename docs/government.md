@@ -175,10 +175,12 @@ server.
 
 ## 4. Bonds
 
-- **Denominations:** 1, 5, 10 and 50 units of the server's currency
-  (`BOND_DENOMINATIONS_CENTS`). Small because the economies are: in the
-  2026-08-30 production backup no server's players held more than 77.46
-  between them. Revisit against live data as servers grow.
+- **Denominations:** 1, 2, 5, 10, 20, 50, 100, 200, 500 and 1,000 units of
+  the server's currency (`BOND_DENOMINATIONS_CENTS`). The debt cap below is
+  what decides which of them a server can sell: a 1,000 bond needs at least
+  1,000 of revenue over the last week, so the large ones only open up as a
+  server grows. 1.4 shipped with 1, 5, 10 and 50, when in the 2026-08-30
+  production backup no server's players held more than 77.46 between them.
 - **The premium** is fixed at sale; a later rate change affects only later
   bonds. A running rate could grow a debt faster than low revenue repays it.
 - **The cap:** a sale is refused if the debt still owed to active creditors
