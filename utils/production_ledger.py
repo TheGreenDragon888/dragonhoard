@@ -134,8 +134,21 @@ def market_value(material_id: str, quantity: int) -> float:
 
 
 def inputs_value(inputs: dict[str, int]) -> float:
-    """The market value of a whole set of consumed inputs."""
-    return sum(market_value(material_id, quantity) for material_id, quantity in inputs.items())
+    """The market value of a whole set of consumed inputs, gemstones excluded.
+
+    Gemstones are left out of what is consumed for the same reason they are
+    left out of what is mined (docs/market.md section 5): window_totals drops
+    a mined gem from the import/export line's Mined side, so a gem eaten by a
+    craft has to be dropped from its Input side too, or the two sides are not
+    measuring the same goods. Counted in, five Obsidian Drill Bits recorded
+    787,524 of input (fifteen obsidian at 52,500 plus fifty Steel at 0.48),
+    which turned the line into a count of gems crafted.
+    """
+    return sum(
+        market_value(material_id, quantity)
+        for material_id, quantity in inputs.items()
+        if material_id not in GEMSTONES
+    )
 
 
 def smelting_inputs(material_id: str, items: int) -> dict[str, int]:
@@ -299,8 +312,8 @@ class WindowTotals(NamedTuple):
 
     gdp: float                      # value added, GDP_SOURCES only, gemstones excluded
     added_by_source: dict[str, float]   # the same, broken down - GDP_SOURCES only
-    mined_output: float             # market value of what was mined here
-    machine_input: float            # market value of what this server's machines consumed
+    mined_output: float             # market value of what was mined here, gemstones excluded
+    machine_input: float            # market value of what this server's machines consumed, gemstones excluded
     rows: int                       # non-gemstone rows in the window, so "no data" is knowable
 
 
@@ -316,15 +329,21 @@ async def window_totals(db: _Executor, guild_id: int, since: str) -> WindowTotal
     at 500,000 against iron ore's 0.01, so one drop would drown a month of
     everybody else's mining and make the number meaningless - they get their
     own field on the embed instead (gem_counts below).
+
+    A gem is kept out of a row's OUTPUT here, by is_gemstone, and out of its
+    INPUT when the row is written (inputs_value). That is why a gem row is
+    excluded from the output and value-added sums but not from the input sum:
+    a pressed ruby's 600 Iron was really consumed, and the row's gem-ness says
+    what came out, not what went in.
     """
     rows = await db.fetchall(
         "SELECT source, "
-        "       SUM(output_value - input_value) AS added, "
-        "       SUM(output_value) AS output_value, "
+        "       SUM(CASE WHEN is_gemstone = 0 THEN output_value - input_value END) AS added, "
+        "       SUM(CASE WHEN is_gemstone = 0 THEN output_value END) AS output_value, "
         "       SUM(input_value) AS input_value, "
-        "       COUNT(*) AS entries "
+        "       SUM(is_gemstone = 0) AS entries "
         "FROM production_ledger "
-        "WHERE guild_id = ? AND is_gemstone = 0 AND occurred_at >= ? "
+        "WHERE guild_id = ? AND occurred_at >= ? "
         "GROUP BY source",
         (guild_id, since),
     )
@@ -336,7 +355,9 @@ async def window_totals(db: _Executor, guild_id: int, since: str) -> WindowTotal
     for row in rows:
         source = row["source"]
         entries += row["entries"]
-        if source in GDP_SOURCES:
+        # A source whose only rows are gems has nothing to show, exactly as a
+        # source with no rows at all - not a breakdown line reading 0.
+        if source in GDP_SOURCES and row["entries"]:
             added_by_source[source] = row["added"] or 0.0
         if source == "mining":
             mined_output = row["output_value"] or 0.0

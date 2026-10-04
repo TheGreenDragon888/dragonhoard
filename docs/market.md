@@ -636,7 +636,15 @@ month of everybody else's mining put together, and a GDP figure that swings
 by half a million on one lucky drill is not measuring anything.
 
 They are recorded, counted, and displayed — in their own field on the embed,
-with their own count per gem. They are simply never summed. This is the same
+with their own count per gem. They are simply never summed. That holds on both
+sides of the import/export comparison: a gem a machine *consumes* (a drill
+bit's three, a container's one, a gem-tier upgrade's, ultra dense matter's
+ten) is left out of the input just as a mined one is left out of what was
+mined, or the two sides would not be measuring the same goods. The rule
+first held only on the mined side, and five Obsidian Drill Bits recorded
+787,524 of input (fifteen obsidian at 52,500 plus fifty Steel) on a live
+server whose week of mining came to about 6,000 (production database,
+October 2026). This is the same
 judgement section 3 made about letting them into the market, applied to a
 statistic instead of to a price.
 

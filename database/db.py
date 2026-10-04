@@ -35,6 +35,7 @@ carry on while a transaction holds the write lock, which is what WAL mode buys
 and the reason it is enabled.
 """
 import asyncio
+import math
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
@@ -710,6 +711,13 @@ class Database(_Executor):
             if version < 7:
                 self._migrate_fee_share_to_steps(conn)
 
+            # The ledger stopped valuing gemstones a machine consumes
+            # (utils/production_ledger.py: inputs_value), and the rows already
+            # written still carry them. A value, not a shape, so the schema
+            # can't tell whether this has run: gated on user_version.
+            if version < 8:
+                self._migrate_ledger_gem_inputs(conn)
+
             # server_mining_pool.carry banked the fraction of a gemstone a pool
             # had accrued from the daily top-up. The bag replaced that outright
             # - the gems are simply in it - so nothing has read or written this
@@ -987,6 +995,92 @@ class Database(_Executor):
                             (rate_step_at_or_below(rate), rate),
                         )
             conn.execute("PRAGMA user_version = 7")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    @staticmethod
+    def _is_gem_upgrade_value(value: float) -> bool:
+        """Whether a drill upgrade row's input_value is a gem's price times a
+        power of two - the whole priced cost of a gem-tier upgrade at some
+        level, since every part of upgrade_cost doubles per level."""
+        from data.materials import GEMSTONES, get_material_info
+
+        for gem_id in GEMSTONES:
+            ratio = value / get_material_info(gem_id)["market_price"]
+            if ratio < 1 - 1e-9:
+                continue
+            exponent = round(math.log2(ratio))
+            if math.isclose(ratio, 2 ** exponent, rel_tol=1e-9):
+                return True
+        return False
+
+    @staticmethod
+    def _migrate_ledger_gem_inputs(conn: sqlite3.Connection):
+        """Takes the gemstones back out of every stored ledger row's
+        input_value, so rows written before inputs_value excluded them read
+        exactly as rows written since.
+
+        The one time production_ledger rows are updated rather than appended.
+        A row stores its input's value, not the inputs themselves, so the gem
+        share has to be worked back out from what the row does store:
+
+          * A factory craft or press job is valued again from its recipe, which
+            is what the write path does. Only recipes that contain a gem are
+            touched. Their gem counts last changed in 1.2.2, before the ledger
+            existed in 1.4, so this is the value every such row would have been
+            written with.
+          * A drill upgrade row stores no recipe at all - drill type and level
+            are gone - but a gem-tier upgrade's only priced input IS its gem
+            (data/materials.py: upgrade_cost; the upgrade pack has no price),
+            so a row worth exactly a gem's price times a power of two is that
+            upgrade and goes to 0. An ore-tier upgrade's value is 1.5 or 4.8
+            times a power of two, and neither price divides a gem's by a power
+            of two (tests/test_migrations.py pins that), so one can't be
+            mistaken for the other.
+        """
+        from data.materials import (
+            DRILL_UPGRADE_JOB_TARGET,
+            GEMSTONES,
+            PRESS_RECIPES,
+            get_material_info,
+        )
+        from utils.production_ledger import inputs_value
+
+        conn.execute("BEGIN")
+        try:
+            pairs = conn.execute(
+                "SELECT DISTINCT source, material_id FROM production_ledger "
+                "WHERE source IN ('factory', 'press') AND material_id != ?",
+                (DRILL_UPGRADE_JOB_TARGET,),
+            ).fetchall()
+            for source, material_id in pairs:
+                if source == "press":
+                    recipe = PRESS_RECIPES.get(material_id, {}).get("inputs", {})
+                else:
+                    recipe = (get_material_info(material_id) or {}).get("inputs", {})
+                if not any(input_id in GEMSTONES for input_id in recipe):
+                    continue
+                conn.execute(
+                    "UPDATE production_ledger SET input_value = ? * quantity "
+                    "WHERE source = ? AND material_id = ?",
+                    (inputs_value(recipe), source, material_id),
+                )
+
+            upgrades = conn.execute(
+                "SELECT entry_id, input_value FROM production_ledger "
+                "WHERE source = 'factory' AND material_id = ? AND input_value > 0",
+                (DRILL_UPGRADE_JOB_TARGET,),
+            ).fetchall()
+            for entry_id, value in upgrades:
+                if Database._is_gem_upgrade_value(value):
+                    conn.execute(
+                        "UPDATE production_ledger SET input_value = 0 WHERE entry_id = ?",
+                        (entry_id,),
+                    )
+
+            conn.execute("PRAGMA user_version = 8")
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

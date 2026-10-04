@@ -222,6 +222,45 @@ class GemstoneTests(_LedgerTestCase):
         self.assertEqual(counts, {"ruby": 1})
         self.assertAlmostEqual((await self.totals()).gdp, 0.0, places=6)
 
+    async def test_a_gem_a_craft_consumes_is_not_counted_as_input(self):
+        """The Mined side of the import/export line leaves gems out, so the
+        Input side has to as well. Counted in, the three obsidian alone would
+        be 157,500 of input against the ten Steel's 4.80."""
+        async with self.db.transaction() as tx:
+            await record_output(tx, GUILD, "factory", "obsidian_drill_bit", 1,
+                                {"steel": 10, "obsidian": 3})
+        self.assertAlmostEqual((await self.totals()).machine_input, 4.80, places=6)
+
+    async def test_a_gem_tier_upgrade_consumes_nothing_priced(self):
+        """Its gem is its only priced input; the upgrade pack has no price."""
+        async with self.db.transaction() as tx:
+            await record_output(tx, GUILD, "factory", "drill_upgrade", 1,
+                                {"drill_upgrade_pack": 1, "ruby": 1})
+        self.assertAlmostEqual((await self.totals()).machine_input, 0.0, places=6)
+
+    async def test_ultra_dense_matter_consumes_nothing_priced(self):
+        async with self.db.transaction() as tx:
+            await record_output(tx, GUILD, "press", "ultra_dense_matter", 1, {"diamond": 10})
+        self.assertAlmostEqual((await self.totals()).machine_input, 0.0, places=6)
+
+    async def test_a_pressed_gems_input_still_counts(self):
+        """is_gemstone says what came OUT. The 600 Iron (0.15 each) that went
+        in was really consumed, so it belongs on the Input side even though
+        the ruby is kept out of every output figure."""
+        async with self.db.transaction() as tx:
+            await record_output(tx, GUILD, "press", "ruby", 1, {"iron": 600})
+        totals = await self.totals()
+        self.assertAlmostEqual(totals.machine_input, 90.0, places=6)
+        self.assertAlmostEqual(totals.gdp, 0.0, places=6)
+        self.assertEqual(totals.rows, 0)
+
+    async def test_a_haul_of_only_gems_adds_no_breakdown_line(self):
+        async with self.db.transaction() as tx:
+            await record_mined(tx, GUILD, {"ruby": 1})
+        totals = await self.totals()
+        self.assertEqual(totals.added_by_source, {})
+        self.assertAlmostEqual(totals.mined_output, 0.0, places=6)
+
     async def test_every_gemstone_can_be_recorded(self):
         async with self.db.transaction() as tx:
             await record_mined(tx, GUILD, {material_id: 1 for material_id in GEMSTONES})

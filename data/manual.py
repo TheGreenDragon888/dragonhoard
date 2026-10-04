@@ -641,7 +641,8 @@ _add(ManualSection(
             "The last line of `/economy gdp` compares what this server's machines consumed "
             "with what was mined here. A **net importer**'s machines ran on more than it dug "
             "up; a **net exporter** dug up more than its machines consumed.\n\n"
-            "Gemstones are left out of GDP entirely: one Diamond is worth more than a month "
+            "Gemstones are left out of GDP and of both sides of that comparison - mined and "
+            "consumed alike: one Diamond is worth more than a month "
             "of everyone's mining, and a number that swings that far isn't telling you "
             "anything. `/economy status` counts the gems mined here on their own instead.",
         ),

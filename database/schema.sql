@@ -576,7 +576,9 @@ CREATE INDEX IF NOT EXISTS idx_production_jobs_live
 -- meaningful from the moment 1.4 ships - which is why /economy shows a "tracked
 -- since" date rather than implying a lifetime total.
 --
--- One row per production event, appended and never updated. Value added is
+-- One row per production event, appended and never updated - the one exception
+-- being the one-off repair that took gemstones out of input_value (database/db.py:
+-- _migrate_ledger_gem_inputs). Value added is
 -- output_value - input_value, DERIVED on read rather than stored, so a balance
 -- retune can't leave two disagreeing numbers in one row.
 CREATE TABLE IF NOT EXISTS production_ledger (

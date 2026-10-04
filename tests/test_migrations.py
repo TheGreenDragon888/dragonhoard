@@ -378,9 +378,10 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         drills a per-material composition, and 5 replaced the daily allowance
         with a full bag. 1.4.1 adds 6, which hands back player-book entries for
         the materials that became server-only, and 7 moves every Fee Share onto
-        the rate steps."""
+        the rate steps. 8 takes gemstones out of the ledger's stored input
+        values."""
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 7)
+        self.assertEqual(row[0], 8)
 
     async def test_the_daily_top_ups_bookkeeping_is_gone(self):
         # There is no daily event left for it to record, and a column nothing
@@ -778,7 +779,7 @@ class ServerOnlyEntriesMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_lands_on_the_current_version_and_does_not_run_twice(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 7)
+        self.assertEqual(row[0], 8)
         await self.db.init_schema()
         balance = await self.db.fetchone(
             "SELECT balance FROM server_currency_balances WHERE user_id = ?", (self.BUYER,)
@@ -964,7 +965,7 @@ class FeeShareStepMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_runs_once(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 7)
+        self.assertEqual(row[0], 8)
         await self.db.execute("UPDATE server_config SET tax_percent = 15 WHERE guild_id = 2")
         await self.db.init_schema()
         row = await self.db.fetchone("SELECT tax_percent FROM server_config WHERE guild_id = 2")
@@ -1090,6 +1091,99 @@ class RepaidBondNoticeMigrationTests(unittest.IsolatedAsyncioTestCase):
             after = await self.db.fetchall(f"SELECT * FROM {table}")
             with self.subTest(table=table):
                 self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
+
+
+class LedgerGemInputMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """The ledger stopped valuing gemstones a machine consumes, and the rows
+    written before that are repaired to read as though written since. Rows
+    with no gem in them are left exactly as they were.
+
+    The old state is a current database with user_version wound back to 7 and
+    rows written with the values the old inputs_value gave them.
+    """
+
+    # (source, material_id, quantity, input_value as the old code stored it,
+    #  input_value it should read afterwards)
+    ROWS = (
+        # 5 x (3 obsidian at 52,500 + 10 Steel at 0.48)
+        ("factory", "obsidian_drill_bit", 5, 787524.0, 24.0),
+        # 16 x (1 ruby at 5,500 + 20 Copper at 0.30)
+        ("factory", "ruby_container", 16, 88096.0, 96.0),
+        ("press", "ultra_dense_matter", 1, 5000000.0, 0.0),
+        # Gem-tier upgrades: one obsidian at level 1, four rubies at level 3.
+        ("factory", "drill_upgrade", 1, 52500.0, 0.0),
+        ("factory", "drill_upgrade", 1, 22000.0, 0.0),
+        # Ore-tier upgrades: 10 Steel at level 1, 20,480 Steel at level 12 -
+        # the second is worth more than a ruby and must still be left alone.
+        ("factory", "drill_upgrade", 1, 4.8, 4.8),
+        ("factory", "drill_upgrade", 1, 9830.4, 9830.4),
+        # No gems anywhere in these.
+        ("factory", "wiring", 1, 3.6, 3.6),
+        ("press", "ruby", 1, 90.0, 90.0),
+        ("blast_furnace", "copper", 100, 23.0, 23.0),
+    )
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        for source, material_id, quantity, old_value, _ in self.ROWS:
+            conn.execute(
+                "INSERT INTO production_ledger "
+                "(guild_id, source, material_id, quantity, output_value, input_value, is_gemstone) "
+                "VALUES (?, ?, ?, ?, 0, ?, ?)",
+                (GUILD, source, material_id, quantity, old_value,
+                 1 if material_id == "ruby" else 0),
+            )
+        conn.execute("PRAGMA user_version = 7")
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_gem_inputs_come_out_and_everything_else_stays(self):
+        rows = await self.db.fetchall(
+            "SELECT source, material_id, input_value FROM production_ledger ORDER BY entry_id"
+        )
+        for row, (source, material_id, _, _, expected) in zip(rows, self.ROWS):
+            with self.subTest(source=source, material=material_id, expected=expected):
+                self.assertAlmostEqual(row["input_value"], expected, places=6)
+
+    async def test_an_ore_tier_upgrade_is_never_read_as_a_gem_one(self):
+        """The migration tells a gem-tier upgrade row from an ore-tier one by
+        its value alone, which only works while no ore-tier cost is a gem's
+        price times a power of two. Pinned at every level up to 40."""
+        from data.materials import get_material_info
+
+        for material_id in ("iron", "steel"):
+            per_level_1 = 10 * get_material_info(material_id)["market_price"]
+            for level in range(1, 41):
+                with self.subTest(material=material_id, level=level):
+                    self.assertFalse(
+                        Database._is_gem_upgrade_value(per_level_1 * 2 ** (level - 1))
+                    )
+
+    async def test_it_runs_once(self):
+        row = await self.db.fetchone("PRAGMA user_version")
+        self.assertEqual(row[0], 8)
+        await self.db.execute(
+            "UPDATE production_ledger SET input_value = 52500 WHERE material_id = 'drill_upgrade'"
+        )
+        await self.db.init_schema()
+        row = await self.db.fetchone(
+            "SELECT MIN(input_value) AS low FROM production_ledger WHERE material_id = 'drill_upgrade'"
+        )
+        self.assertEqual(row["low"], 52500, "a later open must not touch it again")
 
 
 if __name__ == "__main__":
