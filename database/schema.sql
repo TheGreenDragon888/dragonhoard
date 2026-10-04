@@ -699,7 +699,9 @@ CREATE TABLE IF NOT EXISTS prediction_bets (
     -- load-bearing.
     closes_at   TEXT NOT NULL,
     -- open      - taking wagers
-    -- closed    - past closes_at, waiting on an admin to call it
+    -- closed    - past closes_at, waiting on an admin to call it. /bet close
+    --             gets a bet here early by moving closes_at to the moment it
+    --             ran, so this description stays true.
     -- resolved  - called, and the pot has been paid out
     -- cancelled - voided, and every stake has been handed back
     --

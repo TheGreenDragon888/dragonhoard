@@ -387,6 +387,33 @@ async def place_wager(
     return (existing["stake_cents"] if existing else 0) + stake_cents
 
 
+async def close_bet(db: _Executor, bet, now: datetime | None = None) -> None:
+    """Stops a bet taking wagers before its deadline: /bet close.
+
+    The bet lands in exactly the state its deadline passing would have put it
+    in - 'closed', waiting to be resolved or cancelled - so nothing downstream
+    needs to know it got there early. closes_at is moved to now for the same
+    reason: schema.sql describes a closed bet as one past its closes_at, and
+    this keeps that true while recording when wagers actually stopped.
+
+    No currency moves. Every stake stays escrowed until the bet settles.
+    """
+    status = await refresh_status(db, bet, now)
+    if status == "closed":
+        raise BetUnavailable("That bet has already closed to new wagers.")
+    if status == "resolved":
+        raise BetUnavailable("That bet has already been resolved.")
+    if status == "cancelled":
+        raise BetUnavailable("That bet was cancelled - there is nothing to close.")
+    # Guarded on status = 'open' as refresh_status's UPDATE is, so two closes
+    # racing on the same bet both end up with it closed once.
+    await db.execute(
+        "UPDATE prediction_bets SET status = 'closed', closes_at = ? "
+        "WHERE bet_id = ? AND status = 'open'",
+        (now_text(now), bet["bet_id"]),
+    )
+
+
 class Settlement(NamedTuple):
     """What settling a bet paid out.
 
@@ -519,6 +546,7 @@ __all__ = [
     "Settlement",
     "apportion",
     "cancel_bet",
+    "close_bet",
     "closes_at_text",
     "fetch_bet",
     "from_cents",

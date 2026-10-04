@@ -5,6 +5,7 @@ Implements:
   - /bet open <prediction> <amount> <closes_in>  - propose an outcome and back it
   - /bet place <bet> <side> <amount>             - back or oppose an open bet
   - /bet status [bet]                            - a bet's pools and odds, or the list
+  - /bet close <bet>                             - stop wagers early (its creator, or Manage Server)
   - /bet resolve <bet> <outcome>                 - call it (Manage Server)
   - /bet cancel <bet>                            - void it and refund (Manage Server)
 
@@ -63,6 +64,7 @@ from utils.betting import (
     BetUnavailable,
     Pools,
     cancel_bet,
+    close_bet,
     closes_at_text,
     fetch_bet,
     from_cents,
@@ -422,6 +424,20 @@ async def _already_seen_by(tx, user_id: int, guild_id: int, notice_id: int) -> N
     )
 
 
+def _may_close(bet, interaction: discord.Interaction) -> bool:
+    """Whether the caller may /bet close this bet: the player who opened it,
+    or anyone with Manage Server.
+
+    The creator is included so that a bet maker who has already announced the
+    result can stop wagers while they wait for an admin to resolve it. That is
+    also why this cannot be the has_permissions decorator /bet resolve and
+    /bet cancel carry - it would turn the creator away before the command ran.
+    interaction.permissions is what that decorator reads, so "admin" means the
+    same thing here as it does there.
+    """
+    return interaction.user.id == bet["creator_id"] or interaction.permissions.manage_guild
+
+
 async def _currency_emoji(db, guild_id: int) -> str | None:
     row = await db.fetchone(
         "SELECT currency_emoji FROM server_config WHERE guild_id = ?", (guild_id,)
@@ -643,6 +659,80 @@ class BettingCog(commands.Cog):
                 ),
                 inline=False,
             )
+        await respond(
+            interaction, self.db, embed=embed, allowed_mentions=discord.AllowedMentions.none()
+        )
+
+    async def _closable_choices(self, interaction: discord.Interaction, current: str):
+        """The bets /bet close could close for this caller: open ones only, and
+        for anybody without Manage Server only the ones they opened. A
+        convenience - _may_close in the command is the enforcement."""
+        if interaction.guild_id is None:
+            return []
+        rows = await live_bets(self.db, interaction.guild_id)
+        now = now_text()
+        needle = current.lower()
+        choices = []
+        for bet in rows:
+            # Open by status but past its deadline is closed in every way that
+            # matters; refresh_status just has not been asked yet.
+            if bet["status"] != "open" or bet["closes_at"] <= now:
+                continue
+            if not _may_close(bet, interaction):
+                continue
+            label = _bet_label(bet)
+            if needle and needle not in label.lower():
+                continue
+            choices.append(app_commands.Choice(name=label, value=bet["bet_id"]))
+        return choices[:MAX_CHOICES]
+
+    @bet_group.command(name="close", description="Stop a bet taking wagers before its deadline")
+    @app_commands.describe(bet="Which bet to close")
+    @app_commands.autocomplete(bet=_closable_choices)
+    async def bet_close(self, interaction: discord.Interaction, bet: int):
+        if interaction.guild_id is None:
+            await interaction.response.send_message(
+                "Bets belong to a server - run this in the one the bet is in.", ephemeral=True
+            )
+            return
+
+        currency_emoji = await _currency_emoji(self.db, interaction.guild_id)
+        row = await fetch_bet(self.db, bet, interaction.guild_id)
+        if row is None:
+            await interaction.response.send_message(
+                "There's no bet with that number in this server.", ephemeral=True
+            )
+            return
+        # Checked against the row read before the lock: creator_id is written
+        # once, when the bet is opened, so the re-read below cannot change it.
+        if not _may_close(row, interaction):
+            await interaction.response.send_message(
+                "Only the player who opened this bet, or someone with Manage Server, can "
+                "close it.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            async with self.db.transaction() as tx:
+                current = await fetch_bet(tx, bet, interaction.guild_id)
+                if current is None:
+                    raise BetUnavailable("That bet isn't in this server any more.")
+                await close_bet(tx, current)
+                pools = await pools_for(tx, bet)
+                notice_id = await post_server_notification(
+                    tx,
+                    interaction.guild_id,
+                    f"🎲 Bet #{bet} closed early",
+                    f"<@{interaction.user.id}> closed it to new wagers. It's waiting on an admin "
+                    f"to call it. The bet was: {current['prediction']}",
+                )
+                await _already_seen_by(tx, interaction.user.id, interaction.guild_id, notice_id)
+        except BetUnavailable as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
+
+        embed = build_bet_embed(row, pools, "closed", currency_emoji)
         await respond(
             interaction, self.db, embed=embed, allowed_mentions=discord.AllowedMentions.none()
         )

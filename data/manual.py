@@ -849,6 +849,12 @@ _add(ManualSection(
             "One bet's pools and odds, or a list of everything running here.",
         ),
         ManualCommand(
+            "/bet close", "/bet close <bet>",
+            "Stops a bet taking wagers before its deadline - for when the result is already "
+            "known and it's waiting on an admin. Only the player who opened it, or someone with "
+            "Manage Server.",
+        ),
+        ManualCommand(
             "/bet resolve", "/bet resolve <bet> <outcome>",
             "Says which way it went and pays the pot out. Needs Manage Server.",
         ),
