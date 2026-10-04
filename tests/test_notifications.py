@@ -13,6 +13,7 @@ by a later one and all of them are shown.
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import discord
 
@@ -29,7 +30,12 @@ from utils.db_helpers import (
     deduct_user_quantity,
     ensure_user_row,
 )
-from utils.responses import _merge_embeds
+from utils.responses import (
+    MAX_EMBED_CHARS_PER_MESSAGE,
+    MAX_EMBEDS_PER_MESSAGE,
+    _merge_embeds,
+    respond,
+)
 from utils.notifications import (
     GLOBAL_FEED_ID,
     fetch_unseen,
@@ -428,6 +434,111 @@ class NoticeEmbedTests(NotificationTestCase):
         embed = notice_embed((await self.unseen())[0])
         self.assertEqual(embed.title, "Heads up")
         self.assertEqual(embed.description, "Something happened.")
+
+
+class _StrictResponse:
+    """interaction.response, refusing what Discord refuses. A mock that took
+    anything is how attaching every pending notice at once got through: the
+    10-embed cap is enforced by discord.py and the character total by the API,
+    and neither runs in a test."""
+
+    def __init__(self):
+        self.send_message = AsyncMock(side_effect=self._check)
+
+    @staticmethod
+    async def _check(*args, embeds=(), **kwargs):
+        if len(embeds) > MAX_EMBEDS_PER_MESSAGE:
+            raise ValueError("embeds has a maximum of 10 elements.")
+        if sum(len(e) for e in embeds) > MAX_EMBED_CHARS_PER_MESSAGE:
+            raise ValueError("embed size exceeds maximum size of 6000")
+
+
+class _FakeUser:
+    def __init__(self, user_id):
+        self.id = user_id
+
+
+class _FakeInteraction:
+    def __init__(self, user_id=USER, guild_id=GUILD):
+        self.guild_id = guild_id
+        self.user = _FakeUser(user_id)
+        self.response = _StrictResponse()
+
+    @property
+    def embeds(self):
+        """Everything the reply carried, whichever key it went under: a reply
+        with no notice to attach keeps the command's own `embed=`."""
+        kwargs = self.response.send_message.call_args.kwargs
+        single = kwargs.get("embed")
+        return [single] if single is not None else list(kwargs.get("embeds") or [])
+
+
+class OverflowTests(NotificationTestCase):
+    """More notices pending than one reply can carry.
+
+    The incident this pins: a player owed a dozen personal notices had every
+    reply refused by discord.py, and since notices are only marked seen after a
+    successful send, no command of theirs answered again. The rule is that the
+    command's own answer always goes, notices fill what room is left, and the
+    rest arrive on later commands."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await ensure_user_row(self.db, USER)
+
+    async def owe(self, count, body="Body"):
+        for n in range(count):
+            await post_user_notification(self.db, USER, f"k{n}", f"notice {n}", body)
+
+    async def reply(self, **kwargs):
+        interaction = _FakeInteraction()
+        kwargs.setdefault("embed", discord.Embed(title="command"))
+        await respond(interaction, self.db, **kwargs)
+        return [e.title for e in interaction.embeds]
+
+    async def test_a_backlog_beyond_ten_embeds_still_gets_an_answer(self):
+        await self.owe(12)
+        titles = await self.reply()
+        self.assertEqual(len(titles), MAX_EMBEDS_PER_MESSAGE)
+        self.assertEqual(titles[0], "command")
+
+    async def test_the_backlog_drains_over_later_commands_in_order(self):
+        await self.owe(12)
+        first = await self.reply()
+        second = await self.reply()
+        third = await self.reply()
+        shown = first[1:] + second[1:] + third[1:]
+        self.assertEqual(shown, [f"notice {n}" for n in range(12)])
+        self.assertEqual(third, ["command"])
+
+    async def test_a_command_sending_several_embeds_leaves_less_room(self):
+        await self.owe(12)
+        own = [discord.Embed(title=f"page {n}") for n in range(4)]
+        titles = await self.reply(embed=None, embeds=own)
+        self.assertEqual(titles[:4], ["page 0", "page 1", "page 2", "page 3"])
+        self.assertEqual(len(titles), MAX_EMBEDS_PER_MESSAGE)
+        self.assertEqual(len(await fetch_unseen_personal(self.db, USER)), 6)
+
+    async def test_long_notices_are_held_to_the_character_total(self):
+        # Two 4000-character bodies are under the embed count by a mile and
+        # over the 6000-character total together.
+        await self.owe(2, body="x" * 4000)
+        self.assertEqual(await self.reply(), ["command", "notice 0"])
+        self.assertEqual(await self.reply(), ["command", "notice 1"])
+
+    async def test_broadcasts_still_go_first_and_are_marked_once_shown(self):
+        await self.add_global("a", title="global")
+        await post_server_notification(self.db, GUILD, "server", "Body")
+        await self.owe(12)
+        titles = await self.reply()
+        self.assertEqual(titles[1:3], ["global", "server"])
+        self.assertEqual(await self.unseen(), [])
+
+    async def test_a_broadcast_that_did_not_fit_is_not_marked_seen(self):
+        await self.add_global("a", title="global")
+        own = [discord.Embed(title=f"page {n}") for n in range(MAX_EMBEDS_PER_MESSAGE)]
+        await self.reply(embed=None, embeds=own)
+        self.assertEqual([row["title"] for row in await self.unseen()], ["global"])
 
 
 if __name__ == "__main__":
