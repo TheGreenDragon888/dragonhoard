@@ -1026,5 +1026,71 @@ class MarketVatColumnRenameTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse({c for c in columns if "market_vat" in c})
 
 
+
+class RepaidBondNoticeMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """Repaid bonds share one notice per holder per server, which added
+    government_bonds.repaid_notice_key and user_notifications.guild_id. Both
+    are nullable adds, and NULL is right for every existing row: a bond repaid
+    before this was announced on its own, and an existing notice is shown in
+    any server, as every notice was.
+
+    The old shape is made the way MarketTaxMigrationTests makes its own.
+    """
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        conn.execute("ALTER TABLE government_bonds DROP COLUMN repaid_notice_key")
+        conn.execute("ALTER TABLE user_notifications DROP COLUMN guild_id")
+        conn.execute(
+            "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
+            "owed_cents, remaining_cents, tax_percent_at_sale) VALUES (?, ?, 500, 0, 500, 0, 0)",
+            (GUILD, USER),
+        )
+        conn.execute(
+            "INSERT INTO user_notifications (user_id, notice_key, title, body) "
+            "VALUES (?, 'bond_repaid:1', 'Bond Repaid', 'Old body')",
+            (USER,),
+        )
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_both_columns_were_added_empty(self):
+        bond = await self.db.fetchone("SELECT repaid_notice_key FROM government_bonds")
+        self.assertIsNone(bond["repaid_notice_key"])
+        notice = await self.db.fetchone("SELECT guild_id FROM user_notifications")
+        self.assertIsNone(notice["guild_id"])
+
+    async def test_an_unread_old_notice_is_still_shown_anywhere(self):
+        from utils.notifications import fetch_unseen_personal
+
+        for guild_id in (GUILD, None):
+            with self.subTest(guild_id=guild_id):
+                rows = await fetch_unseen_personal(self.db, USER, guild_id)
+                self.assertEqual([row["body"] for row in rows], ["Old body"])
+
+    async def test_opening_it_again_changes_nothing(self):
+        await self.db.init_schema()
+        for table in ("government_bonds", "user_notifications"):
+            before = await self.db.fetchall(f"SELECT * FROM {table}")
+            await self.db.init_schema()
+            after = await self.db.fetchall(f"SELECT * FROM {table}")
+            with self.subTest(table=table):
+                self.assertEqual([tuple(r) for r in before], [tuple(r) for r in after])
+
+
 if __name__ == "__main__":
     unittest.main()

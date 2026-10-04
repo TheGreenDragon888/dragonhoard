@@ -46,6 +46,7 @@ from utils.notifications import (
     post_server_notification,
     post_user_notification,
     seed_global_notices,
+    set_user_notification,
 )
 
 GUILD = 111
@@ -334,6 +335,64 @@ class PersonalNoticeTests(NotificationTestCase):
         self.assertTrue(await announce_first_gem(self.db, USER, "ruby"))
         self.assertFalse(await announce_first_gem(self.db, USER, "ruby"))
         self.assertFalse(await announce_first_gem(self.db, USER, "iron_ore"))
+
+
+class RewrittenNoticeTests(NotificationTestCase):
+    """set_user_notification: a personal notice kept open and rewritten until
+    the player sees it, and optionally shown in one server only. Repaid bonds
+    are what use it (tests/test_government.py: RepaidBondNoticeTests)."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        await ensure_user_row(self.db, USER)
+
+    async def bodies(self, guild_id=GUILD):
+        return [row["body"] for row in await fetch_unseen_personal(self.db, USER, guild_id)]
+
+    async def test_an_unread_notice_is_rewritten_in_place(self):
+        await set_user_notification(self.db, USER, "k", "T", "one")
+        await set_user_notification(self.db, USER, "k", "T2", "two")
+        rows = await fetch_unseen_personal(self.db, USER)
+        self.assertEqual([(row["title"], row["body"]) for row in rows], [("T2", "two")])
+
+    async def test_a_read_notice_keeps_what_the_player_was_shown(self):
+        await set_user_notification(self.db, USER, "k", "T", "one")
+        await mark_personal_seen(self.db, USER, await fetch_unseen_personal(self.db, USER))
+        await set_user_notification(self.db, USER, "k", "T", "two")
+        self.assertEqual(await self.bodies(), [])
+        row = await self.db.fetchone("SELECT body FROM user_notifications WHERE notice_key = 'k'")
+        self.assertEqual(row["body"], "one")
+
+    async def test_a_notice_rewritten_while_the_reply_was_in_flight_stays_unread(self):
+        """respond() fetches, sends, then marks. Marking the version it fetched
+        must not close the newer one, or the newest total is never shown."""
+        await set_user_notification(self.db, USER, "k", "T", "one")
+        shown = await fetch_unseen_personal(self.db, USER)
+        await set_user_notification(self.db, USER, "k", "T", "two")
+        await mark_personal_seen(self.db, USER, shown)
+        self.assertEqual(await self.bodies(), ["two"])
+
+    async def test_a_server_notice_is_shown_only_in_that_server(self):
+        await set_user_notification(self.db, USER, "k", "T", "here", guild_id=GUILD)
+        self.assertEqual(await self.bodies(GUILD), ["here"])
+        self.assertEqual(await self.bodies(OTHER_GUILD), [])
+        self.assertEqual(await self.bodies(None), [], "nor in a DM")
+
+    async def test_a_notice_with_no_server_is_shown_anywhere(self):
+        await post_user_notification(self.db, USER, "k", "T", "anywhere")
+        for guild_id in (GUILD, OTHER_GUILD, None):
+            with self.subTest(guild_id=guild_id):
+                self.assertEqual(await self.bodies(guild_id), ["anywhere"])
+
+    async def test_respond_delivers_it_only_in_its_server(self):
+        await set_user_notification(self.db, USER, "k", "Bonds", "here", guild_id=GUILD)
+        elsewhere = _FakeInteraction(guild_id=OTHER_GUILD)
+        await respond(elsewhere, self.db, embed=discord.Embed(title="command"))
+        self.assertEqual([e.title for e in elsewhere.embeds], ["command"])
+        here = _FakeInteraction(guild_id=GUILD)
+        await respond(here, self.db, embed=discord.Embed(title="command"))
+        self.assertEqual([e.title for e in here.embeds], ["command", "Bonds"])
+        self.assertEqual(await self.bodies(GUILD), [])
 
 
 class GemUnlockNoticeTests(unittest.TestCase):

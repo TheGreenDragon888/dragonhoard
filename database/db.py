@@ -581,6 +581,22 @@ class Database(_Executor):
                     "ADD COLUMN market_tax_percent_at_sale REAL NOT NULL DEFAULT 0.0"
                 )
 
+            # Repaid bonds share one notice per holder per server until they
+            # next look (utils/government.py: announce_repaid_bonds), which
+            # needs to know which bonds a notice is about and which server it
+            # belongs to. Both nullable, added in place, introspection-gated for
+            # the reasons listed_id is. NULL is right for every existing row:
+            # a bond repaid before this shipped was announced on its own, under
+            # its own bond_repaid:<id> key, and a notice raised before it is
+            # shown in any server, as every notice was until now.
+            if "repaid_notice_key" not in bond_columns:
+                conn.execute("ALTER TABLE government_bonds ADD COLUMN repaid_notice_key TEXT")
+            personal_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(user_notifications)")
+            }
+            if "guild_id" not in personal_columns:
+                conn.execute("ALTER TABLE user_notifications ADD COLUMN guild_id INTEGER")
+
             # The per-server fee columns, which 1.4 replaced with a multiplier
             # on the config.py default. Dropped rather than left unread: the
             # decision was that every server's custom fee is discarded and

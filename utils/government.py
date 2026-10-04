@@ -46,7 +46,7 @@ from data.materials import (
     enhancement_price,
     player_price_total,
 )
-from utils.betting import apportion
+from utils.betting import apportion, from_cents
 from utils.db_helpers import (
     MACHINES,
     adjust_currency_balance,
@@ -62,7 +62,7 @@ from utils.db_helpers import (
 )
 from utils.formatting import format_currency
 from utils.job_board import JOB_BOARD_TIMEZONE
-from utils.notifications import post_server_notification, post_user_notification
+from utils.notifications import post_server_notification, set_user_notification
 from utils.production_ledger import GDP_WEEK_HOURS, tracked_since, window_cutoff, window_totals
 
 MAYOR = "mayor"
@@ -675,6 +675,7 @@ async def pay_bondholders(tx: _Executor, guild_id: int) -> dict[int, int]:
 
     unspent = apportion(list(owed_by_holder.items()), pay) if pay else {}
     shares: dict[int, int] = {}
+    repaid: dict[int, list[int]] = {}   # holder_id -> the bonds this payout finished
     for bond in bonds:
         share = min(unspent.get(bond["holder_id"], 0), bond["remaining_cents"])
         if not share:
@@ -687,15 +688,12 @@ async def pay_bondholders(tx: _Executor, guild_id: int) -> dict[int, int]:
         )
         await adjust_currency_balance(tx, guild_id, bond["holder_id"], share / 100)
         if share == bond["remaining_cents"]:
-            await post_user_notification(
-                tx, bond["holder_id"], f"bond_repaid:{bond['bond_id']}",
-                "🏛️ Bond Repaid",
-                "The server has finished repaying one of your bonds. Every payment went "
-                "straight to your balance; `/bonds holdings` shows any you still hold.",
-            )
+            repaid.setdefault(bond["holder_id"], []).append(bond["bond_id"])
     # A creditor's share is never more than they are owed, so the walk spends
     # all of it; anything unspent would leave the pool without reaching anyone.
     assert not any(unspent.values()), f"unspent bond shares {unspent}"
+    for holder_id, bond_ids in repaid.items():
+        await announce_repaid_bonds(tx, guild_id, holder_id, bond_ids)
 
     left = max(0.0, pool - pay / 100)
     if pay == total_owed:
@@ -710,6 +708,75 @@ async def pay_bondholders(tx: _Executor, guild_id: int) -> dict[int, int]:
             "UPDATE server_config SET repayment_pool = ? WHERE guild_id = ?", (left, guild_id)
         )
     return shares
+
+
+# The prefix of a repaid-bonds notice's key, which is
+# "bonds_repaid:<guild_id>:<bond_id>". Not the "bond_repaid:<bond_id>" each bond
+# used to be announced under, so a notice raised the old way is never mistaken
+# for an open one of these.
+BONDS_REPAID_NOTICE = "bonds_repaid"
+
+
+def repaid_bonds_notice(count: int, returned_cents: int, currency_emoji: str | None) -> tuple[str, str]:
+    """The title and body of the notice for `count` repaid bonds that returned
+    `returned_cents` between them - what was owed on them, interest included."""
+    returned = format_currency(from_cents(returned_cents), currency_emoji)
+    if count == 1:
+        title = "🏛️ Bond Repaid"
+        opening = f"The server has finished repaying one of your bonds, returning **{returned}** with interest."
+    else:
+        title = "🏛️ Bonds Repaid"
+        opening = (
+            f"The server has finished repaying **{count}** of your bonds, "
+            f"returning **{returned}** in total with interest."
+        )
+    return title, (
+        f"{opening} Every payment went straight to your balance; "
+        "`/bonds holdings` shows any you still hold."
+    )
+
+
+async def announce_repaid_bonds(tx: _Executor, guild_id: int, holder_id: int, bond_ids: list[int]) -> None:
+    """Tells a holder that `bond_ids` have been repaid, in ONE notice for
+    every bond this server has repaid them since they last saw one.
+
+    A payout that finishes several bonds, or several payouts before the holder
+    next runs a command, used to raise a notice per bond, each saying the same
+    thing. Now the holder's unread notice for this server, if there is one,
+    takes the new bonds and is rewritten with the new count and total; if they
+    have read it, or there was none, these start a new one. Its figures are
+    summed from the bonds carrying its key rather than kept on the notice, so
+    they always match what was repaid.
+
+    Shown only in this server: the total is in its currency.
+    """
+    # At most one unread notice per holder per server ever exists, because
+    # this is the only thing that raises one and it reuses any that is open.
+    open_notice = await tx.fetchone(
+        "SELECT notice_key FROM user_notifications "
+        "WHERE user_id = ? AND guild_id = ? AND seen_at IS NULL AND notice_key LIKE ?",
+        (holder_id, guild_id, f"{BONDS_REPAID_NOTICE}:%"),
+    )
+    if open_notice:
+        key = open_notice["notice_key"]
+    else:
+        # Bond ids are never reused, so neither is a key made from one.
+        key = f"{BONDS_REPAID_NOTICE}:{guild_id}:{min(bond_ids)}"
+    placeholders = ", ".join("?" * len(bond_ids))
+    await tx.execute(
+        f"UPDATE government_bonds SET repaid_notice_key = ? WHERE bond_id IN ({placeholders})",
+        (key, *bond_ids),
+    )
+    batch = await tx.fetchone(
+        "SELECT COUNT(*) AS bonds, SUM(owed_cents) AS returned_cents FROM government_bonds "
+        "WHERE guild_id = ? AND repaid_notice_key = ?",
+        (guild_id, key),
+    )
+    cfg = await tx.fetchone("SELECT currency_emoji FROM server_config WHERE guild_id = ?", (guild_id,))
+    title, body = repaid_bonds_notice(
+        batch["bonds"], batch["returned_cents"], cfg["currency_emoji"] if cfg else None
+    )
+    await set_user_notification(tx, holder_id, key, title, body, guild_id=guild_id)
 
 
 # ---------------------------------------------------------------------------

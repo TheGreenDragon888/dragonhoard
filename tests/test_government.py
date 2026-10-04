@@ -67,6 +67,7 @@ from utils.government import (
     open_bond_sale,
     outstanding_debt_cents,
     pay_bondholders,
+    repaid_bonds_notice,
     set_bond_rate,
     set_fee_multiplier,
     market_tax_units,
@@ -75,6 +76,8 @@ from utils.government import (
     start_bonanza,
     revenue_collected,
 )
+from utils.formatting import format_currency
+from utils.notifications import fetch_unseen_personal, mark_personal_seen
 
 GUILD = 7070
 MAYOR_ID = 101
@@ -498,10 +501,10 @@ class BondTests(_GovernmentTestCase):
         )
         self.assertAlmostEqual(await get_currency_balance(self.db, GUILD, BOB), STARTING_BALANCE + 6.0)
         notices = await self.db.fetchall(
-            "SELECT notice_key FROM user_notifications WHERE user_id = ? AND notice_key LIKE 'bond_repaid:%'",
+            "SELECT notice_key FROM user_notifications WHERE user_id = ? AND notice_key LIKE 'bonds_repaid:%'",
             (BOB,),
         )
-        self.assertEqual([n["notice_key"] for n in notices], [f"bond_repaid:{first}"])
+        self.assertEqual([n["notice_key"] for n in notices], [f"bonds_repaid:{GUILD}:{first}"])
 
     async def test_creditors_split_in_proportion_and_finish_together(self):
         bob_first = await self.owed_bond(BOB, 500)
@@ -534,7 +537,7 @@ class BondTests(_GovernmentTestCase):
         await self.fee(0.5)
         self.assertAlmostEqual((await self.cfg())["treasury"], 1.7)
         repaid = await self.db.fetchone(
-            "SELECT COUNT(*) AS n FROM user_notifications WHERE user_id = ? AND notice_key LIKE 'bond_repaid:%'",
+            "SELECT COUNT(*) AS n FROM user_notifications WHERE user_id = ? AND notice_key LIKE 'bonds_repaid:%'",
             (BOB,),
         )
         self.assertEqual(repaid["n"], 1)
@@ -573,6 +576,142 @@ class BondTests(_GovernmentTestCase):
     async def test_owed_is_the_principal_plus_a_whole_cent_premium(self):
         self.assertEqual(bond_owed_cents(5_000, 5), 5_250)
         self.assertEqual(bond_owed_cents(100, 0), 100)
+
+
+class RepaidBondNoticeTests(_GovernmentTestCase):
+    """One notice per holder per server for every bond repaid since they last
+    looked, rewritten as more are repaid, rather than one notice per bond
+    (utils/government.py: announce_repaid_bonds)."""
+
+    async def owed_bond(self, holder, owed, principal=None, guild=GUILD):
+        return await self.db.execute(
+            "INSERT INTO government_bonds (guild_id, holder_id, principal_cents, rate_percent, "
+            "owed_cents, remaining_cents, tax_percent_at_sale) VALUES (?, ?, ?, 5, ?, ?, 0)",
+            (guild, holder, principal or owed, owed, owed),
+        )
+
+    async def payout(self, pool, guild=GUILD):
+        await self.db.execute(
+            "UPDATE server_config SET repayment_pool = ? WHERE guild_id = ?", (pool, guild)
+        )
+        async with self.db.transaction() as tx:
+            return await pay_bondholders(tx, guild)
+
+    async def notices(self, holder=BOB, guild=GUILD):
+        return await fetch_unseen_personal(self.db, holder, guild)
+
+    async def see(self, holder=BOB, guild=GUILD):
+        await mark_personal_seen(self.db, holder, await self.notices(holder, guild))
+
+    def expected(self, count, returned, emoji=None):
+        return repaid_bonds_notice(count, returned, emoji)
+
+    async def test_bonds_finished_by_one_payout_share_one_notice(self):
+        for owed in (100, 200, 300):
+            await self.owed_bond(BOB, owed)
+        await self.payout(6.0)
+        notices = await self.notices()
+        self.assertEqual(len(notices), 1)
+        self.assertEqual((notices[0]["title"], notices[0]["body"]), self.expected(3, 600))
+
+    async def test_the_wording_says_how_many(self):
+        one_title, one_body = repaid_bonds_notice(1, 525, None)
+        self.assertEqual(one_title, "🏛️ Bond Repaid")
+        self.assertIn("one of your bonds", one_body)
+        many_title, many_body = repaid_bonds_notice(3, 1_575, None)
+        self.assertEqual(many_title, "🏛️ Bonds Repaid")
+        self.assertIn("**3** of your bonds", many_body)
+        self.assertIn(format_currency(15.75), many_body)
+
+    async def test_the_total_is_what_was_returned_with_interest(self):
+        await self.owed_bond(BOB, 525, principal=500)
+        await self.owed_bond(BOB, 1_050, principal=1_000)
+        await self.payout(15.75)
+        [notice] = await self.notices()
+        self.assertIn(format_currency(15.75), notice["body"])
+
+    async def test_it_grows_with_each_payout_until_the_holder_looks(self):
+        first = await self.owed_bond(BOB, 100)
+        await self.owed_bond(BOB, 200)
+        await self.owed_bond(BOB, 300)
+        await self.payout(1.0)
+        await self.payout(2.0)
+        notices = await self.notices()
+        self.assertEqual([n["notice_key"] for n in notices], [f"bonds_repaid:{GUILD}:{first}"])
+        self.assertEqual(notices[0]["body"], self.expected(2, 300)[1])
+        await self.payout(3.0)
+        [notice] = await self.notices()
+        self.assertEqual(notice["body"], self.expected(3, 600)[1])
+
+    async def test_a_bond_only_partly_repaid_is_not_counted(self):
+        await self.owed_bond(BOB, 100)
+        await self.owed_bond(BOB, 500)
+        await self.payout(3.0)
+        [notice] = await self.notices()
+        self.assertEqual(notice["body"], self.expected(1, 100)[1])
+
+    async def test_once_seen_the_next_repayment_starts_a_new_notice(self):
+        await self.owed_bond(BOB, 100)
+        await self.owed_bond(BOB, 200)
+        second = await self.owed_bond(BOB, 300)
+        await self.payout(3.0)
+        await self.see()
+        await self.payout(3.0)
+        notices = await self.notices()
+        self.assertEqual([n["notice_key"] for n in notices], [f"bonds_repaid:{GUILD}:{second}"])
+        self.assertEqual(notices[0]["body"], self.expected(1, 300)[1])
+        seen = await self.db.fetchone(
+            "SELECT body FROM user_notifications WHERE user_id = ? AND seen_at IS NOT NULL", (BOB,)
+        )
+        self.assertEqual(seen["body"], self.expected(2, 300)[1], "what was read is left as read")
+
+    async def test_a_repayment_while_the_reply_is_in_flight_is_not_lost(self):
+        await self.owed_bond(BOB, 100)
+        await self.owed_bond(BOB, 200)
+        await self.payout(1.0)
+        shown = await self.notices()
+        await self.payout(2.0)
+        await mark_personal_seen(self.db, BOB, shown)
+        [notice] = await self.notices()
+        self.assertEqual(notice["body"], self.expected(2, 300)[1])
+
+    async def test_each_holder_gets_their_own(self):
+        await self.owed_bond(BOB, 200)
+        await self.owed_bond(CARA, 100)
+        await self.payout(3.0)
+        [bob] = await self.notices(BOB)
+        [cara] = await self.notices(CARA)
+        self.assertEqual(bob["body"], self.expected(1, 200)[1])
+        self.assertEqual(cara["body"], self.expected(1, 100)[1])
+
+    async def test_each_server_has_its_own_shown_only_there_in_its_currency(self):
+        other = GUILD + 1
+        await ensure_server_row(self.db, other)
+        await self.db.execute(
+            "UPDATE server_config SET currency_emoji = ? WHERE guild_id = ?", ("🪙", other)
+        )
+        await self.owed_bond(BOB, 100)
+        await self.owed_bond(BOB, 200, guild=other)
+        await self.payout(1.0)
+        await self.payout(2.0, guild=other)
+        [here] = await self.notices(guild=GUILD)
+        [there] = await self.notices(guild=other)
+        self.assertEqual(here["body"], self.expected(1, 100)[1])
+        self.assertEqual(there["body"], self.expected(1, 200, "🪙")[1])
+        self.assertEqual(await fetch_unseen_personal(self.db, BOB, None), [], "nor in a DM")
+
+    async def test_a_notice_raised_the_old_way_is_left_alone(self):
+        """A bond_repaid:<id> notice still unread when this shipped shows once
+        as it is; the next repayment starts a notice of its own beside it."""
+        await self.db.execute(
+            "INSERT INTO user_notifications (user_id, notice_key, title, body) "
+            "VALUES (?, 'bond_repaid:1', 'Old', 'Old body')",
+            (BOB,),
+        )
+        await self.owed_bond(BOB, 100)
+        await self.payout(1.0)
+        bodies = [n["body"] for n in await self.notices()]
+        self.assertEqual(bodies, ["Old body", self.expected(1, 100)[1]])
 
 
 class ElectionTests(_GovernmentTestCase):

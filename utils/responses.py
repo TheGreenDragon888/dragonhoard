@@ -206,7 +206,7 @@ async def respond(interaction: discord.Interaction, db: Database, **kwargs):
     # puts "something happened to YOU" closest to the reply the player asked
     # for, which is the notice most likely to be worth acting on.
     notices = await fetch_unseen(db, interaction.user.id, interaction.guild_id)
-    personal = await fetch_unseen_personal(db, interaction.user.id)
+    personal = await fetch_unseen_personal(db, interaction.user.id, interaction.guild_id)
     rows = _notices_that_fit(kwargs, (*notices, *personal))
     # Only what is actually shown gets marked below; the rest waits its turn.
     notices = [row for row in rows if row["scope"] != "user"]

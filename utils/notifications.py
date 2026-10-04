@@ -27,6 +27,15 @@ with the wording in data/notifications.py alongside the global announcements.
 The first gemstone of a kind a player obtains is the only thing that raises one
 so far (utils/db_helpers.py: announce_first_gem).
 
+One exception to "two things, two notices": a feature can keep a personal notice
+open and rewrite it while it is still unread (set_user_notification), when the
+things it reports are many of one kind and a running total says it better than
+a stack of identical embeds. Repaid bonds do this - every bond the server
+finishes repaying before the player next looks is one notice whose count and
+total grow (utils/government.py: announce_repaid_bonds). A personal notice can
+also belong to one server (user_notifications.guild_id) and then waits until the
+player is next there; those bond totals are in that server's currency.
+
 Delivery hangs off utils/responses.py: respond(), which is the single place a
 command's SUCCESSFUL response is sent. That is a deliberate choice of hook.
 Error and validation replies go through interaction.response.send_message
@@ -185,8 +194,33 @@ async def post_user_notification(
     ))
 
 
-async def fetch_unseen_personal(db: Database, user_id: int) -> list:
-    """Every personal notice this player hasn't been shown yet, oldest first.
+async def set_user_notification(
+    db: _Executor, user_id: int, notice_key: str, title: str, body: str, guild_id: int | None = None
+) -> None:
+    """Raises a personal notice, or rewrites it if the player hasn't been shown
+    it yet. For a notice that reports a running total rather than one event -
+    see the module docstring.
+
+    Once the player has seen it the row is left alone: what they read stays the
+    record of what they were told, and the caller starts a new notice under a
+    new key. `guild_id` limits it to that one server (fetch_unseen_personal).
+
+    Safe inside a caller's transaction, for the reason post_user_notification is.
+    """
+    await db.execute(
+        "INSERT INTO user_notifications (user_id, notice_key, title, body, guild_id) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id, notice_key) DO UPDATE SET title = excluded.title, body = excluded.body "
+        "WHERE user_notifications.seen_at IS NULL",
+        (user_id, notice_key, title, body, guild_id),
+    )
+
+
+async def fetch_unseen_personal(db: Database, user_id: int, guild_id: int | None = None) -> list:
+    """Every personal notice this player hasn't been shown yet in this server,
+    oldest first: the ones that belong to no server, and the ones that belong
+    to `guild_id`. A guild_id of None (a DM) gets only the former, since
+    `guild_id = NULL` is never true.
 
     ALL of them, not just the newest - a personal notice is not a broadcast
     that a later one supersedes. Ordered by when it was raised so a player who
@@ -201,8 +235,9 @@ async def fetch_unseen_personal(db: Database, user_id: int) -> list:
     return await db.fetchall(
         "SELECT notice_key, title, body, 'user' AS scope, NULL AS action_key "
         "FROM user_notifications "
-        "WHERE user_id = ? AND seen_at IS NULL ORDER BY created_at, rowid",
-        (user_id,),
+        "WHERE user_id = ? AND seen_at IS NULL AND (guild_id IS NULL OR guild_id = ?) "
+        "ORDER BY created_at, rowid",
+        (user_id, guild_id),
     )
 
 
@@ -212,12 +247,18 @@ async def mark_personal_seen(db: _Executor, user_id: int, rows) -> None:
     The row's own seen_at rather than a watermark, so nothing can be skipped by
     a later notice being marked first. Already-set values are left alone - the
     guard means a notice shown twice (see the at-least-once note above) keeps
-    the timestamp of when it was first actually read."""
+    the timestamp of when it was first actually read.
+
+    Only if the body is still the one that was shown. set_user_notification can
+    rewrite a notice between respond() fetching it and marking it - another
+    bond repaid while the reply was in flight - and marking it then would close
+    a notice whose newest total the player never saw. Left unread, it comes back
+    with that total on their next command."""
     for row in rows:
         await db.execute(
             "UPDATE user_notifications SET seen_at = datetime('now') "
-            "WHERE user_id = ? AND notice_key = ? AND seen_at IS NULL",
-            (user_id, row["notice_key"]),
+            "WHERE user_id = ? AND notice_key = ? AND body = ? AND seen_at IS NULL",
+            (user_id, row["notice_key"], row["body"]),
         )
 
 

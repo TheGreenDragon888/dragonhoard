@@ -319,6 +319,12 @@ CREATE TABLE IF NOT EXISTS user_notifications (
     title       TEXT NOT NULL,
     body        TEXT NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    -- The one server this notice is shown in, or NULL to show it wherever the
+    -- player next runs a command. A notice about one server's money names it
+    -- in that server's currency, so it waits until the player is back there
+    -- (utils/notifications.py: fetch_unseen_personal). Repaid bonds are the
+    -- only thing that sets it so far.
+    guild_id    INTEGER,
     -- NULL until the player has actually been shown it. Set after the reply
     -- sends, not before - see utils/notifications.py on at-least-once.
     seen_at     TEXT,
@@ -797,7 +803,10 @@ CREATE TABLE IF NOT EXISTS government_votes (
 -- payouts skip them and the debt cap ignores them until they are back.
 -- tax_percent_at_sale and market_tax_percent_at_sale are what stop the
 -- Treasurer cutting either rate below the one the latest bond was sold under
--- while debt is owed.
+-- while debt is owed. repaid_notice_key is NULL until the bond is repaid, then
+-- names the personal notice that told its holder: every bond repaid before
+-- they next looked shares one notice, whose count and total are summed from
+-- the bonds carrying its key (utils/government.py: announce_repaid_bonds).
 CREATE TABLE IF NOT EXISTS government_bonds (
     bond_id             INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id            INTEGER NOT NULL,
@@ -809,7 +818,8 @@ CREATE TABLE IF NOT EXISTS government_bonds (
     tax_percent_at_sale INTEGER NOT NULL,
     market_tax_percent_at_sale REAL NOT NULL DEFAULT 0.0,
     frozen              INTEGER NOT NULL DEFAULT 0,
-    sold_at             TEXT NOT NULL DEFAULT (datetime('now'))
+    sold_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    repaid_notice_key   TEXT
 );
 -- Every hot read is one guild's bonds still owed. A repaid bond is kept as the
 -- record of what it paid, so the index is partial on the live ones, and every
