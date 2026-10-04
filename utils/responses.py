@@ -143,6 +143,46 @@ def _merge_embeds(kwargs: dict, extra: list[discord.Embed]) -> None:
     kwargs["embeds"] = [*existing, *extra]
 
 
+# Discord's limits on the embeds of one message. discord.py raises
+# "embeds has a maximum of 10 elements." itself before sending; the character
+# total (title, description, field names and values, footer text and author
+# name, summed over every embed - what discord.Embed.__len__ counts) is
+# refused by the API instead. Either way the whole reply is lost.
+MAX_EMBEDS_PER_MESSAGE = 10
+MAX_EMBED_CHARS_PER_MESSAGE = 6000
+
+
+def _notices_that_fit(kwargs: dict, rows) -> list:
+    """The leading run of `rows` whose embeds fit on this reply alongside the
+    command's own.
+
+    Personal notices have no cap on how many can be pending - one per bet
+    payout, per repaid bond, per market expiry - and every one was attached at
+    once, so a player owed more than fit got a reply Discord refused. Because a
+    notice is only marked seen after a successful send, that refusal repeated on
+    every command they ran, for good: an account locked out by its own mail.
+
+    The command's answer always goes; notices take whatever room is left, in
+    order, and stop at the first that doesn't fit rather than letting a later,
+    shorter one jump ahead. Whatever is left stays unseen and rides along with
+    the next command, and the one after, until it has all been read."""
+    own = list(kwargs.get("embeds") or [])
+    if kwargs.get("embed") is not None:
+        own.append(kwargs["embed"])
+    count = len(own)
+    chars = sum(len(embed) for embed in own)
+
+    fitted = []
+    for row in rows:
+        size = len(notice_embed(row))
+        if count + 1 > MAX_EMBEDS_PER_MESSAGE or chars + size > MAX_EMBED_CHARS_PER_MESSAGE:
+            break
+        count += 1
+        chars += size
+        fitted.append(row)
+    return fitted
+
+
 async def respond(interaction: discord.Interaction, db: Database, **kwargs):
     """Sends the interaction's main response, ephemeral unless this server
     has opted into public bot messages, with any unseen notifications attached.
@@ -167,8 +207,11 @@ async def respond(interaction: discord.Interaction, db: Database, **kwargs):
     # for, which is the notice most likely to be worth acting on.
     notices = await fetch_unseen(db, interaction.user.id, interaction.guild_id)
     personal = await fetch_unseen_personal(db, interaction.user.id)
-    if notices or personal:
-        rows = (*notices, *personal)
+    rows = _notices_that_fit(kwargs, (*notices, *personal))
+    # Only what is actually shown gets marked below; the rest waits its turn.
+    notices = [row for row in rows if row["scope"] != "user"]
+    personal = [row for row in rows if row["scope"] == "user"]
+    if rows:
         _merge_embeds(kwargs, [notice_embed(row) for row in rows])
         # Anything the reader can act on goes on this same message. No extra
         # query pays for it: these rows are already in hand, which is what

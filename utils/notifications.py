@@ -45,6 +45,11 @@ Marking happens AFTER the send succeeds, so the delivery is at-least-once: if
 Discord rejects the message the notice is still pending and will ride along with
 the next command. Marking first would make it at-most-once, and silently losing
 an announcement is worse than showing one twice.
+
+Not every pending notice need arrive on the same reply. A message holds only so
+many embeds, and nothing caps how many personal notices a player can be owed, so
+respond() attaches the ones that fit and marks only those; the rest come with
+the commands after (utils/responses.py: _notices_that_fit).
 """
 import logging
 
