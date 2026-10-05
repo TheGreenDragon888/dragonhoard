@@ -33,7 +33,17 @@ from cogs.furnace import (
     SERVER_JOB_USER_ID,
     FurnaceCog,
 )
-from data.materials import BLAST_FURNACE_BATCH_SIZE, GEMSTONES, SMELTED_MATERIALS
+from data.materials import (
+    ALL_MATERIALS,
+    BLAST_FURNACE_BATCH_SIZE,
+    DRILLS,
+    GEMSTONES,
+    PRESS_RECIPES,
+    RAW_MATERIALS,
+    SMELTED_MATERIALS,
+    recipe_true_inputs,
+    upgrade_cost,
+)
 from database.db import Database
 from utils.drills import retract_drill
 from utils.db_helpers import (
@@ -46,9 +56,12 @@ from utils.db_helpers import (
     mining_slot_status,
 )
 from utils.production_ledger import (
+    BALANCED_ORE_GAP,
     GDP_SOURCES,
     LEDGER_SOURCES,
+    ORE_SMELTING_SOURCES,
     gem_counts,
+    inputs_value,
     market_value,
     record_mined,
     record_output,
@@ -58,6 +71,7 @@ from utils.production_ledger import (
     utc_now,
     window_cutoff,
     window_totals,
+    WindowTotals,
 )
 
 GUILD = 4242
@@ -222,37 +236,18 @@ class GemstoneTests(_LedgerTestCase):
         self.assertEqual(counts, {"ruby": 1})
         self.assertAlmostEqual((await self.totals()).gdp, 0.0, places=6)
 
-    async def test_a_gem_a_craft_consumes_is_not_counted_as_input(self):
-        """The Mined side of the import/export line leaves gems out, so the
-        Input side has to as well. Counted in, the three obsidian alone would
-        be 157,500 of input against the ten Steel's 4.80."""
-        async with self.db.transaction() as tx:
-            await record_output(tx, GUILD, "factory", "obsidian_drill_bit", 1,
-                                {"steel": 10, "obsidian": 3})
-        self.assertAlmostEqual((await self.totals()).machine_input, 4.80, places=6)
-
-    async def test_a_gem_tier_upgrade_consumes_nothing_priced(self):
-        """Its gem is its only priced input; the upgrade pack has no price."""
-        async with self.db.transaction() as tx:
-            await record_output(tx, GUILD, "factory", "drill_upgrade", 1,
-                                {"drill_upgrade_pack": 1, "ruby": 1})
-        self.assertAlmostEqual((await self.totals()).machine_input, 0.0, places=6)
-
-    async def test_ultra_dense_matter_consumes_nothing_priced(self):
-        async with self.db.transaction() as tx:
-            await record_output(tx, GUILD, "press", "ultra_dense_matter", 1, {"diamond": 10})
-        self.assertAlmostEqual((await self.totals()).machine_input, 0.0, places=6)
-
-    async def test_a_pressed_gems_input_still_counts(self):
-        """is_gemstone says what came OUT. The 600 Iron (0.15 each) that went
-        in was really consumed, so it belongs on the Input side even though
-        the ruby is kept out of every output figure."""
-        async with self.db.transaction() as tx:
-            await record_output(tx, GUILD, "press", "ruby", 1, {"iron": 600})
-        totals = await self.totals()
-        self.assertAlmostEqual(totals.machine_input, 90.0, places=6)
-        self.assertAlmostEqual(totals.gdp, 0.0, places=6)
-        self.assertEqual(totals.rows, 0)
+    async def test_a_gem_a_machine_consumes_is_not_valued(self):
+        """No figure sums a gem's price, so a row's stored input leaves them
+        out as its output side does. Counted in, an Obsidian Drill Bit's three
+        obsidian alone would be 157,500 against its ten Steel's 4.80."""
+        cases = (
+            ({"steel": 10, "obsidian": 3}, 4.80),          # obsidian drill bit
+            ({"drill_upgrade_pack": 1, "ruby": 1}, 0.0),   # gem-tier upgrade; the pack has no price
+            ({"diamond": 10}, 0.0),                        # ultra dense matter
+        )
+        for inputs, expected in cases:
+            with self.subTest(inputs=inputs):
+                self.assertAlmostEqual(inputs_value(inputs), expected, places=6)
 
     async def test_a_haul_of_only_gems_adds_no_breakdown_line(self):
         async with self.db.transaction() as tx:
@@ -324,14 +319,34 @@ class SourceScopeTests(_LedgerTestCase):
     async def test_every_machine_can_be_recorded_even_when_it_is_not_in_gdp(self):
         self.assertEqual(set(LEDGER_SOURCES), {"mining", *MACHINES})
 
-    async def test_a_factory_craft_is_consumption_not_gdp(self):
+    async def test_a_factory_craft_is_neither_gdp_nor_ore_smelted(self):
         """Twelve Copper worth 3.60 becomes a Wiring the market will not
-        price. It moves the import/export comparison and not the headline."""
+        price, so it is not GDP - and the Copper was counted as ore when it
+        was smelted, so it is not on the import/export line either. Same for
+        the press, whose ruby here ate 600 Iron."""
         async with self.db.transaction() as tx:
             await record_output(tx, GUILD, "factory", "wiring", 1, {"copper": 12})
+            await record_output(tx, GUILD, "press", "ruby", 1, {"iron": 600})
         totals = await self.totals()
         self.assertAlmostEqual(totals.gdp, 0.0, places=6)
-        self.assertAlmostEqual(totals.machine_input, 3.60, places=6)
+        self.assertAlmostEqual(totals.ore_smelted, 0.0, places=6)
+
+    async def test_only_the_furnaces_eat_raw_ore(self):
+        """ORE_SMELTING_SOURCES is the furnace and the blast furnace because no
+        other recipe takes raw ore or coal. A recipe that starts to - in the
+        factory, the press, or a drill upgrade - would be ore smelted nowhere
+        on the import/export line, so it fails here instead."""
+        self.assertEqual(ORE_SMELTING_SOURCES, ("furnace", "blast_furnace"))
+        raw = set(RAW_MATERIALS) - set(GEMSTONES)
+        recipes = {
+            **{f"recipe {m}": info.get("inputs", {}) for m, info in ALL_MATERIALS.items()
+               if m not in SMELTED_MATERIALS},
+            **{f"press {m}": recipe["inputs"] for m, recipe in PRESS_RECIPES.items()},
+            **{f"upgrade {d}": upgrade_cost(d, 1) for d in DRILLS},
+        }
+        for name, inputs in recipes.items():
+            with self.subTest(recipe=name):
+                self.assertFalse(raw & set(inputs), f"{name} consumes raw ore")
 
     async def test_the_scrapper_does_not_look_like_it_creates_goods(self):
         """Its output is priced and its input is not, so summing it as value
@@ -353,8 +368,23 @@ class SourceScopeTests(_LedgerTestCase):
                                 smelting_inputs("iron", 10))           # 1.30 in
         totals = await self.totals()
         self.assertAlmostEqual(totals.mined_output, 1.00, places=6)
-        self.assertAlmostEqual(totals.machine_input, 1.30, places=6)
-        self.assertGreater(totals.machine_input, totals.mined_output)
+        self.assertAlmostEqual(totals.ore_smelted, 1.30, places=6)
+        self.assertGreater(totals.ore_smelted, totals.mined_output)
+
+    async def test_a_server_that_smelts_and_crafts_its_own_ore_is_balanced(self):
+        """Ten Iron Ore (0.10) and a Coal (0.03) are mined, smelted into an
+        Iron, and the Iron crafted into something. Counting the craft's Iron
+        (0.15) as well read 0.28 against 0.13 mined: a net importer that had
+        imported nothing."""
+        async with self.db.transaction() as tx:
+            await record_mined(tx, GUILD, {"iron_ore": 10, "coal": 1})
+            await record_output(tx, GUILD, "furnace", "iron", 1, smelting_inputs("iron", 1))
+            await record_output(tx, GUILD, "factory", "iron_drill_bit", 1, {"iron": 1})
+        totals = await self.totals()
+        self.assertAlmostEqual(totals.mined_output, 0.13, places=6)
+        self.assertAlmostEqual(totals.ore_smelted, 0.13, places=6)
+        lines = EconomyCog.__new__(EconomyCog)._value_breakdown_lines(totals)
+        self.assertTrue(lines[-1].endswith("balanced (0%)"), lines[-1])
 
 
 class EmptyServerTests(_LedgerTestCase):
@@ -364,7 +394,7 @@ class EmptyServerTests(_LedgerTestCase):
     async def test_the_totals_are_zero_rather_than_an_error(self):
         totals = await self.totals()
         self.assertEqual(
-            (totals.gdp, totals.mined_output, totals.machine_input, totals.rows),
+            (totals.gdp, totals.mined_output, totals.ore_smelted, totals.rows),
             (0.0, 0.0, 0.0, 0),
         )
         self.assertEqual(totals.added_by_source, {})
@@ -406,9 +436,73 @@ class GdpPageTests(_LedgerTestCase):
             await record_output(tx, GUILD, "furnace", "iron", 10,
                                 smelting_inputs("iron", 10))           # 1.30 in
         lines = EconomyCog.__new__(EconomyCog)._value_breakdown_lines(await self.totals())
-        self.assertEqual(lines[-1], "Input `1.30` \u00b7 Mined `1.00` \u00b7 net **importer**")
+        self.assertEqual(
+            lines[-1], "Ore mined `1.00` \u00b7 Ore smelted `1.30` \u00b7 net **importer**"
+        )
         for line in lines:
             self.assertNotIn("<:", line, "the currency is named once, in the field heading")
+
+    def verdict(self, mined, smelted):
+        totals = WindowTotals(gdp=0.0, added_by_source={}, mined_output=mined,
+                              ore_smelted=smelted, rows=1)
+        line = EconomyCog.__new__(EconomyCog)._value_breakdown_lines(totals)[-1]
+        return line.rsplit(" \u00b7 ", 1)[1]
+
+    def test_balanced_is_a_band_and_shows_its_gap(self):
+        """Within BALANCED_ORE_GAP of the larger side either way. + is more
+        smelted than mined, - is less."""
+        cases = {
+            (1.00, 1.00): "balanced (0%)",
+            (1.00, 0.90): "balanced (-10%)",
+            (0.90, 1.00): "balanced (+10%)",
+            (1.00, 0.85): "balanced (-15%)",   # exactly on the line counts as inside
+            (0.85, 1.00): "balanced (+15%)",
+        }
+        for (mined, smelted), expected in cases.items():
+            with self.subTest(mined=mined, smelted=smelted):
+                self.assertEqual(self.verdict(mined, smelted), expected)
+
+    def test_outside_the_band_the_verdict_carries_no_gap(self):
+        """Past the band the direction is plain from the two figures."""
+        cases = {
+            (1.00, 0.80): "net **exporter**",
+            (0.80, 1.00): "net **importer**",
+            (1.00, 0.0): "net **exporter**",    # only mined: a 100% gap
+            (0.0, 1.00): "net **importer**",    # only smelted
+        }
+        for (mined, smelted), expected in cases.items():
+            with self.subTest(mined=mined, smelted=smelted):
+                self.assertEqual(self.verdict(mined, smelted), expected)
+
+    def test_the_band_covers_the_gap_the_recipes_force(self):
+        """BALANCED_ORE_GAP's comment says a server smelting everything it can
+        still falls up to 12.3% short, from the pool's mix against the
+        recipes. This is that figure, from data/materials.py: the two ends of
+        the Iron/Steel split, every ore smelted that the Coal allows."""
+        drop = {m: RAW_MATERIALS[m]["drop_chance"] for m in ("iron_ore", "copper_ore", "coal")}
+        price = {m: RAW_MATERIALS[m]["market_price"] for m in drop}
+        mined = sum(drop[m] * price[m] for m in drop)
+
+        def smelted_share(iron_into):
+            ore = {"iron_ore": drop["iron_ore"], "copper_ore": drop["copper_ore"]}
+            coal_needed = sum(
+                ore[ore_id] / recipe[ore_id] * recipe["coal"]
+                for ore_id, recipe in (
+                    ("iron_ore", recipe_true_inputs(iron_into)),
+                    ("copper_ore", recipe_true_inputs("copper")),
+                )
+            )
+            scale = min(1.0, drop["coal"] / coal_needed)   # Coal short: smelt less of it all
+            value = sum(ore[m] * price[m] for m in ore) * scale + coal_needed * scale * price["coal"]
+            return value / mined
+
+        gaps = {iron_into: 1 - smelted_share(iron_into) for iron_into in ("iron", "steel")}
+        self.assertAlmostEqual(gaps["iron"], 0.123, places=3)   # quoted in docs/market.md
+        self.assertAlmostEqual(gaps["steel"], 0.085, places=3)  # likewise
+        for iron_into, gap in gaps.items():
+            with self.subTest(iron_into=iron_into):
+                self.assertGreater(gap, 0, "the mix does not fit this recipe exactly")
+                self.assertLess(gap, BALANCED_ORE_GAP)
 
 
 class _StatusGuild:

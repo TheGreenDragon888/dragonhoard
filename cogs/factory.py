@@ -522,9 +522,12 @@ class FactoryCog(commands.Cog):
                         # kept out of the market (docs/market.md section 3), so
                         # there is no price for what came out and inventing one
                         # would put a made-up number into a headline figure.
-                        # This is exactly why 'factory' isn't in GDP_SOURCES -
-                        # the row exists for the import/export line, which asks
-                        # what this server's machines CONSUMED.
+                        # This is exactly why 'factory' isn't in GDP_SOURCES.
+                        # The row is written anyway so that widening GDP later
+                        # needs no backfill (utils/production_ledger.py). It is
+                        # not on the import/export line either: what a craft
+                        # eats is bars, already counted there as the ore they
+                        # were smelted from (ORE_SMELTING_SOURCES).
                         info = get_material_info(job["target_id"])
                         await record_output(
                             tx, job["guild_id"], "factory", job["target_id"], produced,

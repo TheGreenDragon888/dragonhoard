@@ -394,10 +394,13 @@ class PressCog(commands.Cog):
                     await adjust_user_quantity(tx, job["user_id"], job["target_id"], 1)
                     # One press job, one gem (or one ultra dense matter), and
                     # one row. Its input side is real - hundreds of Iron or
-                    # thousands of Copper leaving circulation - which is what
-                    # the import/export line wants; its output side is a
-                    # gemstone, which is excluded from GDP wherever it came
-                    # from, so 'press' has no place in GDP_SOURCES either.
+                    # thousands of Copper leaving circulation - but it is bars,
+                    # already counted on the import/export line as the ore
+                    # they were smelted from (utils/production_ledger.py:
+                    # ORE_SMELTING_SOURCES). Its output side is a gemstone,
+                    # which is excluded from GDP wherever it came from, so
+                    # 'press' has no place in GDP_SOURCES either. The row is
+                    # written so that widening GDP later needs no backfill.
                     await record_output(
                         tx, job["guild_id"], "press", job["target_id"], 1,
                         PRESS_RECIPES[job["target_id"]]["inputs"],

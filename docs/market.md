@@ -619,14 +619,48 @@ server's pool produced it. There is nowhere to put that record short of
 tracking every unit individually, which would mean rewriting inventory
 storage to answer a question no player asks.
 
-What `/economy` shows instead is the aggregate comparison: what this
-server's machines consumed over the window, against what was mined here over
-the same window. A server whose machines ran on more than it dug up is a net
-importer; one that dug up more than it consumed is a net exporter. That is
+What `/economy` shows instead is the aggregate comparison: the ore this
+server's furnaces smelted over the window, against the ore mined here over
+the same window. A server that smelted more ore than it dug up is a net
+importer; one that dug up more than it smelted is a net exporter. That is
 the same question answered at the scale where it is both answerable and
 interesting, and it needs no provenance tracking at all. **Do not build
 per-unit provenance on top of this.** It is not a missing feature, it is a
 thing the data model rules out.
+
+Both sides are ore, and only the furnace and the blast furnace are counted,
+because they are the only machines that eat ore: every other recipe takes
+bars, components or gems (`ORE_SMELTING_SOURCES` in
+`utils/production_ledger.py`, and a test that fails if a recipe outside
+smelting ever takes raw ore). Counting what the factory and press consume
+as well, as the line first did, counted the same ore twice — once as ore at
+the furnace and again as the bar it became — so a server that mined, smelted
+and crafted everything itself read as a net importer. This is the same
+double count the value-added model above exists to avoid.
+
+**Balanced is a band, not a tie.** The two sides read as balanced when
+they are within `BALANCED_ORE_GAP` (15%) of the larger, and only that
+verdict shows its gap - outside the band the direction is plain from the
+figures. The band exists because the mined mix never fits the recipes: at the
+pool's drop rates a server that smelts everything the Coal allows still falls
+12.3% short making only Iron and Copper (the Coal left over) and 8.5% short
+making only Steel (the Coal runs out), with an exact fit at one split in
+between. 15% covers that range with a little to spare;
+`tests/test_production_ledger.py` computes the 12.3% and fails if a retune
+pushes it outside the band. The cost is that a real import or export smaller
+than 15% reads as balanced.
+
+What it does not answer, and is accepted rather than fixed:
+
+- **"Exporter" means "dug up more than it smelted"**, not "sent goods to
+  another server". Ore mined and then held, or sold to the server and not
+  yet auto-smelted, counts toward exporter.
+- **The window rolls**, so ore mined last week and smelted this week counts
+  toward importer this week.
+- **Bars smelted elsewhere and crafted here are not imports on this line.**
+  Catching them would mean counting bars again, which is the double count
+  above, or knowing where each bar came from, which is the provenance this
+  section rules out.
 
 ### Gemstones are excluded
 
@@ -636,15 +670,13 @@ month of everybody else's mining put together, and a GDP figure that swings
 by half a million on one lucky drill is not measuring anything.
 
 They are recorded, counted, and displayed — in their own field on the embed,
-with their own count per gem. They are simply never summed. That holds on both
-sides of the import/export comparison: a gem a machine *consumes* (a drill
-bit's three, a container's one, a gem-tier upgrade's, ultra dense matter's
-ten) is left out of the input just as a mined one is left out of what was
-mined, or the two sides would not be measuring the same goods. The rule
-first held only on the mined side, and five Obsidian Drill Bits recorded
-787,524 of input (fifteen obsidian at 52,500 plus fifty Steel) on a live
-server whose week of mining came to about 6,000 (production database,
-October 2026). This is the same
+with their own count per gem. They are simply never summed, and that includes
+a gem a machine *consumes* (a drill bit's three, a container's one, a
+gem-tier upgrade's, ultra dense matter's ten): the ledger values a row's
+inputs without them. When the import/export line still added up every
+machine's input, five Obsidian Drill Bits recorded 787,524 of it (fifteen
+obsidian at 52,500 plus fifty Steel) on a live server whose week of mining
+came to about 6,000 (production database, October 2026). This is the same
 judgement section 3 made about letting them into the market, applied to a
 statistic instead of to a price.
 

@@ -638,13 +638,19 @@ _add(ManualSection(
         ),
         (
             "Importer, exporter, gemstones",
-            "The last line of `/economy gdp` compares what this server's machines consumed "
-            "with what was mined here. A **net importer**'s machines ran on more than it dug "
-            "up; a **net exporter** dug up more than its machines consumed.\n\n"
-            "Gemstones are left out of GDP and of both sides of that comparison - mined and "
-            "consumed alike: one Diamond is worth more than a month "
-            "of everyone's mining, and a number that swings that far isn't telling you "
-            "anything. `/economy status` counts the gems mined here on their own instead.",
+            "The last line of `/economy gdp` compares the ore mined here with the ore this "
+            "server's furnaces smelted. A **net importer** smelted more ore than it dug up; a "
+            "**net exporter** dug up more than it smelted. Within 15% of each other reads as "
+            "**balanced**, with the gap beside it: + means more was smelted than mined, - "
+            "means less. The mined mix never fits the recipes exactly, so even a server that "
+            "smelts everything it can is a little short. Ore that is mined but not smelted "
+            "yet counts toward exporter, and ore mined last week and smelted this week counts "
+            "toward importer. Crafting isn't counted: a bar was already counted as ore when "
+            "it was smelted.\n\n"
+            "Gemstones are left out of GDP and of that comparison: one Diamond is worth more "
+            "than a month of everyone's mining, and a number that swings that far isn't "
+            "telling you anything. `/economy status` counts the gems mined here on their own "
+            "instead.",
         ),
     ),
 ))

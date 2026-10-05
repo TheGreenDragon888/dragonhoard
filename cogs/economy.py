@@ -131,6 +131,8 @@ from utils.production_ledger import (
     GDP_SOURCES,
     GDP_WEEK_HOURS,
     gem_counts,
+    is_balanced,
+    ore_gap,
     tracked_since,
     window_cutoff,
     window_totals,
@@ -312,9 +314,8 @@ MACHINE_RATE = {
 
 # How each GDP source reads on the value breakdown. Only the sources GDP
 # actually counts appear here - the factory, press and scrapper produce goods
-# the market does not price, so they have no value-added figure to show and
-# turn up in the import/export sentence instead (utils/production_ledger.py:
-# GDP_SOURCES).
+# the market does not price, so they have no value-added figure to show
+# (utils/production_ledger.py: GDP_SOURCES).
 GDP_SOURCE_LABEL = {
     "mining": "\u26CF\ufe0f Mined here",
     "furnace": "\U0001F525 Smelted here",
@@ -1931,7 +1932,7 @@ class EconomyCog(commands.Cog):
 
     def _value_breakdown_lines(self, week) -> list[str]:
         """Which stage of production added the week's value, and whether this
-        server's machines ran on more input than it dug up.
+        server's furnaces smelted more ore than it dug up.
 
         Figures only: the field's heading names the currency once, and what an
         importer or exporter is lives on the Economy page of /help.
@@ -1942,23 +1943,36 @@ class EconomyCog(commands.Cog):
         inventory there is nothing that records which server it came out of.
         Comparing the aggregates is what IS answerable, and it answers the same
         question at the scale anyone actually cares about it.
+
+        Both sides are ore, so the labels say so: what was mined against what
+        the furnaces smelted (utils/production_ledger.py: ORE_SMELTING_SOURCES),
+        in that order because that is the order it happens in.
+        It was "Input" against "Mined" while the Input side added up every
+        machine's consumption.
+
+        Balanced is a band, not a tie (utils/production_ledger.py:
+        BALANCED_ORE_GAP), and only that verdict carries its gap: inside the
+        band the direction is not obvious from the two figures, and outside it
+        it is.
         """
         lines = [
             f"{GDP_SOURCE_LABEL[source]} `{format_price(week.added_by_source[source])}`"
             for source in GDP_SOURCES
             if source in week.added_by_source
         ]
-        if week.machine_input <= 0 and week.mined_output <= 0:
+        if week.ore_smelted <= 0 and week.mined_output <= 0:
             return lines
-        if week.machine_input > week.mined_output:
+        gap = ore_gap(week.mined_output, week.ore_smelted)
+        if is_balanced(gap):
+            percent = round(gap * 100)
+            verdict = f"balanced ({percent:+d}%)" if percent else "balanced (0%)"
+        elif gap > 0:
             verdict = "net **importer**"
-        elif week.machine_input < week.mined_output:
-            verdict = "net **exporter**"
         else:
-            verdict = "balanced"
+            verdict = "net **exporter**"
         lines.append(
-            f"Input `{format_price(week.machine_input)}` \u00b7 "
-            f"Mined `{format_price(week.mined_output)}` \u00b7 {verdict}"
+            f"Ore mined `{format_price(week.mined_output)}` \u00b7 "
+            f"Ore smelted `{format_price(week.ore_smelted)}` \u00b7 {verdict}"
         )
         return lines
 
