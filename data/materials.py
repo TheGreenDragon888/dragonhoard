@@ -1651,10 +1651,18 @@ def scrap_yield(material_id: str) -> dict[str, int]:
 
     Choosing the most valuable input to guarantee (by raw_input_cost of the
     whole line, not per unit) is what keeps that concession honest: for an Iron
-    Drill it lands on the chassis, which is 50.0% of the drill's value, and for
-    a Steel Drill on the steel bit at 52.0%. Gem-tier items come out near 100%,
-    which is unavoidable rather than generous - the gem IS essentially all of a
-    gem-tier item's value, so there is no subset of the recipe worth half of it.
+    or Steel Drill that one part is about half of the drill's value by itself,
+    which is what the rule promises anyway. Which part it is follows the price
+    table rather than being fixed per drill, and
+    test_ore_tier_items_come_back_at_about_half_their_value pins the share to
+    within 0.05 of SCRAP_RETURN_RATE. Gem-tier items can't be held to half: the
+    gem IS essentially all of a gem-tier item's value and only comes whole, so
+    no subset of the recipe is worth half of it. One that takes a single gem, or
+    a gem drill's single bit, gives it back for nearly all of its value, which
+    is unavoidable rather than generous; a gem drill bit's gems are halved and
+    rounded down like any other line, and
+    test_a_gemstone_is_never_destroyed_by_scrapping pins that one still comes
+    back.
 
     The invariant that makes all of this safe: max(1, floor(0.5 * q)) <= q for
     every q >= 1, so a yield never exceeds its own recipe and no craft-then-scrap
