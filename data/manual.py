@@ -193,9 +193,9 @@ _add(ManualSection(
         "empties the lot. Your materials are yours wherever you earned them - only the "
         "drills, the pool and the currency belong to a particular server.\n\n"
         "Better drill types mine faster, and every level you add to a drill makes it faster "
-        "still - a level is worth a fifth of that drill's own base speed, so an upgrade "
-        "counts for as much on a Diamond Drill as it does on an Iron one. Drills are "
-        "crafted and upgraded in the Factory."
+        "still. On an Iron or Steel Drill a level adds a fifth of that drill's own base "
+        "speed; on a Ruby, Obsidian or Diamond Drill it adds half, because those upgrades "
+        "cost a gem. Drills are crafted and upgraded in the Factory."
     ),
     commands=(
         ManualCommand(
@@ -417,7 +417,8 @@ _add(ManualSection(
         "finishes - so pull it out with `/mine remove` first, and expect it to be out of "
         "action for a while. Each level costs an Upgrade Pack plus that drill's own tier "
         "material, and the cost doubles with every level, so early levels are cheap and "
-        "late ones are a project. Each one adds a fifth of the drill's base speed.\n\n"
+        "late ones are a project. Each one adds a fifth of the drill's base speed, or half "
+        "on a Ruby, Obsidian or Diamond Drill.\n\n"
         "The factory crafts faster with every fee paid into it, and levels up as they add up."
     ),
     commands=(

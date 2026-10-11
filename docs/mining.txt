@@ -49,7 +49,17 @@ Why 25 for the first one: it is five times UPGRADE_THRESHOLD_BASE, which is exac
 An unlocked slot is not a granted drill. It is permission to place one more, and the player still has to own or craft it - so a server unlocking its fourth slot does not hand every member a fourth drill, it lets the members who built one use it.
 
 Drill Levels
-Every drill starts at level 1 mining at its type's base rate, and each level above that adds a fifth of that drill's own base rate - so a level is worth the same proportion whichever drill you spend it on, and the upgrade path doesn't get worse the better your drill is. There is no maximum level; the cost is the only limit.
+Every drill starts at level 1 mining at its type's base rate, and each level above that adds a share of that drill's own base rate rather than a flat amount - so the upgrade path doesn't get worse the better your drill is. On an Iron or Steel Drill the share is a fifth (LEVEL_RATE_ANCHOR); on a Ruby, Obsidian or Diamond Drill it is a half (GEM_LEVEL_RATE_ANCHOR, 1.4.2). Which one a drill gets is decided by whether its upgrade costs a gem (data/materials.py: level_rate_anchor). There is no maximum level; the cost is the only limit.
+
+Why the gem drills get a half. Until 1.4.2 every drill got a fifth, and a gem drill upgrade was never the best thing a gem could buy. Count in gems, which are essentially the whole cost of a gem-tier drill, and call the drill's base rate b:
+
+  - a level-1 upgrade costs 1 gem and adds b/5 (now b/2)
+  - a new drill of the same tier costs 3 gems, in its bit. In an empty slot it adds b, which is b/3 per gem.
+  - in place of a drill from the tier below it adds 3b/4, which is b/4 per gem - each gem tier mines four times the one under it, the Ruby Drill over the Steel Drill included.
+
+At a fifth, both kinds of new drill beat the upgrade, so a gem was always better spent on another drill until every slot already held that tier. At a half, the first upgrade (b/2) beats both, and the second (2 gems for b/2) ties the replacement at b/4 per gem: level a gem drill twice, then build the next one. The third (4 gems) loses. tests/test_drills.py: GemUpgradeIsWorthItsGemTests pins all three.
+
+Iron and Steel were left at a fifth. The argument above only works for drills whose bit is essentially their whole cost; on an Iron or Steel Drill the chassis and wiring are a large share of it too (compare raw_input_cost of the bit and of the drill's recipe in data/materials.py), so counting in bits says nothing about them.
 
 Upgrading is a factory job, queued with /factory upgrade <drill>, and the drill has to be in your inventory rather than placed. One level at a time. The drill is locked while the upgrade is queued - it can't be placed, removed, or have its container changed until the factory finishes it. The cost is one Drill Upgrade Pack plus the drill's tier material, and every part of it doubles with each level (x 2 ^ (current level - 1)):
 
@@ -115,7 +125,7 @@ The following are the currently planned materials:
 <:ObsidianDrillBit:1523433758139748372> Obsidian Drill Bit (10 Steel, 3 Obsidian)
 <:DiamondDrillBit:1523433768076050551> Diamond Drill Bit (10 Steel, 3 Diamond)
 (Drills, also produced in a factory)
-Rates below are at level 1; every level adds a fifth of that drill's own level 1 rate. Every drill stores 100 raw materials on its own, whatever its type - more storage comes from containers, not from the drill.
+Rates below are at level 1; every level adds a fifth of that drill's own level 1 rate on an Iron or Steel Drill, and half on a Ruby, Obsidian or Diamond Drill. Every drill stores 100 raw materials on its own, whatever its type - more storage comes from containers, not from the drill.
 <:IronMiningDrill:1523433637398450347> Iron Drill (Wiring, Drill Chassis, and Iron Drill Bit) [Mines 5 raw materials / hour]
 <:SteelMiningDrill:1523433646613069824> Steel Drill (Wiring, Drill Chassis, and Steel Drill Bit) [Mines 7.5 raw materials / hour]
 <:RubyMiningDrill:1523433666800517262> Ruby Drill (Wiring, Drill Chassis, and Ruby Drill Bit) [Mines 30 raw materials / hour]

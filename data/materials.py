@@ -666,7 +666,28 @@ BASE_STORAGE_CAPACITY = 100
 # The player-facing diminishing returns fall out of this on their own, with no
 # second mechanism: each level adds a constant amount to a growing total, so the
 # gain reads as +1/5, +1/6, +1/7 ... (20%, 16.7%, 14.3%) as the levels climb.
+#
+# As of 1.4.2 that holds for the Iron and Steel Drills only. A gem-tier drill's
+# level adds HALF its base (GEM_LEVEL_RATE_ANCHOR), because at a fifth its
+# upgrade was never the best use of the gem it costs. Gems are essentially the
+# whole cost of a gem-tier drill (see scrap_yield), so count in gems, with b the
+# drill's base rate. A level-1 upgrade costs one gem and adds b/5. A new drill
+# of the same tier costs three, in its bit: in an empty slot it adds b, or b/3
+# per gem, and in place of a drill from the tier below - every gem tier is four
+# times the one under it, Steel to Ruby included - it adds 3b/4, or b/4 per
+# gem. Both beat b/5, so a gem was always better spent on another drill until
+# every slot already held that tier.
+#
+# At a half, the first upgrade (b/2) beats both, and the second (two gems for
+# b/2) ties the replacement at b/4 a gem: level a gem drill twice, then build
+# the next one. tests/test_drills.py: GemUpgradeIsWorthItsGemTests pins that
+# shape. The gain still diminishes the same way, +1/2, +1/3, +1/4 (50%, 33.3%,
+# 25%). Iron and Steel were left at a fifth: their chassis and wiring are a
+# large share of what their drill costs (raw_input_cost), not a rounding error
+# beside the bit, so counting in bits says nothing about them. docs/mining.txt
+# has the same argument at more length.
 LEVEL_RATE_ANCHOR = 5
+GEM_LEVEL_RATE_ANCHOR = 2
 
 # What one level-up consumes, on top of the upgrade packs. Ore-tier drills pay
 # in their smelted material; gem-tier drills pay in their gem - 1 as of
@@ -729,12 +750,16 @@ DRILL_SCRAP_JOB_TARGET = "drill_scrap"
 # game rather than the same one at a different pace.
 #
 # The consequence worth being clear-eyed about is that gem timing is now purely
-# a function of investment, with no floor under it. Days to drain a bag:
+# a function of investment, with no floor under it. Days to drain a bag, at
+# 1.4.2's rates (effective_rate):
 #
 #     5 members, 3x Iron Drill Lv.1          1,800/day     556 days
-#     5 members, 3x Diamond Drill Lv.10    120,960/day       8 days
+#     5 members, 3x Diamond Drill Lv.3     345,600/day     2.9 days
 #     200 members, 3x Iron Drill Lv.1       72,000/day      14 days
 #     1 member, 3x Iron Drill Lv.1             360/day   2,778 days
+#
+# The diamond row used to read Lv.10 at 120,960/day, which was worked out when
+# a Diamond Drill mined 120/hour at level 1, before 1.3 made it 480.
 #
 # A lone player on starter drills waits years, and that is the accepted trade
 # for making the ceiling unlimited: it is now their choice how fast to go, where
@@ -986,10 +1011,21 @@ def effective_capacity(container_type: str | None) -> int:
     return BASE_STORAGE_CAPACITY + STORAGE_CONTAINERS[container_type]["storage_bonus"]
 
 
+def level_rate_anchor(drill_type: str) -> int:
+    """How many levels make up a drill's base rate: GEM_LEVEL_RATE_ANCHOR for
+    a drill whose upgrade is paid in a gemstone, LEVEL_RATE_ANCHOR for the
+    rest. Decided by the upgrade's cost rather than a list of drill types
+    because the cost is the reason for the difference (see GEM_LEVEL_RATE_ANCHOR)."""
+    if any(m in GEMSTONES for m in _UPGRADE_TIER_MATERIAL[drill_type]):
+        return GEM_LEVEL_RATE_ANCHOR
+    return LEVEL_RATE_ANCHOR
+
+
 def effective_rate(drill_type: str, level: int) -> float:
     """A drill's mining rate in items per hour at the given level - its base
-    rate scaled by LEVEL_RATE_ANCHOR's ladder, so every type gains the same
-    proportion per level that the Iron Drill always has.
+    rate scaled by its level_rate_anchor's ladder, so every type in a group
+    gains the same proportion per level: the Iron Drill's fifth for Iron and
+    Steel, a half for the gem tiers.
 
     Written as one rational expression rather than `base * (1 + 0.2 * (level -
     1))` because 0.2 has no exact binary representation: on many type/level
@@ -998,7 +1034,8 @@ def effective_rate(drill_type: str, level: int) -> float:
     and dividing by the anchor last keeps every rate here exact -
     tests/test_drills.py: test_rates_stay_exact is what pins that."""
     base = DRILLS[drill_type]["mines_per_hour"]
-    return base * (LEVEL_RATE_ANCHOR + level - 1) / LEVEL_RATE_ANCHOR
+    anchor = level_rate_anchor(drill_type)
+    return base * (anchor + level - 1) / anchor
 
 
 def upgrade_cost(drill_type: str, level: int) -> dict[str, int]:

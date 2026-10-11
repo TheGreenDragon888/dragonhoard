@@ -11,6 +11,8 @@ from data.materials import (
     BASE_STORAGE_CAPACITY,
     DRILLS,
     DRILL_UPGRADE_JOB_TARGET,
+    GEMSTONES,
+    GEM_LEVEL_RATE_ANCHOR,
     LEVEL_RATE_ANCHOR,
     STORAGE_CONTAINERS,
     UPGRADE_MATERIALS,
@@ -18,6 +20,7 @@ from data.materials import (
     effective_capacity,
     effective_rate,
     get_material_info,
+    level_rate_anchor,
     material_name,
     raw_input_cost,
     upgrade_cost,
@@ -33,14 +36,29 @@ class EffectiveRateTests(unittest.TestCase):
         for drill_type, info in DRILLS.items():
             self.assertEqual(effective_rate(drill_type, 1), info["mines_per_hour"])
 
-    def test_each_level_adds_a_fifth_of_the_types_base_rate(self):
+    def test_each_level_adds_its_anchors_share_of_the_types_base_rate(self):
         for drill_type in DRILLS:
             base = effective_rate(drill_type, 1)
+            anchor = level_rate_anchor(drill_type)
             for level in range(1, 12):
                 self.assertEqual(
                     effective_rate(drill_type, level),
-                    base * (LEVEL_RATE_ANCHOR + level - 1) / LEVEL_RATE_ANCHOR,
+                    base * (anchor + level - 1) / anchor,
                 )
+
+    def test_iron_and_steel_add_a_fifth_and_gem_drills_a_half(self):
+        self.assertEqual(LEVEL_RATE_ANCHOR, 5)
+        self.assertEqual(GEM_LEVEL_RATE_ANCHOR, 2)
+        self.assertEqual(
+            {drill_type: level_rate_anchor(drill_type) for drill_type in DRILLS},
+            {
+                "iron_drill": LEVEL_RATE_ANCHOR,
+                "steel_drill": LEVEL_RATE_ANCHOR,
+                "ruby_drill": GEM_LEVEL_RATE_ANCHOR,
+                "obsidian_drill": GEM_LEVEL_RATE_ANCHOR,
+                "diamond_drill": GEM_LEVEL_RATE_ANCHOR,
+            },
+        )
 
     def test_the_iron_ladder_is_unchanged(self):
         # The anchor the whole scheme is derived from: the Iron Drill's
@@ -51,23 +69,30 @@ class EffectiveRateTests(unittest.TestCase):
             [5, 6, 7, 8],
         )
 
-    def test_a_level_is_worth_the_same_proportion_at_every_tier(self):
-        # The point of the change. Under the old flat +1 a level made an Iron
-        # Drill 20% faster and a Diamond Drill 6.7% faster, so the upgrade path
-        # got worse the better your drill was.
-        for level in range(1, 8):
-            gains = {
-                effective_rate(t, level + 1) / effective_rate(t, level) for t in DRILLS
-            }
-            self.assertEqual(len(gains), 1, f"tiers diverge at level {level}: {gains}")
+    def test_a_level_is_worth_the_same_proportion_across_a_group(self):
+        # The point of percentage levelling. Under the old flat +1 a level made
+        # an Iron Drill 20% faster and a Diamond Drill 6.7% faster, so the
+        # upgrade path got worse the better your drill was. Since 1.4.2 the gem
+        # tiers gain more than Iron and Steel do, but still the same as each
+        # other.
+        for group in (
+            ("iron_drill", "steel_drill"),
+            ("ruby_drill", "obsidian_drill", "diamond_drill"),
+        ):
+            for level in range(1, 8):
+                gains = {
+                    effective_rate(t, level + 1) / effective_rate(t, level) for t in group
+                }
+                self.assertEqual(len(gains), 1, f"{group} diverge at level {level}: {gains}")
 
     def test_rates_stay_exact(self):
         # Written as one rational expression precisely so these land on the nose
         # - a 9.000000000000002 items/hour reaches an embed as "9.000000000000002".
         self.assertEqual(effective_rate("steel_drill", 2), 9)
         self.assertEqual(effective_rate("steel_drill", 3), 10.5)
-        self.assertEqual(effective_rate("obsidian_drill", 2), 144)
-        self.assertEqual(effective_rate("diamond_drill", 4), 768)
+        self.assertEqual(effective_rate("ruby_drill", 2), 45)
+        self.assertEqual(effective_rate("obsidian_drill", 2), 180)
+        self.assertEqual(effective_rate("diamond_drill", 4), 1200)
 
 
 class EffectiveCapacityTests(unittest.TestCase):
@@ -151,6 +176,67 @@ class UpgradeCostTests(unittest.TestCase):
                 self.assertIsNotNone(get_material_info(material_id))
 
 
+class GemUpgradeIsWorthItsGemTests(unittest.TestCase):
+    """Why a gem-tier level adds half its drill's base rate rather than a
+    fifth (data/materials.py: GEM_LEVEL_RATE_ANCHOR, 1.4.2). Counted in gems,
+    which are essentially the whole cost of a gem-tier drill, a gem can go into
+    an upgrade or towards the bit of another drill of the same tier. The first
+    upgrade has to be the better buy, and the second no worse than a new drill
+    that replaces one from the tier below - level twice, then build. At a fifth
+    the first upgrade lost to both, so nobody levelled a gem drill.
+
+    Everything is read off the recipes and effective_rate rather than written
+    in, so a retune that breaks the shape fails here."""
+
+    @staticmethod
+    def _gems(recipe):
+        return sum(quantity for material_id, quantity in recipe.items() if material_id in GEMSTONES)
+
+    def _gem_drills(self):
+        return [d for d in DRILLS if self._gems(upgrade_cost(d, 1))]
+
+    def _rate_per_gem(self, drill_type):
+        tiers = list(DRILLS)
+        below = tiers[tiers.index(drill_type) - 1]
+        bit_id = next(i for i in DRILLS[drill_type]["inputs"] if i.endswith("_drill_bit"))
+        bit_gems = self._gems(get_material_info(bit_id)["inputs"])
+        base = effective_rate(drill_type, 1)
+        return {
+            "empty_slot": base / bit_gems,
+            "replacing": (base - effective_rate(below, 1)) / bit_gems,
+            "upgrades": [
+                (effective_rate(drill_type, level + 1) - effective_rate(drill_type, level))
+                / self._gems(upgrade_cost(drill_type, level))
+                for level in (1, 2, 3)
+            ],
+        }
+
+    def test_the_gem_drills_are_the_three_gem_tiers(self):
+        self.assertEqual(self._gem_drills(), ["ruby_drill", "obsidian_drill", "diamond_drill"])
+
+    def test_the_first_upgrade_is_the_best_use_of_a_gem(self):
+        for drill_type in self._gem_drills():
+            with self.subTest(drill_type=drill_type):
+                per_gem = self._rate_per_gem(drill_type)
+                self.assertGreater(per_gem["upgrades"][0], per_gem["empty_slot"])
+                self.assertGreater(per_gem["upgrades"][0], per_gem["replacing"])
+
+    def test_the_second_upgrade_is_no_worse_than_replacing_a_lower_tier_drill(self):
+        for drill_type in self._gem_drills():
+            with self.subTest(drill_type=drill_type):
+                per_gem = self._rate_per_gem(drill_type)
+                self.assertGreaterEqual(per_gem["upgrades"][1], per_gem["replacing"])
+
+    def test_the_third_upgrade_loses_to_building_the_next_drill(self):
+        # The other end of "level twice, then build": the doubling cost is still
+        # the brake, so a gem drill isn't worth levelling forever instead of
+        # building more of them.
+        for drill_type in self._gem_drills():
+            with self.subTest(drill_type=drill_type):
+                per_gem = self._rate_per_gem(drill_type)
+                self.assertLess(per_gem["upgrades"][2], per_gem["replacing"])
+
+
 class BuyingTheNewTierIsCheaperThanUpgradingTests(unittest.TestCase):
     """The 1.2.1 drill speed buff was chosen so that buying a fresh drill of
     the new tier is cheaper than levelling the previous tier's drill up to
@@ -221,11 +307,12 @@ class AdvanceHarvestTests(unittest.TestCase):
 
     def test_half_item_rates_land_exactly(self):
         # Percentage levelling puts drills on fractional rates whenever a
-        # type's base isn't a multiple of LEVEL_RATE_ANCHOR (5) - steel (7.5)
-        # is on a half at every odd level. As of 1.2.1 every gem-tier base
-        # (30/60/120) is a multiple of 5, so steel is now the only drill type
-        # this can happen to; see test_every_drill_and_level_averages_to_its_stated_rate
-        # below for the generic (fractional-or-not) correctness check.
+        # type's base isn't a multiple of its level_rate_anchor - steel (7.5,
+        # anchor 5) is on a half at every odd level. Every gem-tier base
+        # (30/120/480 as of 1.3) is even, and their anchor is 2 as of 1.4.2, so
+        # steel is still the only drill type this can happen to; see
+        # test_every_drill_and_level_averages_to_its_stated_rate below for the
+        # generic (fractional-or-not) correctness check.
         self.assertEqual(self._mine(10.5, 48), 42)   # steel level 3
 
     def test_every_drill_and_level_averages_to_its_stated_rate(self):

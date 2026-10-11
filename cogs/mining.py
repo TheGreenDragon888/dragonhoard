@@ -26,7 +26,7 @@ picked from an autocomplete list rather than a drill type.
 
 HARVEST_TICK_MINUTES is 5, giving 12 ticks/hour - matching the other three
 machines' PROCESS_TICK_MINUTES. A drill's rate comes from its type and is
-scaled by its level (see LEVEL_RATE_ANCHOR), so a tick's share of it is
+scaled by its level (see effective_rate), so a tick's share of it is
 generally a fraction of an item rather than a whole number - drills carry the
 remainder in harvest_progress rather than rounding it away (see
 advance_harvest). A tick pays for the time since drills.mined_until, never
