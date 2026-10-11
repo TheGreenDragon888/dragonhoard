@@ -55,11 +55,11 @@ Upgrading is a factory job, queued with /factory upgrade <drill>, and the drill 
 
 Iron Drill - 10 Iron
 Steel Drill - 10 Steel
-Ruby Drill - 3 Ruby
-Obsidian Drill - 3 Obsidian
-Diamond Drill - 3 Diamond
+Ruby Drill - 1 Ruby
+Obsidian Drill - 1 Obsidian
+Diamond Drill - 1 Diamond
 
-So an Iron Drill costs 1 pack + 10 Iron to reach level 2, 2 packs + 20 Iron to reach level 3, 4 packs + 40 Iron to reach level 4, and so on. Gem drills pay 3 of their gem rather than 10, matching the 3 gems their drill bit already costs - at a one-in-a-million drop chance, 10 Diamonds per upgrade would put those drills permanently out of reach.
+So an Iron Drill costs 1 pack + 10 Iron to reach level 2, 2 packs + 20 Iron to reach level 3, 4 packs + 40 Iron to reach level 4, and so on. A Diamond Drill doubles the same way: 1 pack + 1 Diamond, then 2 packs + 2 Diamonds, then 4 packs + 4 Diamonds. Gem drills pay 1 of their gem rather than 10 - at a one-in-a-million drop chance, 10 Diamonds per upgrade would put those drills permanently out of reach. Before 1.2.2 they paid 3, the same as their drill bit's recipe; 1.2.2 cut the upgrade to 1 and left the drill bit at 3 gems (data/materials.py: _UPGRADE_TIER_MATERIAL; tests/test_drills.py: test_gem_drills_cost_one_of_their_gem pins the 1).
 
 Mining Focus
 A player who has reached the ruby stage can spend one Ruby, once, to unlock a mining focus with /focus. A focus commits their mining to one ore: everything they would have dug up of the other ores arrives as their chosen one instead. Unlocking costs a Ruby; changing afterwards is free, once per day (midnight Arizona time, the job board's clock).
