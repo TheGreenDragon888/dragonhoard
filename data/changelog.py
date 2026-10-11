@@ -57,6 +57,75 @@ def _add(version: ChangelogVersion):
 
 
 _add(ChangelogVersion(
+    version="1.4.2",
+    released="2026-10-11",
+    emoji="\U0001F48E",
+    color=MINING_COLOR,
+    summary="Stronger gem drill levels, a Market Tax, /bet close, bigger bonds, a fairer GDP line",
+    headline=(
+        "Levelling up a gem drill is now worth the gem it costs. The Treasurer gets a second "
+        "rate to set, bets can close early, bonds come bigger and pay off one at a time, and "
+        "`/economy gdp` stops calling self-sufficient servers importers."
+    ),
+    entries=(
+        ChangelogEntry(
+            "\U0001F48E Gem Drill Levels Count For More",
+            "Each level on a Ruby, Obsidian or Diamond Drill now adds **half** of that drill's "
+            "base speed instead of a fifth - a Ruby Drill goes 30, 45, 60 an hour where it "
+            "used to go 30, 36, 42. Drills you have already levelled speed up straight away. "
+            "Iron and Steel Drills are unchanged, and so is what an upgrade costs: one pack "
+            "and one gem, doubling every level.\n\n"
+            "Before, a gem always did more good towards another drill than in an upgrade. Now "
+            "a drill's first level is the best thing a gem can buy, and its second is as good "
+            "as building a new drill to replace an older one. Faster gem drills also empty "
+            "your server's mining pool faster, so they take a bigger share of the gems in it.",
+        ),
+        ChangelogEntry(
+            "\U0001F3DB️ The Fee Share And The Market Tax",
+            "The government's tax is now called the **Fee Share**. It was never a charge on top: "
+            "you pay the same fee at any rate, and the rate is how much of it the government "
+            "keeps instead of burning.\n\n"
+            "The Treasurer can also set a **Market Tax**, taken out of what the seller receives "
+            "on every trade between players - a listing bought, a bid filled, a drill sold. The "
+            "buyer pays the listed price either way, and trades with the server are never taxed.\n\n"
+            "Both are set with `/treasurer rate`, which replaces `/treasurer tax`, from the same "
+            "steps: 0%, 2.5%, 5%, 6.25%, 8%, 10%, 12.5%, 16%, 20%, 40% and 100%. Each can change "
+            "once a day. A Fee Share that sat between two steps was rounded down to the one below.",
+        ),
+        ChangelogEntry(
+            "\U0001F4DC Bonds",
+            "Bonds now come in 1, 2, 5, 10, 20, 50, 100, 200, 500 and 1,000 - the bigger ones "
+            "open up as your server's revenue grows. Each payout now finishes your oldest bond "
+            "before starting on the next, instead of creeping them all along together; the "
+            "payout is still shared between bondholders the same way. Bonds repaid before you "
+            "next look arrive as one notice per server with the total returned, and "
+            "`/bonds holdings` is laid out like a status page.",
+        ),
+        ChangelogEntry(
+            "\U0001F3B2 Close A Bet Early",
+            "Whoever opened a bet, or anyone with Manage Server, can stop it taking wagers "
+            "before its deadline with `/bet close`. Nothing is paid out or refunded - the bet "
+            "waits to be resolved or cancelled, just as if its deadline had passed.",
+        ),
+        ChangelogEntry(
+            "\U0001F4CA A Fairer Import/Export Line",
+            "`/economy gdp` now compares **Ore smelted** with **Ore mined**. It used to count "
+            "the same ore twice - once at the furnace and again as the bar a craft used - and "
+            "counted gems built into drill bits and containers as imports, so servers that made "
+            "everything themselves read as net importers. Figures already recorded are "
+            "corrected too. Balanced now means within 15%, shown with the gap: "
+            "*balanced (-8%)*.",
+        ),
+        ChangelogEntry(
+            "\U0001F527 Fixes",
+            "A player with enough unread notices could stop getting any reply from the bot. "
+            "Replies now always go through, and notices that don't fit arrive with your next "
+            "commands.",
+        ),
+    ),
+))
+
+_add(ChangelogVersion(
     version="1.4.1",
     released="2026-09-30",
     emoji="\U0001F4B0",
