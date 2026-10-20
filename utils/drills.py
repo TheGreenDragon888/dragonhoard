@@ -32,7 +32,7 @@ from data.materials import (
     material_name,
     roll_raw_material,
 )
-from utils.db_helpers import ensure_user_row, adjust_user_quantity
+from utils.db_helpers import ensure_user_row, adjust_user_quantity, deduct_user_quantity
 from utils.mining_focus import convert_haul
 from utils.mining_efficiency import boost_haul
 from utils.mining_affinity import convert_gems
@@ -506,6 +506,44 @@ async def set_container(db, drill_row, container_type: str | None):
             drill_row["container_type"],
         ),
     )
+
+
+async def fit_container(tx, drill_row, container_type: str) -> bool:
+    """Takes one container_type out of the owner's inventory and fits it to
+    the drill, handing back whatever container it had. Returns False, having
+    changed nothing, if another command changed the drill's container first.
+
+    Shared by /mine attach and /mine place. Must be handed a Transaction: the
+    fit, the deduction and the hand-back are one operation, and a failure
+    between them would destroy or duplicate a container. Raises
+    InsufficientQuantity if the owner has none, which rolls the caller's
+    transaction back with it."""
+    owner_id = drill_row["owner_id"]
+    previous = drill_row["container_type"]
+    if not await set_container(tx, drill_row, container_type):
+        return False
+    await deduct_user_quantity(tx, owner_id, container_type, 1)
+    if previous:
+        # Swapped out intact rather than destroyed - containers are ordinary
+        # fungible items with no per-instance state to lose.
+        await adjust_user_quantity(tx, owner_id, previous, 1)
+    return True
+
+
+async def strip_container(tx, drill_row) -> bool:
+    """Pulls the drill's container off and returns it to the owner's
+    inventory. Returns False, having changed nothing, if another command got
+    there first.
+
+    Shared by /mine detach and /mine remove. The pull goes first: if it
+    matches nothing the refund never runs, otherwise racing commands would
+    each hand back a copy of the same container."""
+    removed = drill_row["container_type"]
+    if not await set_container(tx, drill_row, None):
+        return False
+    await ensure_user_row(tx, drill_row["owner_id"])
+    await adjust_user_quantity(tx, drill_row["owner_id"], removed, 1)
+    return True
 
 
 async def release_stale_drill_locks(db):

@@ -61,11 +61,12 @@ _add(ChangelogVersion(
     released="2026-10-11",
     emoji="\U0001F48E",
     color=MINING_COLOR,
-    summary="Stronger gem drill levels, a Market Tax, /bet close, bigger bonds, a fairer GDP line",
+    summary="Stronger gem drills, a Market Tax, /bet close, bigger bonds, easier containers, a fairer GDP line",
     headline=(
         "Levelling up a gem drill is now worth the gem it costs. The Treasurer gets a second "
-        "rate to set, bets can close early, bonds come bigger and pay off one at a time, and "
-        "`/economy gdp` stops calling self-sufficient servers importers."
+        "rate to set, bets can close early, bonds come bigger and pay off one at a time, "
+        "containers go on and come off with your drills, and `/economy gdp` stops calling "
+        "self-sufficient servers importers."
     ),
     entries=(
         ChangelogEntry(
@@ -115,6 +116,15 @@ _add(ChangelogVersion(
             "everything themselves read as net importers. Figures already recorded are "
             "corrected too. Balanced now means within 15%, shown with the gap: "
             "*balanced (-8%)*.",
+        ),
+        ChangelogEntry(
+            "\U0001F4E6 Containers Go With The Drill",
+            "`/mine place` takes an optional **container**, fitted as the drill goes in - one "
+            "command instead of a `/mine place` and a `/mine attach`. Any container already "
+            "on the drill comes back to your inventory, as `/mine attach` does.\n\n"
+            "`/mine remove` now hands a drill's container back to your inventory too, ready "
+            "for the next drill. Set `keep_container` to True to leave it fitted, as it always "
+            "used to be. `/mine attach` and `/mine detach` are unchanged.",
         ),
         ChangelogEntry(
             "\U0001F527 Fixes",

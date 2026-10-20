@@ -2,12 +2,14 @@
 cogs/mining.py
 
 Implements:
-  - /mine place [drill]       - place one of your drills in this server, up to the
-                                number of mining slots that server has unlocked
+  - /mine place [drill] [container] - place one of your drills in this server, up
+                                to the number of mining slots that server has
+                                unlocked, optionally fitting a container as it goes in
   - /mine status              - show your active drills + this server's mining pool
   - /collect [here]           - empty your drills, in every server you have
                                 them placed, into your inventory
-  - /mine remove <drill>      - pull a drill back out early, refunding it + its contents
+  - /mine remove <drill> [keep_container] - pull a drill back out early, refunding
+                                it, its contents and (unless kept) its container
   - /mine attach <drill> <container> - fit a storage container, swapping any existing one
   - /mine detach <drill>      - pull a drill's container back off
   - /focus [focus]            - commit your mining to one ore (costs a Ruby)
@@ -85,7 +87,8 @@ from utils.drills import (
     is_local_drill,
     material_breakdown_lines,
     retract_drill,
-    set_container,
+    fit_container,
+    strip_container,
 )
 
 from utils.mining_focus import convert_haul, focus_label, get_focus, set_focus
@@ -405,10 +408,36 @@ class MiningCog(commands.Cog):
         ]
 
     @mine_group.command(name="place", description="Place one of your drills in this server")
-    @app_commands.describe(drill="Which drill to place - leave blank to place your only one")
-    @app_commands.autocomplete(drill=_unplaced_drill_autocomplete)
-    async def mine_place(self, interaction: discord.Interaction, drill: int | None = None):
+    @app_commands.describe(
+        drill="Which drill to place - leave blank to place your only one",
+        container="A storage container to fit as it goes in (optional)",
+    )
+    @app_commands.autocomplete(drill=_unplaced_drill_autocomplete, container=_owned_container_autocomplete)
+    async def mine_place(
+        self,
+        interaction: discord.Interaction,
+        drill: int | None = None,
+        container: str | None = None,
+    ):
         await ensure_server_row(self.db, interaction.guild_id)
+
+        # The container is checked before anything else happens, the free-drill
+        # grant included, so a bad one never leaves a half-done placement.
+        # Owning one isn't needed if the named drill already has it fitted -
+        # nothing is used up then. Both are checked again inside the
+        # transaction, which is the enforcement.
+        if container is not None:
+            if container not in STORAGE_CONTAINERS:
+                await interaction.response.send_message("That isn't a storage container.", ephemeral=True)
+                return
+            named = await fetch_drill(self.db, drill, interaction.user.id) if drill is not None else None
+            already_fitted = named is not None and named["container_type"] == container
+            if not already_fitted and await get_user_quantity(self.db, interaction.user.id, container) < 1:
+                await interaction.response.send_message(
+                    f"You don't have a **{container_name(container)}**. Craft one with `/factory craft`.",
+                    ephemeral=True,
+                )
+                return
 
         # Read once and reused by both rejections below. Fetching it inside the
         # transaction would open a second read while that transaction holds the
@@ -448,78 +477,109 @@ class MiningCog(commands.Cog):
 
         # Re-reading the drill and claiming it share a transaction, so the same
         # drill can't be placed twice by two commands racing, and the max-drills
-        # count can't be beaten by firing several at once.
-        async with self.db.transaction() as tx:
-            row = await fetch_drill(tx, drill, interaction.user.id)
-            if row is None:
-                await interaction.response.send_message("That isn't one of your drills.", ephemeral=True)
-                return
-            if row["guild_id"] is not None:
-                await interaction.response.send_message(
-                    f"**{drill_label(row)}** is already placed in a server.", ephemeral=True
+        # count can't be beaten by firing several at once. The container is
+        # fitted in the same transaction, so a placement and its container
+        # succeed or fail together.
+        previous = None
+        fitted = None
+        try:
+            async with self.db.transaction() as tx:
+                row = await fetch_drill(tx, drill, interaction.user.id)
+                if row is None:
+                    await interaction.response.send_message("That isn't one of your drills.", ephemeral=True)
+                    return
+                if row["guild_id"] is not None:
+                    await interaction.response.send_message(
+                        f"**{drill_label(row)}** is already placed in a server.", ephemeral=True
+                    )
+                    return
+                unavailable = drill_unavailable_message(row, "place it")
+                if unavailable is not None:
+                    await interaction.response.send_message(unavailable, ephemeral=True)
+                    return
+
+                # Re-read inside the transaction rather than reusing the figure from
+                # above: a fee banked in between can only ever RAISE the cap, but
+                # the drill count it is compared against is exactly what two
+                # commands racing would both read stale.
+                slots = await mining_slot_status(tx, interaction.guild_id)
+                placed_count = await tx.fetchone(
+                    "SELECT COUNT(*) AS cnt FROM drills WHERE guild_id = ? AND owner_id = ?",
+                    (interaction.guild_id, interaction.user.id),
                 )
-                return
-            unavailable = drill_unavailable_message(row, "place it")
-            if unavailable is not None:
-                await interaction.response.send_message(unavailable, ephemeral=True)
-                return
+                if placed_count["cnt"] >= slots.slots:
+                    await interaction.response.send_message(
+                        mining_slots_full_message(slots, currency_emoji), ephemeral=True
+                    )
+                    return
 
-            # Re-read inside the transaction rather than reusing the figure from
-            # above: a fee banked in between can only ever RAISE the cap, but
-            # the drill count it is compared against is exactly what two
-            # commands racing would both read stale.
-            slots = await mining_slot_status(tx, interaction.guild_id)
-            placed_count = await tx.fetchone(
-                "SELECT COUNT(*) AS cnt FROM drills WHERE guild_id = ? AND owner_id = ?",
-                (interaction.guild_id, interaction.user.id),
-            )
-            if placed_count["cnt"] >= slots.slots:
-                await interaction.response.send_message(
-                    mining_slots_full_message(slots, currency_emoji), ephemeral=True
-                )
-                return
-
-            # Mining starts now, so its first tick pays for the time since
-            # and not a whole tick (drills.mined_until). placed_at is what
-            # voting eligibility is measured against (utils/government.py:
-            # can_vote).
-            await tx.execute(
-                "UPDATE drills SET guild_id = ?, mined_until = datetime('now'), "
-                "placed_at = datetime('now') WHERE drill_id = ? AND guild_id IS NULL",
-                (interaction.guild_id, row["drill_id"]),
-            )
-
-            if granted:
-                # A brand-new player's free drill starts full rather than
-                # empty, so their very next command can be /collect instead of
-                # a wait. Drawn from this server's own pool rather than
-                # invented, since a drill's contents are supposed to be real
-                # materials taken from there - anything else risks minting a
-                # second copy of whatever gemstone the pool is guaranteeing
-                # (docs/mining.txt).
-                capacity = capacity_of(row)
-                drawn = await take_from_pool(tx, interaction.guild_id, capacity)
-                harvested = sum(drawn.values())
+                # Mining starts now, so its first tick pays for the time since
+                # and not a whole tick (drills.mined_until). placed_at is what
+                # voting eligibility is measured against (utils/government.py:
+                # can_vote).
                 await tx.execute(
-                    "UPDATE drills SET stored_amount = ?, is_full = ? WHERE drill_id = ?",
-                    (harvested, 1 if harvested >= capacity else 0, row["drill_id"]),
+                    "UPDATE drills SET guild_id = ?, mined_until = datetime('now'), "
+                    "placed_at = datetime('now') WHERE drill_id = ? AND guild_id IS NULL",
+                    (interaction.guild_id, row["drill_id"]),
                 )
-                await add_drill_contents(tx, row["drill_id"], drawn)
+
+                if granted:
+                    # A brand-new player's free drill starts full rather than
+                    # empty, so their very next command can be /collect instead of
+                    # a wait. Drawn from this server's own pool rather than
+                    # invented, since a drill's contents are supposed to be real
+                    # materials taken from there - anything else risks minting a
+                    # second copy of whatever gemstone the pool is guaranteeing
+                    # (docs/mining.txt).
+                    capacity = capacity_of(row)
+                    drawn = await take_from_pool(tx, interaction.guild_id, capacity)
+                    harvested = sum(drawn.values())
+                    await tx.execute(
+                        "UPDATE drills SET stored_amount = ?, is_full = ? WHERE drill_id = ?",
+                        (harvested, 1 if harvested >= capacity else 0, row["drill_id"]),
+                    )
+                    await add_drill_contents(tx, row["drill_id"], drawn)
+
+                # Fitted last, after any free-drill fill: that fill is the plain
+                # drill's capacity, and set_container then re-derives is_full
+                # against the container's, so the extra room is mined rather
+                # than handed out. Naming the container already on the drill
+                # uses nothing up.
+                if container is not None and row["container_type"] != container:
+                    if not await fit_container(tx, row, container):
+                        await interaction.response.send_message(
+                            "That drill's container changed while this was going through. Try again.",
+                            ephemeral=True,
+                        )
+                        return
+                    previous = row["container_type"]
+                    fitted = container
+        except InsufficientQuantity:
+            await interaction.response.send_message(
+                "Your containers changed while that was going through - nothing was placed. Try again.",
+                ephemeral=True,
+            )
+            return
 
         placed = DRILLS[row["drill_type"]]["name"]
         if granted:
-            await respond(
-                interaction, self.db,
-                content=(
-                    f"⛏️ You didn't have any drills, so I gave you an **{placed}**, filled "
-                    f"it, and placed it. Run `/collect` to bank what's in it."
-                ),
+            content = (
+                f"⛏️ You didn't have any drills, so I gave you an **{placed}**, filled "
+                f"it, and placed it. Run `/collect` to bank what's in it."
             )
         else:
-            await respond(
-                interaction, self.db,
-                content=f"⛏️ Placed **{drill_short_label(row)}** in this server.",
+            content = f"⛏️ Placed **{drill_short_label(row)}** in this server."
+        if fitted:
+            content += (
+                f"\n{STORAGE_CONTAINERS[fitted]['emoji']} Fitted a **{container_name(fitted)}** "
+                f"(storage {effective_capacity(fitted)})."
             )
+        if previous:
+            content += (
+                f"\n{STORAGE_CONTAINERS[previous]['emoji']} **{container_name(previous)}** "
+                f"returned to your inventory."
+            )
+        await respond(interaction, self.db, content=content)
 
     async def _sole_unplaced_drill(self, interaction: discord.Interaction) -> int | None:
         """Resolves an omitted `drill` argument when the player already owns
@@ -680,9 +740,12 @@ class MiningCog(commands.Cog):
         await respond(interaction, self.db, embed=embed)
 
     @mine_group.command(name="remove", description="Pull one of your drills out of this server and collect its items")
-    @app_commands.describe(drill="Which drill to remove")
+    @app_commands.describe(
+        drill="Which drill to remove",
+        keep_container="Leave its storage container fitted instead of returning it to your inventory",
+    )
     @app_commands.autocomplete(drill=_placed_here_autocomplete)
-    async def mine_remove(self, interaction: discord.Interaction, drill: int):
+    async def mine_remove(self, interaction: discord.Interaction, drill: int, keep_container: bool = False):
         # The drill is read INSIDE the transaction, so the stored_amount that
         # decides the haul is the one retract_drill then guards its UPDATE on.
         # Reading it outside is how this used to hand the same haul out twice:
@@ -701,9 +764,8 @@ class MiningCog(commands.Cog):
                 await interaction.response.send_message(unavailable, ephemeral=True)
                 return
 
-            # Back to the inventory as the same drill, keeping its level and
-            # container - that persistence is the whole reason drills are
-            # tracked per instance.
+            # Back to the inventory as the same drill, keeping its level - that
+            # persistence is the whole reason drills are tracked per instance.
             collected_breakdown = await retract_drill(tx, row)
             if collected_breakdown is None:
                 await interaction.response.send_message(
@@ -711,12 +773,31 @@ class MiningCog(commands.Cog):
                 )
                 return
 
+            # As of 1.4.2 the container comes off by default too, in this same
+            # transaction. Only this command does it: retract_drill's other
+            # callers (the bot leaving a server, the /factory upgrade
+            # auto-retraction) leave it fitted.
+            returned_container = None
+            if row["container_type"] is not None and not keep_container:
+                if not await strip_container(tx, row):
+                    raise RuntimeError("drill container changed under a held write lock")
+                returned_container = row["container_type"]
+
         embed = make_embed("Drill Removed", MINING_COLOR)
         embed.add_field(
             name="Drill",
             value=f"{DRILLS[row['drill_type']]['emoji']} **{drill_short_label(row)}** returned to your inventory",
             inline=False,
         )
+        if returned_container:
+            embed.add_field(
+                name="Container",
+                value=(
+                    f"{STORAGE_CONTAINERS[returned_container]['emoji']} "
+                    f"**{container_name(returned_container)}** returned to your inventory"
+                ),
+                inline=False,
+            )
         lines = material_breakdown_lines(collected_breakdown)
         embed.add_field(
             name="Items Collected", value="\n".join(lines) if lines else "None", inline=False
@@ -775,17 +856,12 @@ class MiningCog(commands.Cog):
                     )
                     return
 
-                if not await set_container(tx, row, container):
+                if not await fit_container(tx, row, container):
                     await interaction.response.send_message(
                         "That drill's container changed while this was going through. Try again.",
                         ephemeral=True,
                     )
                     return
-                await deduct_user_quantity(tx, interaction.user.id, container, 1)
-                if previous:
-                    # Swapped out intact rather than destroyed - containers are
-                    # ordinary fungible items with no per-instance state to lose.
-                    await adjust_user_quantity(tx, interaction.user.id, previous, 1)
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your containers changed while that was going through - nothing was fitted. Try again.",
@@ -842,17 +918,12 @@ class MiningCog(commands.Cog):
         old_capacity = capacity_of(row)
 
         async with self.db.transaction() as tx:
-            await ensure_user_row(tx, interaction.user.id)
-            # Pull it off first: if another command got there already this
-            # matches nothing, and the refund below never happens - otherwise
-            # racing detaches would each hand back a copy of the same one.
-            if not await set_container(tx, row, None):
+            if not await strip_container(tx, row):
                 await interaction.response.send_message(
                     "That drill's container changed while this was going through. Try again.",
                     ephemeral=True,
                 )
                 return
-            await adjust_user_quantity(tx, interaction.user.id, removed, 1)
 
         embed = make_embed("Container Removed", MINING_COLOR)
         embed.description = (

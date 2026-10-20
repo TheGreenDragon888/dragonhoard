@@ -30,7 +30,7 @@ And `/honk` plays a honk. No further questions.
 
 | Command group | What it does |
 | ------------- | ------------ |
-| `/mine place\|status\|remove\|attach\|detach`, `/collect` | Drill placement and harvesting |
+| `/mine place\|status\|remove\|attach\|detach`, `/collect` | Drill placement, storage containers and harvesting |
 | `/balance`, `/inventory` | What you have |
 | `/market sell\|buy\|status` | Trade with the server, and with other players |
 | `/market list\|order\|cancel` | Put your own goods or bids on the server's books |

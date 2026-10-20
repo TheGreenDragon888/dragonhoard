@@ -199,10 +199,11 @@ _add(ManualSection(
     ),
     commands=(
         ManualCommand(
-            "/mine place", "/mine place [drill]",
+            "/mine place", "/mine place [drill] [container]",
             "Puts one of your drills to work in this server. Leave the drill blank if you "
             "only have one spare. If you own no drills at all, you'll be given a free Iron "
-            "Drill, already full, to start with.",
+            "Drill, already full, to start with. Name a container to fit it as the drill "
+            "goes in - any container already on the drill comes back to you.",
         ),
         ManualCommand(
             "/mine status", "/mine status",
@@ -218,9 +219,10 @@ _add(ManualSection(
             "only from your drills in this server.",
         ),
         ManualCommand(
-            "/mine remove", "/mine remove <drill>",
+            "/mine remove", "/mine remove <drill> [keep_container]",
             "Pulls a drill back out of the ground and into your inventory, handing you "
-            "whatever it was holding. It keeps its level and its container.",
+            "whatever it was holding. It keeps its level. Its container comes off and goes "
+            "back to your inventory too - set `keep_container` to True to leave it fitted.",
         ),
         ManualCommand(
             "/mine attach", "/mine attach <drill> <container>",
