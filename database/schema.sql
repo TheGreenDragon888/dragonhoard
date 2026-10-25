@@ -803,9 +803,10 @@ CREATE TABLE IF NOT EXISTS government_votes (
 -- owed_cents is principal plus the premium, fixed at sale; remaining_cents is
 -- what is still to be paid. frozen marks a holder who has left the server:
 -- payouts skip them and the debt cap ignores them until they are back.
--- tax_percent_at_sale and market_tax_percent_at_sale are what stop the
--- Treasurer cutting either rate below the one the latest bond was sold under
--- while debt is owed. repaid_notice_key is NULL until the bond is repaid, then
+-- tax_percent_at_sale and market_tax_percent_at_sale record the Fee Share and
+-- Market Tax in force at sale. They fed a floor under both rates while debt
+-- was owed, removed after 1.4.2 (docs/government.md section 2); no rule reads
+-- them now. repaid_notice_key is NULL until the bond is repaid, then
 -- names the personal notice that told its holder: every bond repaid before
 -- they next looked shares one notice, whose count and total are summed from
 -- the bonds carrying its key (utils/government.py: announce_repaid_bonds).

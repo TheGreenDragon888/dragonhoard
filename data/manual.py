@@ -935,8 +935,7 @@ _add(ManualSection(
         ManualCommand("/treasurer fee", "/treasurer fee <machine> <multiplier>",
                       "Sets one machine's fee as a multiple of its default. Treasurer only."),
         ManualCommand("/treasurer rate", "/treasurer rate <fee-share|market-tax> <percent>",
-                      "Sets the Fee Share or the Market Tax. Treasurer only. Neither can drop "
-                      "below the rate bonds were last sold at while the server owes on them."),
+                      "Sets the Fee Share or the Market Tax. Treasurer only."),
         ManualCommand("/treasurer bondrate", "/treasurer bondrate <percent>",
                       f"Sets the premium new bonds repay, 0-{MAX_BOND_RATE_PERCENT}%. Treasurer only."),
         ManualCommand("/mayor fund", "/mayor fund <machine> <amount>",
@@ -960,7 +959,9 @@ _add(ManualSection(
             "A bond lends the server money now and is repaid out of its revenue. Bonds come in "
             + ", ".join(format_bond(c) for c in BOND_DENOMINATIONS_CENTS[:-1])
             + " and " + format_bond(BOND_DENOMINATIONS_CENTS[-1]) + ", and repay what they cost plus the "
-            "Treasurer's premium, fixed when you buy. While the server owes anything, **all** "
+            "Treasurer's premium, fixed when you buy: nothing the Treasurer changes afterwards "
+            "alters what you're owed, only how fast it's repaid. "
+            "While the server owes anything, **all** "
             "of the Fee Share and Market Tax repays bondholders - every hour, split in proportion to what each is "
             "still owed, and your share pays off your oldest bond first. "
             f"The server can't owe more than its last {DEBT_CAP_DAYS} days of revenue. "

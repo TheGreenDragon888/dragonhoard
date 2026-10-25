@@ -102,11 +102,11 @@ FEE_SHARE = "fee-share"
 MARKET_TAX = "market-tax"
 RATE_KINDS = (FEE_SHARE, MARKET_TAX)
 RATE_LABELS = {FEE_SHARE: "Fee Share", MARKET_TAX: "Market Tax"}
-# Each kind's server_config rate column, the column that stamps the day it
-# last changed, and the government_bonds column recording it at each sale.
+# Each kind's server_config rate column and the column that stamps the day it
+# last changed.
 _RATE_COLUMNS = {
-    FEE_SHARE: ("tax_percent", "tax_changed", "tax_percent_at_sale"),
-    MARKET_TAX: ("market_tax_percent", "market_tax_changed", "market_tax_percent_at_sale"),
+    FEE_SHARE: ("tax_percent", "tax_changed"),
+    MARKET_TAX: ("market_tax_percent", "market_tax_changed"),
 }
 
 # The steps either rate may be set to - one list for both, so /treasurer rate
@@ -432,24 +432,13 @@ async def set_fee_multiplier(
     )
 
 
-async def rate_floor(db: _Executor, guild_id: int, kind: str) -> float:
-    """The lowest a rate may be set while the server owes active creditors:
-    the rate in force when the most recent bond still owed was sold. Both rates
-    repay bondholders, so they lent against both, and they are the only thing
-    that repays them."""
-    at_sale = _RATE_COLUMNS[kind][2]
-    row = await db.fetchone(
-        f"SELECT {at_sale} FROM government_bonds WHERE guild_id = ? "
-        f"AND {OWED_BONDS_SQL} AND frozen = 0 ORDER BY bond_id DESC LIMIT 1",
-        (guild_id,),
-    )
-    return row[at_sale] if row else 0.0
-
-
 async def set_rate(
     tx: _Executor, guild_id: int, actor_id: int, kind: str, percent: float,
     now: datetime | None = None,
 ) -> None:
+    """Sets the Fee Share or the Market Tax. Bonds owed put no floor under
+    either: a bond fixes what it repays when it is bought (docs/government.md
+    section 2)."""
     if kind not in RATE_KINDS:
         raise ValueError(f"unknown rate {kind!r}")
     label = RATE_LABELS[kind]
@@ -457,17 +446,11 @@ async def set_rate(
         raise GovernmentError(
             f"The {label} must be one of " + ", ".join(format_percent(p) for p in RATE_PERCENTS) + "."
         )
-    rate, changed, _ = _RATE_COLUMNS[kind]
+    rate, changed = _RATE_COLUMNS[kind]
     await ensure_server_row(tx, guild_id)
     await require_office(tx, guild_id, actor_id, TREASURER)
     row = await tx.fetchone(f"SELECT {changed} FROM server_config WHERE guild_id = ?", (guild_id,))
     _refuse_second_change(row[changed], label, now)
-    floor = await rate_floor(tx, guild_id, kind)
-    if percent < floor:
-        raise GovernmentError(
-            f"The server owes bondholders who lent at a {format_percent(floor)} {label}, so the "
-            f"{label} can't go below {format_percent(floor)} until they are repaid."
-        )
     await tx.execute(
         f"UPDATE server_config SET {rate} = ?, {changed} = ? WHERE guild_id = ?",
         (percent, game_date(now), guild_id),

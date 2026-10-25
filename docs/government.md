@@ -71,9 +71,22 @@ Each setting (each machine's multiplier separately) may change **once per game
 day**. Without that, a Treasurer could set x0.25, queue their own jobs - fees
 are charged at queue time - and set x4 again.
 
-While the server owes active creditors, neither rate can drop below the rate in
-force when the most recent bond still owed was sold (`rate_floor`). Bondholders
-lent against that revenue, and it is the only thing that repays them.
+**Bonds owed hold no rate in place.** A bond fixes what it repays when it is
+bought - its price plus the premium in force then - so the Treasurer may set
+either rate, and the bond rate, while the server owes. The Fee Share and
+Market Tax decide how fast bondholders are repaid, never how much; the bond
+rate applies only to bonds sold after it changes. Cutting both rates to 0% stops
+repayment until revenue resumes; the debt is still owed, and as the revenue
+behind the debt cap ages out of its `DEBT_CAP_DAYS` the server cannot sell new
+bonds either.
+
+From 1.4 through 1.4.2 neither rate could drop below the rate in force when the
+most recent bond still owed was sold (`rate_floor`), on the argument that
+bondholders had lent against that revenue. It was removed as a mistake,
+reported against 1.4.2: bonds lock in their terms when they are bought, and a
+Treasurer's rates should not be frozen because bonds are owed. Each bond still
+records both rates at its sale (`tax_percent_at_sale`,
+`market_tax_percent_at_sale`); no rule reads them.
 
 **One command, one ladder.** Both rates are set with `/treasurer rate
 <fee-share|market-tax> <percent>` from the same steps (`RATE_PERCENTS`), picked the way the fee
@@ -85,7 +98,8 @@ every raise, 2.5% and 40% are whole doublings beyond that, and 0% (off) and
 Until then Fee Share was any whole percent, set with its own command. When it
 moved onto the steps, every rate between two of them was rounded **down** to
 the step below - a server's rate and each bond's record of it alike, so no
-bond's floor was left above every rate a Treasurer could set
+bond's floor (the rule of the time, since removed) was left above every rate a
+Treasurer could set
 (`_migrate_fee_share_to_steps`, user_version 7). Some steps are not whole; the
 INTEGER columns that hold Fee Share store those as REAL, which SQLite allows.
 
@@ -124,10 +138,7 @@ listing or the bid whatever the rate.
   units, rounded down (`market_tax_units`), so the seller's share and the tax
   add back up to exactly what the buyer paid.
 - **It repays bonds and counts toward the debt cap** like the Fee Share,
-  through the same `collect_revenue`. Bondholders lend against it too, so it
-  has its own floor (`rate_floor`, from
-  `government_bonds.market_tax_percent_at_sale`).
-  Bonds sold before it existed were lent against none and set no floor.
+  through the same `collect_revenue`.
 
 Removing `/setup fee` discarded every server's custom fee. In the production
 backup of 2026-08-30 (`/opt/dragonhoard/data/backup-2026-08-30-022248.db`, a
