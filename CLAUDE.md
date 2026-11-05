@@ -235,7 +235,12 @@ than reading a cache — `bot.py` turns the member cache off
 every member of every server in memory for one number was the largest thing
 the process kept in RAM. The count is remembered for
 `MEMBER_COUNT_CACHE_SECONDS`. Do not reintroduce `guild.members` or
-`guild.get_member` reads anywhere; they read as empty now.
+`guild.get_member` reads anywhere; they read as empty now. The request gives
+up after `CHUNK_TIMEOUT_SECONDS` and evicts itself from discord.py's private
+`_chunk_requests` table: discord.py never times out or clears a member request
+whose reply was lost in a gateway resume, and on 2026-11-04 one hung one
+server's job board and selling, and the furnace loop for every server, until a
+restart. Call `guild.chunk()` nowhere else.
 
 **`utils/channel_guard.py`**: the designated-bot-channel restriction
 (`/setup channel`) is enforced in exactly one place — `DragonhoardTree.
