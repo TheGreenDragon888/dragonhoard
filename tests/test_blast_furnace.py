@@ -100,8 +100,8 @@ class BlastFurnaceRecipeTests(unittest.TestCase):
         )
 
     def test_a_batch_of_steel_costs_what_the_manual_says(self):
-        # Recipe coal plus fuel coal, which is the figure the manual's "Is it
-        # worth it?" note quotes and the one a player has to actually hold.
+        # Recipe coal plus fuel coal, which is the figure the manual's blast
+        # furnace page quotes and the one a player has to actually hold.
         steel = BLAST_FURNACE_RECIPES["steel"]["inputs"]
         self.assertEqual(steel["iron_ore"], 2000)
         self.assertEqual(steel["coal"] + BLAST_FURNACE_COAL_COST_PER_BATCH, 500)

@@ -270,8 +270,11 @@ beta bots are separate Discord applications with separately uploaded icons
 with a receipt from `utils/receipts.py` - `build_action_receipt` for whatever
 is not a machine job or a trade - whose lines say `remaining` after a spend and
 `total` after a gain. A machine is named through `MACHINE_DISPLAY` wherever a
-player reads it. Embeds carry figures; what they mean goes on the feature's
-`/help` page (1.4.1). See `docs/stylization.md` for the full color table (each
+player reads it. Embeds carry figures; where a player needs one explained, a
+footer points to the feature's `/help` page, which explains it in a line
+(1.4.1). `/help` pages are short by rule - what to keep is in the docstring of
+`data/manual.py`, and `tests/test_manual.py` caps every page's word count -
+so design reasoning goes in `docs/`, not there. See `docs/stylization.md` for the full color table (each
 feature area owns a fully-saturated color) and layout rules before adding a new
 embed or a sixth machine's status command.
 

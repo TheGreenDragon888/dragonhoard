@@ -57,7 +57,7 @@ class MiningSlotLadderTests(unittest.TestCase):
             )
 
     def test_the_published_ladder(self):
-        # The figures docs/mining.txt, the manual and the changelog all quote.
+        # The figures docs/mining.txt and the changelog quote.
         self.assertEqual(
             [mining_slot_threshold(l) for l in range(2, 6)],
             [25.0, 125.0, 625.0, 3125.0],
