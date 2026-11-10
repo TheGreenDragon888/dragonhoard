@@ -159,7 +159,8 @@ class DrillScrappingTests(ScrapperDrainTestCase):
         self.assertTrue(await self.drill_exists(drill_id))
 
     async def test_a_levelled_drill_returns_no_more_than_a_stock_one(self):
-        # Level investment is deliberately not refunded.
+        # An Iron or Steel Drill's level investment is deliberately not
+        # refunded. A gem drill's is, in part - see the next test.
         cheap = await self.add_drill("iron_drill", level=1)
         await self.queue_drill_scrap(cheap)
         await self.set_level(30)
@@ -172,6 +173,18 @@ class DrillScrappingTests(ScrapperDrainTestCase):
 
         for material_id, quantity in stock_yield.items():
             self.assertEqual(await self.quantity(material_id), quantity * 2)
+
+    async def test_a_levelled_gem_drill_pays_back_half_its_upgrade_gems(self):
+        # Level 4 cost 1 + 2 + 4 rubies in upgrades; half of 7, rounded down.
+        drill_id = await self.add_drill("ruby_drill", level=4)
+        await self.queue_drill_scrap(drill_id)
+        await self.set_level(30)
+        await self.tick()
+
+        self.assertFalse(await self.drill_exists(drill_id))
+        self.assertEqual(drill_scrap_yield("ruby_drill", 4)["ruby"], 3)
+        for material_id, quantity in drill_scrap_yield("ruby_drill", 4).items():
+            self.assertEqual(await self.quantity(material_id), quantity)
 
     async def test_draining_the_same_job_twice_deletes_one_drill(self):
         """The locked_job_id match in the DELETE is what makes this idempotent.

@@ -667,27 +667,47 @@ BASE_STORAGE_CAPACITY = 100
 # second mechanism: each level adds a constant amount to a growing total, so the
 # gain reads as +1/5, +1/6, +1/7 ... (20%, 16.7%, 14.3%) as the levels climb.
 #
-# As of 1.4.2 that holds for the Iron and Steel Drills only. A gem-tier drill's
-# level adds HALF its base (GEM_LEVEL_RATE_ANCHOR), because at a fifth its
-# upgrade was never the best use of the gem it costs. Gems are essentially the
-# whole cost of a gem-tier drill (see scrap_yield), so count in gems, with b the
-# drill's base rate. A level-1 upgrade costs one gem and adds b/5. A new drill
-# of the same tier costs three, in its bit: in an empty slot it adds b, or b/3
+# That holds for the Iron and Steel Drills only. A gem-tier drill's level adds
+# its WHOLE base (GEM_LEVEL_RATE_ANCHOR, 1.4.3). It was a half in 1.4.2 and the
+# same fifth before that, and both were moved for the same reason: the upgrade
+# was not a good enough use of the gem it costs.
+#
+# Against a drill of the SAME tier, count in gems, which are essentially the
+# whole cost of a gem-tier drill (see scrap_yield), with b the drill's base
+# rate. A new drill costs three, in its bit: in an empty slot it adds b, or b/3
 # per gem, and in place of a drill from the tier below - every gem tier is four
 # times the one under it, Steel to Ruby included - it adds 3b/4, or b/4 per
-# gem. Both beat b/5, so a gem was always better spent on another drill until
-# every slot already held that tier.
+# gem. At a fifth the first upgrade (one gem for b/5) lost to both, so a gem
+# was always better spent on another drill. At a half it beat both, but the
+# second (two gems for b/2) only tied the replacement. At the whole base the
+# first (b a gem) and second (b/2) beat both, the third (four gems, b/4) ties
+# the replacement and the fourth loses: level a gem drill three times, then
+# build the next one.
 #
-# At a half, the first upgrade (b/2) beats both, and the second (two gems for
-# b/2) ties the replacement at b/4 a gem: level a gem drill twice, then build
-# the next one. tests/test_drills.py: GemUpgradeIsWorthItsGemTests pins that
-# shape. The gain still diminishes the same way, +1/2, +1/3, +1/4 (50%, 33.3%,
-# 25%). Iron and Steel were left at a fifth: their chassis and wiring are a
-# large share of what their drill costs (raw_input_cost), not a rounding error
-# beside the bit, so counting in bits says nothing about them. docs/mining.txt
-# has the same argument at more length.
+# Against a drill of the tier BELOW, which is what a half did not fix, count in
+# mining instead: a gem is worth the mining it takes to turn one up, 1 / its
+# drop_chance, so an obsidian is ten rubies and a diamond nine obsidian (the
+# ratio a mining affinity converts at). Each tier mines four times the one
+# below it but its gem is nine or ten times rarer, so at a half an Obsidian or
+# Diamond Drill's first upgrade added less speed for the mining it cost than a
+# NEW drill of the tier below in an empty slot. At the whole base it adds more.
+# tests/test_drills.py: GemUpgradeIsWorthItsGemTests pins both comparisons.
+#
+# What that gave up, knowingly (the owner's decision, 1.4.3): since 1.2.1 a new
+# drill of a tier had been cheaper than levelling the tier below up to match
+# its speed. A Ruby Drill now matches a level 1 Obsidian Drill at level 4, and
+# an Obsidian Drill a level 1 Diamond Drill likewise, for far less. The rule
+# that replaced it is that the higher tier wins from its SECOND level: a level
+# 2 Obsidian or Diamond Drill outmines any drill of the tier below that cost no
+# more mining than it did. TheHigherTierWinsFromItsSecondLevelTests pins that.
+#
+# The gain still diminishes on its own, +1/1, +1/2, +1/3 (100%, 50%, 33.3%).
+# Iron and Steel were left at a fifth: their chassis and wiring are a large
+# share of what their drill costs (raw_input_cost), not a rounding error beside
+# the bit, so counting in bits says nothing about them. docs/mining.txt has the
+# same argument at more length.
 LEVEL_RATE_ANCHOR = 5
-GEM_LEVEL_RATE_ANCHOR = 2
+GEM_LEVEL_RATE_ANCHOR = 1
 
 # What one level-up consumes, on top of the upgrade packs. Ore-tier drills pay
 # in their smelted material; gem-tier drills pay in their gem - 1 as of
@@ -751,10 +771,10 @@ DRILL_SCRAP_JOB_TARGET = "drill_scrap"
 #
 # The consequence worth being clear-eyed about is that gem timing is now purely
 # a function of investment, with no floor under it. Days to drain a bag, at
-# 1.4.2's rates (effective_rate):
+# 1.4.3's rates (effective_rate):
 #
 #     5 members, 3x Iron Drill Lv.1          1,800/day     556 days
-#     5 members, 3x Diamond Drill Lv.3     345,600/day     2.9 days
+#     5 members, 3x Diamond Drill Lv.3     518,400/day     1.9 days
 #     200 members, 3x Iron Drill Lv.1       72,000/day      14 days
 #     1 member, 3x Iron Drill Lv.1             360/day   2,778 days
 #
@@ -1025,7 +1045,7 @@ def effective_rate(drill_type: str, level: int) -> float:
     """A drill's mining rate in items per hour at the given level - its base
     rate scaled by its level_rate_anchor's ladder, so every type in a group
     gains the same proportion per level: the Iron Drill's fifth for Iron and
-    Steel, a half for the gem tiers.
+    Steel, the whole base for the gem tiers.
 
     Written as one rational expression rather than `base * (1 + 0.2 * (level -
     1))` because 0.2 has no exact binary representation: on many type/level
@@ -1715,7 +1735,20 @@ def scrap_yield(material_id: str) -> dict[str, int]:
     return {i: q for i, q in out.items() if q > 0}
 
 
-def drill_scrap_yield(drill_id: str) -> dict[str, int]:
+def upgrade_gems_spent(drill_type: str, level: int) -> dict[str, int]:
+    """The gemstones that went into levelling a drill of this type from 1 up
+    to `level` - upgrade_cost summed over every level it has left behind, gems
+    only. Empty for a level 1 drill and for Iron and Steel, whose upgrades cost
+    no gem."""
+    spent: dict[str, int] = {}
+    for past_level in range(1, level):
+        for material_id, quantity in upgrade_cost(drill_type, past_level).items():
+            if material_id in GEMSTONES:
+                spent[material_id] = spent.get(material_id, 0) + quantity
+    return spent
+
+
+def drill_scrap_yield(drill_id: str, level: int = 1) -> dict[str, int]:
     """What /scrapper drill actually pays out for one drill - different from,
     and used instead of, plain scrap_yield(drill_id).
 
@@ -1732,6 +1765,10 @@ def drill_scrap_yield(drill_id: str) -> dict[str, int]:
     is kept whole and added on top - it isn't a shared drill part, so there is
     no reuse to prevent - which is also what makes this return strictly more
     than scrap_yield(drill_id)'s single guaranteed unit did.
+
+    `level` is the drill's level, and matters only for a gem drill: see the
+    refund at the bottom. Left at 1 this is what a stock drill returns, which
+    is what the recipe book shows.
     """
     inputs = DRILLS[drill_id]["inputs"]
     bit_id = next(i for i in inputs if i not in ("wiring", "drill_chassis"))
@@ -1741,6 +1778,18 @@ def drill_scrap_yield(drill_id: str) -> dict[str, int]:
         for material_id, quantity in scrap_yield(component_id).items():
             out[material_id] = out.get(material_id, 0) + quantity * inputs[component_id]
     out[bit_id] = out.get(bit_id, 0) + inputs[bit_id]
+
+    # A levelled GEM drill also gives back the gems its levels cost (1.4.3), by
+    # scrap_yield's own rule for a gem: half, rounded down, and never less than
+    # one. Before, they were simply gone - the bit came back whole and nothing
+    # of the levels did, so a drill a player meant to replace with the next
+    # tier was a drill not worth levelling. The upgrade packs and an Iron or
+    # Steel Drill's bars are not returned; DrillScrappingTests in
+    # tests/test_scrapper_db.py pins that a levelled Iron Drill still pays out
+    # what a level 1 one does. max(1, floor(q / 2)) <= q, so the refund never
+    # exceeds what was spent and levelling a drill to scrap it gains nothing.
+    for gem_id, spent in upgrade_gems_spent(drill_id, level).items():
+        out[gem_id] = out.get(gem_id, 0) + max(1, int(spent * SCRAP_RETURN_RATE))
     return out
 
 

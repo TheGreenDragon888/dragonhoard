@@ -20,6 +20,8 @@ from data.materials import (
     UPGRADE_MATERIALS,
     SCRAP_RETURN_RATE,
     drill_scrap_yield,
+    upgrade_cost,
+    upgrade_gems_spent,
     raw_input_cost,
     scrap_yield,
     scrapper_rate,
@@ -176,6 +178,54 @@ class DrillScrapYieldTests(unittest.TestCase):
         for drill_id in DRILLS:
             with self.subTest(drill=drill_id):
                 self.assertGreater(len(drill_scrap_yield(drill_id)), len(scrap_yield(drill_id)))
+
+
+class LevelledGemDrillScrapTests(unittest.TestCase):
+    """drill_scrap_yield's level argument (1.4.3): a levelled gem drill gives
+    back half the gems its levels cost, rounded down and never less than one -
+    scrap_yield's own rule for a gem - on top of what a level 1 drill returns."""
+
+    GEM_DRILLS = {"ruby_drill": "ruby", "obsidian_drill": "obsidian", "diamond_drill": "diamond"}
+
+    def test_a_level_one_drill_returns_what_it_always_did(self):
+        for drill_id in DRILLS:
+            with self.subTest(drill=drill_id):
+                self.assertEqual(drill_scrap_yield(drill_id, 1), drill_scrap_yield(drill_id))
+                self.assertEqual(upgrade_gems_spent(drill_id, 1), {})
+
+    def test_what_was_spent_is_the_upgrade_costs_added_up(self):
+        for drill_id, gem_id in self.GEM_DRILLS.items():
+            with self.subTest(drill=drill_id):
+                self.assertEqual(
+                    upgrade_gems_spent(drill_id, 4),
+                    {gem_id: sum(upgrade_cost(drill_id, level)[gem_id] for level in (1, 2, 3))},
+                )
+
+    def test_a_levelled_gem_drill_returns_half_its_upgrade_gems(self):
+        for drill_id, gem_id in self.GEM_DRILLS.items():
+            stock = drill_scrap_yield(drill_id)
+            for level in range(2, 9):
+                with self.subTest(drill=drill_id, level=level):
+                    spent = upgrade_gems_spent(drill_id, level)[gem_id]
+                    expected = dict(stock)
+                    expected[gem_id] = max(1, spent // 2)
+                    self.assertEqual(drill_scrap_yield(drill_id, level), expected)
+
+    def test_the_refund_never_exceeds_what_the_levels_cost(self):
+        # The same safety property scrap_yield has: levelling a drill in order
+        # to scrap it must never come out ahead.
+        for drill_id, gem_id in self.GEM_DRILLS.items():
+            for level in range(2, 12):
+                with self.subTest(drill=drill_id, level=level):
+                    self.assertLessEqual(
+                        drill_scrap_yield(drill_id, level)[gem_id],
+                        upgrade_gems_spent(drill_id, level)[gem_id],
+                    )
+
+    def test_iron_and_steel_levels_return_nothing(self):
+        for drill_id in ("iron_drill", "steel_drill"):
+            with self.subTest(drill=drill_id):
+                self.assertEqual(drill_scrap_yield(drill_id, 9), drill_scrap_yield(drill_id))
 
 
 class ScrappableListTests(unittest.TestCase):

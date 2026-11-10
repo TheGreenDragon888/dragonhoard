@@ -357,7 +357,7 @@ class ScrapperCog(commands.Cog):
             ),
         )
         embed.add_field(
-            name="You'll Get Back", value=describe_cost(drill_scrap_yield(row["drill_type"])), inline=False
+            name="You'll Get Back", value=describe_cost(drill_scrap_yield(row["drill_type"], row["level"])), inline=False
         )
         if fee_total > 0:
             embed.add_field(
@@ -381,7 +381,7 @@ class ScrapperCog(commands.Cog):
         embed.add_field(
             name="This Is Permanent",
             value=(
-                "The drill is destroyed when the job finishes, losing its level. "
+                "The drill is destroyed when the job finishes, and its levels with it. "
                 "It can't be placed or modified in the meantime."
             ),
             inline=False,
@@ -479,7 +479,7 @@ class ScrapperCog(commands.Cog):
                 async with self.db.transaction() as tx:
                     job = await tx.fetchone(
                         """
-                        SELECT pj.*, d.drill_type
+                        SELECT pj.*, d.drill_type, d.level AS drill_level
                         FROM production_jobs pj
                         LEFT JOIN drills d ON d.drill_id = pj.target_drill_id
                         WHERE pj.guild_id = ? AND pj.job_type = 'scrapper' AND pj.status != 'complete'
@@ -536,7 +536,7 @@ class ScrapperCog(commands.Cog):
                                 (job["target_drill_id"], job["job_id"]),
                             )
                             if deleted and job["drill_type"] is not None:
-                                for material_id, quantity in drill_scrap_yield(job["drill_type"]).items():
+                                for material_id, quantity in drill_scrap_yield(job["drill_type"], job["drill_level"]).items():
                                     await adjust_user_quantity(
                                         tx, job["user_id"], material_id, quantity
                                     )

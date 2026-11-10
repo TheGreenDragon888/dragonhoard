@@ -14,6 +14,7 @@ from data.materials import (
     GEMSTONES,
     GEM_LEVEL_RATE_ANCHOR,
     LEVEL_RATE_ANCHOR,
+    RAW_MATERIALS,
     STORAGE_CONTAINERS,
     UPGRADE_MATERIALS,
     advance_harvest,
@@ -46,9 +47,9 @@ class EffectiveRateTests(unittest.TestCase):
                     base * (anchor + level - 1) / anchor,
                 )
 
-    def test_iron_and_steel_add_a_fifth_and_gem_drills_a_half(self):
+    def test_iron_and_steel_add_a_fifth_and_gem_drills_the_whole_base(self):
         self.assertEqual(LEVEL_RATE_ANCHOR, 5)
-        self.assertEqual(GEM_LEVEL_RATE_ANCHOR, 2)
+        self.assertEqual(GEM_LEVEL_RATE_ANCHOR, 1)
         self.assertEqual(
             {drill_type: level_rate_anchor(drill_type) for drill_type in DRILLS},
             {
@@ -90,9 +91,9 @@ class EffectiveRateTests(unittest.TestCase):
         # - a 9.000000000000002 items/hour reaches an embed as "9.000000000000002".
         self.assertEqual(effective_rate("steel_drill", 2), 9)
         self.assertEqual(effective_rate("steel_drill", 3), 10.5)
-        self.assertEqual(effective_rate("ruby_drill", 2), 45)
-        self.assertEqual(effective_rate("obsidian_drill", 2), 180)
-        self.assertEqual(effective_rate("diamond_drill", 4), 1200)
+        self.assertEqual(effective_rate("ruby_drill", 2), 60)
+        self.assertEqual(effective_rate("obsidian_drill", 2), 240)
+        self.assertEqual(effective_rate("diamond_drill", 4), 1920)
 
 
 class EffectiveCapacityTests(unittest.TestCase):
@@ -177,20 +178,42 @@ class UpgradeCostTests(unittest.TestCase):
 
 
 class GemUpgradeIsWorthItsGemTests(unittest.TestCase):
-    """Why a gem-tier level adds half its drill's base rate rather than a
-    fifth (data/materials.py: GEM_LEVEL_RATE_ANCHOR, 1.4.2). Counted in gems,
-    which are essentially the whole cost of a gem-tier drill, a gem can go into
-    an upgrade or towards the bit of another drill of the same tier. The first
-    upgrade has to be the better buy, and the second no worse than a new drill
-    that replaces one from the tier below - level twice, then build. At a fifth
-    the first upgrade lost to both, so nobody levelled a gem drill.
+    """Why a gem-tier level adds its drill's whole base rate (data/materials.py:
+    GEM_LEVEL_RATE_ANCHOR, 1.4.3; a half in 1.4.2 and a fifth before it). The
+    gem an upgrade costs could have bought two other things, and the upgrade
+    has to hold up against both.
 
-    Everything is read off the recipes and effective_rate rather than written
-    in, so a retune that breaks the shape fails here."""
+    Another drill of the same tier, counted in gems, which are essentially the
+    whole cost of a gem-tier drill: the first two upgrades have to beat a new
+    drill, the third be no worse than one that replaces a drill from the tier
+    below, and the fourth lose - level three times, then build. At a half the
+    second only tied.
+
+    A drill of the tier below, counted in the mining it takes to turn a gem up
+    (1 / drop_chance): an Obsidian or Diamond Drill's first upgrade has to add
+    more speed for the mining it cost than a new drill of the tier below in an
+    empty slot. At a half it added less.
+
+    Everything is read off the recipes, the drop chances and effective_rate
+    rather than written in, so a retune that breaks the shape fails here."""
 
     @staticmethod
     def _gems(recipe):
         return sum(quantity for material_id, quantity in recipe.items() if material_id in GEMSTONES)
+
+    @staticmethod
+    def _mining(recipe):
+        """A recipe's gems as the items of mining it takes to turn them up."""
+        return sum(
+            quantity / RAW_MATERIALS[material_id]["drop_chance"]
+            for material_id, quantity in recipe.items()
+            if material_id in GEMSTONES
+        )
+
+    @staticmethod
+    def _bit_recipe(drill_type):
+        bit_id = next(i for i in DRILLS[drill_type]["inputs"] if i.endswith("_drill_bit"))
+        return get_material_info(bit_id)["inputs"]
 
     def _gem_drills(self):
         return [d for d in DRILLS if self._gems(upgrade_cost(d, 1))]
@@ -198,8 +221,7 @@ class GemUpgradeIsWorthItsGemTests(unittest.TestCase):
     def _rate_per_gem(self, drill_type):
         tiers = list(DRILLS)
         below = tiers[tiers.index(drill_type) - 1]
-        bit_id = next(i for i in DRILLS[drill_type]["inputs"] if i.endswith("_drill_bit"))
-        bit_gems = self._gems(get_material_info(bit_id)["inputs"])
+        bit_gems = self._gems(self._bit_recipe(drill_type))
         base = effective_rate(drill_type, 1)
         return {
             "empty_slot": base / bit_gems,
@@ -207,34 +229,100 @@ class GemUpgradeIsWorthItsGemTests(unittest.TestCase):
             "upgrades": [
                 (effective_rate(drill_type, level + 1) - effective_rate(drill_type, level))
                 / self._gems(upgrade_cost(drill_type, level))
-                for level in (1, 2, 3)
+                for level in (1, 2, 3, 4)
             ],
         }
 
     def test_the_gem_drills_are_the_three_gem_tiers(self):
         self.assertEqual(self._gem_drills(), ["ruby_drill", "obsidian_drill", "diamond_drill"])
 
-    def test_the_first_upgrade_is_the_best_use_of_a_gem(self):
+    def test_the_first_two_upgrades_are_the_best_use_of_a_gem(self):
         for drill_type in self._gem_drills():
-            with self.subTest(drill_type=drill_type):
-                per_gem = self._rate_per_gem(drill_type)
-                self.assertGreater(per_gem["upgrades"][0], per_gem["empty_slot"])
-                self.assertGreater(per_gem["upgrades"][0], per_gem["replacing"])
+            for upgrade in (0, 1):
+                with self.subTest(drill_type=drill_type, upgrade=upgrade + 1):
+                    per_gem = self._rate_per_gem(drill_type)
+                    self.assertGreater(per_gem["upgrades"][upgrade], per_gem["empty_slot"])
+                    self.assertGreater(per_gem["upgrades"][upgrade], per_gem["replacing"])
 
-    def test_the_second_upgrade_is_no_worse_than_replacing_a_lower_tier_drill(self):
+    def test_the_third_upgrade_is_no_worse_than_replacing_a_lower_tier_drill(self):
         for drill_type in self._gem_drills():
             with self.subTest(drill_type=drill_type):
                 per_gem = self._rate_per_gem(drill_type)
-                self.assertGreaterEqual(per_gem["upgrades"][1], per_gem["replacing"])
+                self.assertGreaterEqual(per_gem["upgrades"][2], per_gem["replacing"])
 
-    def test_the_third_upgrade_loses_to_building_the_next_drill(self):
-        # The other end of "level twice, then build": the doubling cost is still
-        # the brake, so a gem drill isn't worth levelling forever instead of
-        # building more of them.
+    def test_the_fourth_upgrade_loses_to_building_the_next_drill(self):
+        # The other end of "level three times, then build": the doubling cost
+        # is still the brake, so a gem drill isn't worth levelling forever
+        # instead of building more of them.
         for drill_type in self._gem_drills():
             with self.subTest(drill_type=drill_type):
                 per_gem = self._rate_per_gem(drill_type)
-                self.assertLess(per_gem["upgrades"][2], per_gem["replacing"])
+                self.assertLess(per_gem["upgrades"][3], per_gem["replacing"])
+
+    def test_the_first_upgrade_beats_a_new_drill_of_the_tier_below(self):
+        # The Ruby Drill is left out: the tier below it is the Steel Drill,
+        # which costs no gem to compare with.
+        tiers = self._gem_drills()
+        for below, drill_type in zip(tiers, tiers[1:]):
+            with self.subTest(drill_type=drill_type):
+                upgrade = (
+                    effective_rate(drill_type, 2) - effective_rate(drill_type, 1)
+                ) / self._mining(upgrade_cost(drill_type, 1))
+                new_drill_below = effective_rate(below, 1) / self._mining(self._bit_recipe(below))
+                self.assertGreater(upgrade, new_drill_below)
+
+
+class TheHigherTierWinsFromItsSecondLevelTests(unittest.TestCase):
+    """What replaced, between gem tiers, the 1.2.1 rule in
+    BuyingTheNewTierIsCheaperThanUpgradingTests below. With a gem level worth
+    the whole base rate (1.4.3) a drill reaches the next tier's level 1 speed
+    at level 4, for much less than that tier's bit, so "a new drill is cheaper
+    than levelling up to match it" is no longer true and was knowingly given
+    up. What still makes the next tier worth building is that it pulls ahead
+    as soon as it is levelled.
+
+    Cost is the gems in the bit plus every upgrade, as the mining it takes to
+    turn them up (1 / drop_chance) - gems of different kinds have no price in
+    common otherwise."""
+
+    UPPER = {"obsidian_drill": "ruby_drill", "diamond_drill": "obsidian_drill"}
+
+    @staticmethod
+    def _mining_cost(drill_type, level):
+        gem = next(m for m in upgrade_cost(drill_type, 1) if m in GEMSTONES)
+        bit_id = next(i for i in DRILLS[drill_type]["inputs"] if i.endswith("_drill_bit"))
+        gems = get_material_info(bit_id)["inputs"][gem] + sum(
+            upgrade_cost(drill_type, past)[gem] for past in range(1, level)
+        )
+        return gems / RAW_MATERIALS[gem]["drop_chance"]
+
+    def _best_rate_below(self, below, budget):
+        level = 1
+        while self._mining_cost(below, level + 1) <= budget:
+            level += 1
+        return effective_rate(below, level)
+
+    def test_a_level_two_drill_outmines_anything_the_tier_below_buys_for_the_same(self):
+        for drill_type, below in self.UPPER.items():
+            for level in range(2, 8):
+                with self.subTest(drill_type=drill_type, level=level):
+                    budget = self._mining_cost(drill_type, level)
+                    self.assertGreater(
+                        effective_rate(drill_type, level),
+                        self._best_rate_below(below, budget),
+                    )
+
+    def test_a_level_one_drill_does_not(self):
+        # The dip docs/mining.txt describes: a new drill of the next tier is
+        # behind the levelled drill its gems could have paid for until its own
+        # first upgrade. Pinned so that the claim above is not read as
+        # covering level 1.
+        for drill_type, below in self.UPPER.items():
+            with self.subTest(drill_type=drill_type):
+                budget = self._mining_cost(drill_type, 1)
+                self.assertLess(
+                    effective_rate(drill_type, 1), self._best_rate_below(below, budget)
+                )
 
 
 class BuyingTheNewTierIsCheaperThanUpgradingTests(unittest.TestCase):
@@ -249,7 +337,13 @@ class BuyingTheNewTierIsCheaperThanUpgradingTests(unittest.TestCase):
     This was a close call for Ruby specifically: at the originally proposed
     15/30/60, buying a new Ruby Drill cost about 123x MORE than levelling a
     Steel Drill to match, because raw_input_cost prices a ruby at 5,500 and a
-    Ruby Drill bit alone needs three. 30/60/120 was chosen so this reverses."""
+    Ruby Drill bit alone needs three. 30/60/120 was chosen so this reverses.
+
+    As of 1.4.3 this holds for the Ruby Drill over the Steel Drill only. Between
+    gem tiers it was given up when a gem level became worth the whole base
+    rate; TheHigherTierWinsFromItsSecondLevelTests above is the rule that
+    replaced it there, and test_levelling_a_gem_drill_to_match_is_now_cheaper
+    pins that the old one really is gone rather than merely untested."""
 
     def _upgrade_path_value(self, drill_type: str, target_rate: float) -> float:
         level = 1
@@ -270,8 +364,6 @@ class BuyingTheNewTierIsCheaperThanUpgradingTests(unittest.TestCase):
     def test_each_gem_tier_drill_is_cheaper_than_levelling_the_previous_tier_to_match(self):
         precedents = {
             "ruby_drill": "steel_drill",
-            "obsidian_drill": "ruby_drill",
-            "diamond_drill": "obsidian_drill",
         }
         for new_tier, precedent in precedents.items():
             with self.subTest(new_tier=new_tier):
@@ -279,6 +371,15 @@ class BuyingTheNewTierIsCheaperThanUpgradingTests(unittest.TestCase):
                 upgrade_value = self._upgrade_path_value(precedent, target_rate)
                 new_drill_value = self._new_drill_value(new_tier)
                 self.assertLess(new_drill_value, upgrade_value)
+
+    def test_levelling_a_gem_drill_to_match_is_now_cheaper(self):
+        for new_tier, precedent in {
+            "obsidian_drill": "ruby_drill",
+            "diamond_drill": "obsidian_drill",
+        }.items():
+            with self.subTest(new_tier=new_tier):
+                upgrade_value = self._upgrade_path_value(precedent, effective_rate(new_tier, 1))
+                self.assertLess(upgrade_value, self._new_drill_value(new_tier))
 
 
 class AdvanceHarvestTests(unittest.TestCase):
@@ -309,7 +410,7 @@ class AdvanceHarvestTests(unittest.TestCase):
         # Percentage levelling puts drills on fractional rates whenever a
         # type's base isn't a multiple of its level_rate_anchor - steel (7.5,
         # anchor 5) is on a half at every odd level. Every gem-tier base
-        # (30/120/480 as of 1.3) is even, and their anchor is 2 as of 1.4.2, so
+        # (30/120/480 as of 1.3) is whole, and their anchor is 1 as of 1.4.3, so
         # steel is still the only drill type this can happen to; see
         # test_every_drill_and_level_averages_to_its_stated_rate below for the
         # generic (fractional-or-not) correctness check.

@@ -57,6 +57,42 @@ def _add(version: ChangelogVersion):
 
 
 _add(ChangelogVersion(
+    version="1.4.3",
+    released="2026-11-10",
+    emoji="\U0001F48E",
+    color=MINING_COLOR,
+    summary="Gem drill levels add the drill's whole base speed, and scrapping one returns upgrade gems",
+    headline=(
+        "Levelling a Ruby, Obsidian or Diamond Drill now adds its whole base speed each "
+        "time, and scrapping a levelled one gives back half the gems its levels cost."
+    ),
+    entries=(
+        ChangelogEntry(
+            "\U0001F48E Gem Drill Levels Add The Whole Base Speed",
+            "Each level on a Ruby, Obsidian or Diamond Drill now adds **all** of that drill's "
+            "base speed instead of half - a Ruby Drill goes 30, 60, 90 an hour where it went "
+            "30, 45, 60. Drills you have already levelled speed up straight away. Iron and "
+            "Steel Drills are unchanged, and so is what an upgrade costs: one pack and one gem, "
+            "doubling every level.\n\n"
+            "A gem drill's first two levels are now a better use of a gem than building "
+            "another drill of that type, and its third is as good as building one to replace "
+            "an older drill. An Obsidian or Diamond Drill's first level also does more for "
+            "what it costs than a new drill of the tier below.\n\n"
+            "One thing to plan around: a well-levelled drill can outmine a brand new drill of "
+            "the next tier, which pulls ahead again from its own first upgrade.",
+        ),
+        ChangelogEntry(
+            "\u267B\uFE0F Scrapping A Gem Drill Returns Upgrade Gems",
+            "`/scrapper drill` on a levelled Ruby, Obsidian or Diamond Drill now gives back "
+            "**half the gems its levels cost**, rounded down but never less than one, on top "
+            "of its bit. Upgrade packs are not returned, and a levelled Iron or Steel Drill "
+            "still comes back as the same parts as a level 1.",
+        ),
+    ),
+))
+
+
+_add(ChangelogVersion(
     version="1.4.2",
     released="2026-10-11",
     emoji="\U0001F48E",

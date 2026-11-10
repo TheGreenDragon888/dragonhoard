@@ -348,9 +348,9 @@ CREATE TABLE IF NOT EXISTS drills (
     guild_id         INTEGER,                       -- NULL = unplaced, in inventory
     owner_id         INTEGER NOT NULL,
     drill_type       TEXT NOT NULL,
-    -- Each level past 1 adds a fifth of the drill type's base mining rate, so
-    -- an upgrade is worth the same proportion at every tier (LEVEL_RATE_ANCHOR
-    -- in data/materials.py).
+    -- Each level past 1 adds a share of the drill type's base mining rate: a
+    -- fifth on an Iron or Steel Drill, the whole of it on a gem drill
+    -- (level_rate_anchor in data/materials.py).
     level            INTEGER NOT NULL DEFAULT 1,
     container_type   TEXT,                          -- NULL = no container attached
     stored_amount    INTEGER NOT NULL DEFAULT 0,    -- raw materials waiting for /collect

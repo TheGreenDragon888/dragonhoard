@@ -194,8 +194,8 @@ _add(ManualSection(
         "drills, the pool and the currency belong to a particular server.\n\n"
         "Better drill types mine faster, and every level you add to a drill makes it faster "
         "still. On an Iron or Steel Drill a level adds a fifth of that drill's own base "
-        "speed; on a Ruby, Obsidian or Diamond Drill it adds half, because those upgrades "
-        "cost a gem. Drills are crafted and upgraded in the Factory."
+        "speed; on a Ruby, Obsidian or Diamond Drill it adds the whole of it, because those "
+        "upgrades cost a gem. Drills are crafted and upgraded in the Factory."
     ),
     commands=(
         ManualCommand(
@@ -419,8 +419,8 @@ _add(ManualSection(
         "finishes - so pull it out with `/mine remove` first, and expect it to be out of "
         "action for a while. Each level costs an Upgrade Pack plus that drill's own tier "
         "material, and the cost doubles with every level, so early levels are cheap and "
-        "late ones are a project. Each one adds a fifth of the drill's base speed, or half "
-        "on a Ruby, Obsidian or Diamond Drill.\n\n"
+        "late ones are a project. Each one adds a fifth of the drill's base speed, or all of "
+        "it on a Ruby, Obsidian or Diamond Drill.\n\n"
         "The factory crafts faster with every fee paid into it, and levels up as they add up."
     ),
     commands=(
@@ -779,8 +779,9 @@ _add(ManualSection(
         "from (10 iron, 12 copper, whichever drill it is) - never a spare chassis or wiring you "
         "could put toward another drill for free.\n\n"
         "Two things are worth knowing before you commit. **A drill loses its levels** - a "
-        "Level 8 drill comes back as exactly the same parts as a Level 1, so upgrade the drill "
-        "you mean to keep. And **you never lose a gemstone to it**: the scrapper always returns "
+        "Level 8 Iron or Steel Drill comes back as exactly the same parts as a Level 1, so "
+        "upgrade the drill you mean to keep. A levelled Ruby, Obsidian or Diamond Drill does "
+        "give back half the gems its levels cost, rounded down but never less than one. And **you never lose a gemstone to it**: the scrapper always returns "
         "at least one of a recipe's most valuable part, so a Ruby Container gives its ruby "
         "back.\n\n"
         "Like the other machines it takes a fee, works through a queue, and gets faster on "
@@ -811,7 +812,8 @@ _add(ManualSection(
     notes=(
         (
             "This is permanent",
-            "A scrapped drill is gone, along with every level you put into it. The scrapper "
+            "A scrapped drill is gone, along with every level you put into it - a gem drill "
+            "returns half the gems those levels cost, and nothing else of them. The scrapper "
             "will not stop you.",
         ),
     ),
