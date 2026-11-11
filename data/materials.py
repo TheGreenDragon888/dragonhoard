@@ -1417,7 +1417,7 @@ def recipe_true_inputs(material_id: str) -> dict[str, int]:
 MINING_EFFICIENCIES = {
     "none": {
         "name": "None", "emoji": "⚖️", "produces": None,
-        "blurb": "No boost. Everything you mine arrives exactly as your focus leaves it.",
+        "blurb": "No boost.",
     },
     **{
         material_id: {
@@ -1428,14 +1428,13 @@ MINING_EFFICIENCIES = {
             # read from the recipe itself, so retuning one can't leave the
             # picker quoting the old numbers.
             "blurb": (
-                "Doubles the "
+                "Doubles "
                 + " and ".join(
                     RAW_MATERIALS[raw_id]["name"] for raw_id in recipe_true_inputs(material_id)
                 )
-                + " you collect, then converts a little of whichever you have too much of "
-                + "into the other - toward the "
+                + ", mixed toward the furnace's "
                 + ":".join(str(q) for q in recipe_true_inputs(material_id).values())
-                + f" the furnace wants for {SMELTED_MATERIALS[material_id]['name']}."
+                + "."
             ),
         }
         for material_id in ("iron", "copper", "steel")

@@ -164,44 +164,27 @@ GEM_UNLOCK_NOTICES: dict[str, PersonalNotice] = {
         key="first-ruby",
         title="Your First Ruby",
         body=(
-            "You've found a **Ruby** - and it's worth more than what it builds.\n\n"
-            "Spending one on `/focus` lets you commit your mining to a single ore. "
-            "Everything you would have mined of the others arrives as the one you "
-            "chose instead, so a drill that was pulling a bit of everything starts "
-            "pulling what you actually need.\n\n"
-            "You only ever pay the ruby once. Changing your mind afterwards is free, "
-            "one change a day.\n\n"
-            "Run `/focus` to see what each one does before you spend it."
+            "You've found a **Ruby**! Spending one on `/focus` turns every ore you mine "
+            "into the one you pick. You pay once, then changes are free once a day. Run "
+            "`/focus` to compare the choices."
         ),
     ),
     "obsidian": PersonalNotice(
         key="first-obsidian",
         title="Your First Obsidian",
         body=(
-            "You've found an **Obsidian** - the rarest thing most players will ever "
-            "hold that isn't a diamond.\n\n"
-            "Spending one on `/efficiency` re-proportions what you mine toward a "
-            "single recipe: pick Iron, Copper or Steel and your haul arrives in the "
-            "amounts the furnace actually wants, instead of in whatever the ground "
-            "happened to give you.\n\n"
-            "It stacks with your `/focus`, and like a focus you only pay the gem "
-            "once - changes afterwards are free, one a day.\n\n"
-            "Run `/efficiency` to see what each one does before you spend it."
+            "You've found an **Obsidian**! Spending one on `/efficiency` doubles the ores "
+            "one metal's recipe needs, mixed to waste less. You pay once, then changes are "
+            "free once a day. Run `/efficiency` to compare the choices."
         ),
     ),
     "diamond": PersonalNotice(
         key="first-diamond",
         title="Your First Diamond",
         body=(
-            "You've found a **Diamond** - one in a million, and it unlocks the last "
-            "of the mining enhancements.\n\n"
-            "Spending one on `/affinity` commits your gemstones to a single kind: "
-            "every other gem you mine arrives as the one you chose, at better than "
-            "an even trade. Rubies you'd never have spent become real progress "
-            "toward the gem you actually want.\n\n"
-            "It stacks with your `/focus` and `/efficiency`, and like both you only "
-            "pay the gem once - changes afterwards are free, one a day.\n\n"
-            "Run `/affinity` to see every trade before you spend it."
+            "You've found a **Diamond**! Spending one on `/affinity` turns every gem you "
+            "mine into the one you pick, at better than an even trade. You pay once, then "
+            "changes are free once a day. `/affinity` shows the trades."
         ),
     ),
 }

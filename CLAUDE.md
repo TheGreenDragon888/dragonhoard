@@ -335,8 +335,9 @@ and command descriptions.
 - Short sentences, plain words, "you".
 
 `data/manual.py` and `data/changelog.py` describe their page shapes, and
-`tests/test_manual.py` and `tests/test_changelog.py` cap their word counts. If
-a cap fails, cut words; ask the owner before raising one. None of this applies
+`tests/test_manual.py` and `tests/test_changelog.py` cap their word counts;
+`tests/test_player_text.py` caps any other single message at 40 words. If a
+cap fails, cut words; ask the owner before raising one. None of this applies
 to code comments or `docs/` (see "Writing comments"), or to announcements the
 owner writes in their own voice in `data/notifications.py`.
 

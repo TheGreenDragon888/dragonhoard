@@ -228,11 +228,7 @@ def permanent_material_error(material_id: str) -> str | None:
     """
     if material_id not in PERMANENT_MATERIALS:
         return None
-    return (
-        "Exotic Matter can't be traded. It accrues and is never spent - it's "
-        "reserved for a feature that hasn't been built yet, so there's no "
-        "price anyone is in a position to put on it."
-    )
+    return "Exotic Matter can't be traded, with players or the server."
 
 
 # How long a listing or an order stays on the book (1.4.1). Past it, the sweep

@@ -525,9 +525,9 @@ class BettingCog(commands.Cog):
                     interaction.guild_id,
                     f"🎲 New bet: {prediction}",
                     f"<@{interaction.user.id}> is staking "
-                    f"{format_currency(amount, currency_emoji)} that this happens, and wagers "
-                    f"close {format_relative_timestamp(closes_in)}. Back them or take the other "
-                    f"side with the buttons below, or with `/bet place bet:{bet_id}`.",
+                    f"{format_currency(amount, currency_emoji)} that this happens. Wagers close "
+                    f"{format_relative_timestamp(closes_in)}: take a side with the buttons below "
+                    f"or `/bet place bet:{bet_id}`.",
                     action_key=f"{ACTION_KIND}:{bet_id}",
                 )
                 await _already_seen_by(tx, interaction.user.id, interaction.guild_id, notice_id)

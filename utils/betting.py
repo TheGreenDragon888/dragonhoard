@@ -370,8 +370,8 @@ async def place_wager(
     )
     if existing is not None and existing["side"] != side:
         raise BetUnavailable(
-            f"You are already **{SIDE_LABELS[existing['side']].lower()}** this one, and a side "
-            f"is locked in until the bet resolves. You can add to that side, but not switch."
+            f"You're already **{SIDE_LABELS[existing['side']].lower()}** this one, and sides are "
+            f"locked in: you can add to it, but not switch."
         )
 
     await ensure_user_row(db, user_id)

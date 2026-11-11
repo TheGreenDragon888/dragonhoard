@@ -205,10 +205,9 @@ def queue_full_message(machine: str, room: QueueRoom, unit: str = "item") -> str
     factor of BLAST_FURNACE_BATCH_SIZE and send the player looking for 500
     missing items."""
     return (
-        f"You can only queue up to {room.effective:,} {plural(unit)} worth of "
-        f"{machine_label(machine)} recipes per user at once ({room.base:,} per level, "
-        f"at level {room.level:,}), and you already have {room.queued:,}. "
-        f"Complete some jobs first."
+        f"You can queue up to {room.effective:,} {plural(unit)} on the "
+        f"{machine_label(machine)} ({room.base:,} per level, at level {room.level:,}), and "
+        f"you already have {room.queued:,}. Wait for a job to finish."
     )
 
 
@@ -590,11 +589,9 @@ def mining_slots_full_message(slots: MiningSlots, currency_emoji: str | None) ->
     to know exists - "you already have 3" alone reads as a hard rule of the game
     rather than as something their server can buy its way out of."""
     return (
-        f"You already have all {slots.slots:,} of this server's mining slots filled. "
-        f"The next one unlocks at "
-        f"{format_currency(slots.next_threshold, currency_emoji)} of mining slot progress - "
-        f"this server has {format_currency(slots.progress, currency_emoji)} so far, "
-        f"and every fee its machines charge and every project its Mayor funds adds to that."
+        f"All {slots.slots:,} of your mining slots here are in use. The next one unlocks at "
+        f"{format_currency(slots.next_threshold, currency_emoji)} of mining slot progress; "
+        f"this server has {format_currency(slots.progress, currency_emoji)}."
     )
 
 
@@ -639,12 +636,9 @@ async def announce_mining_slot_unlocks(db: _Executor, guild_id: int) -> int:
         db, guild_id,
         "⛏️ New Mining Slot" if slots_now - mining_slots(cfg["announced"]) == 1 else "⛏️ New Mining Slots",
         f"This server's mining slot progress has passed "
-        f"**{format_currency(mining_slot_threshold(level), cfg['currency_emoji'])}**, "
-        f"and every player here can now keep **{slots_now:,} drills** in the ground "
-        f"instead of {mining_slots(cfg['announced']):,}.\n\n"
-        f"Fees from every machine count toward this, and so does every project the "
-        f"Mayor funds, so anything smelted, crafted, pressed, scrapped or donated "
-        f"paid for it. Use `/mine place` to fill it.",
+        f"**{format_currency(mining_slot_threshold(level), cfg['currency_emoji'])}**, so "
+        f"everyone here can now place **{slots_now:,} drills** instead of "
+        f"{mining_slots(cfg['announced']):,}. Use `/mine place` to fill it.",
     )
     await db.execute(
         "UPDATE server_config SET mining_slots_announced = ? WHERE guild_id = ?",

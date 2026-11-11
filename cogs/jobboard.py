@@ -54,8 +54,7 @@ class JobBoardCog(commands.Cog):
         info = get_material_info(job["material_id"])
         embed = make_embed("📋 Job Board", JOBBOARD_COLOR)
         embed.description = (
-            f"The server is short on {info['emoji']} **{info['name']}** and is paying a bonus "
-            f"for it today, on top of what the market already pays.\n"
+            f"Today's bonus is for {info['emoji']} **{info['name']}**, on top of the market price.\n"
             f"A new job is posted {format_relative_timestamp(hours_until_reset())}."
         )
         embed.add_field(
