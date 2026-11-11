@@ -51,6 +51,16 @@ class GlobalNotice:
 
 GLOBAL_NOTICES: tuple[GlobalNotice, ...] = (
     GlobalNotice(
+        key="1.4.3-update",
+        title="Dragonhoard 1.4.3 — Gemstone Drill Update",
+        body=(
+            "Gemstone drills now earn +100% mining speed for each upgrade they recieve.\n"
+            "Scrapped upgraded gemstone drills will yield helf the gems used to upgrade it.\n\n"
+            "Hope this encourages more single-server gameplay instead of expansionist play styles.\n"
+            "— Isaac"
+        ),
+    ),
+    GlobalNotice(
         key="1.4-update",
         title="Dragonhoard 1.4 — HUGE UPDATE",
         body=(
