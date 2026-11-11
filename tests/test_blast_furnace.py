@@ -161,7 +161,7 @@ class BlastFurnaceRateTests(unittest.TestCase):
         self.assertGreater(self.items_per_hour(1), demand)  # the blast furnace still (barely) keeps up
 
     def test_it_turns_a_pressed_diamond_from_a_season_into_a_fortnight(self):
-        """The feature's reason for existing, in the units the changelog uses."""
+        """The feature's reason for existing, in the days docs/mining.txt quotes."""
         steel = PRESS_RECIPES["diamond"]["inputs"]["steel"]
         self.assertAlmostEqual(steel / furnace_rate(5) / 24, 45.0, places=2)
         self.assertAlmostEqual(steel / self.items_per_hour(1) / 24, 11.25, places=2)

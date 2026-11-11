@@ -33,6 +33,7 @@ from cogs.fun import FunCog
 from data.manual import SECTIONS, DEFAULT_SECTION, build_section_embed
 
 import utils.embeds as embeds
+from utils.embeds import embed_word_count
 
 COGS = (
     SetupCog,
@@ -93,15 +94,6 @@ def documented_commands() -> list[str]:
         for name in (cmd.name, *cmd.aliases)
     ]
 
-
-def page_words(embed: discord.Embed) -> int:
-    """The words a reader sees on one page: its description and every field's
-    name and value. A token with no letter or digit in it - the ` · ` between a
-    command and what it does, a list's leading dash - isn't a word."""
-    parts = [embed.description or ""]
-    for field in embed.fields:
-        parts += [field.name, field.value]
-    return sum(1 for token in " ".join(parts).split() if any(c.isalnum() for c in token))
 
 
 class ManualCoverageTests(unittest.TestCase):
@@ -184,13 +176,13 @@ class ManualEmbedTests(unittest.TestCase):
                 self.assertLessEqual(len(embed.fields), MAX_EMBED_FIELDS)
 
     def test_every_page_stays_short(self):
-        """Measured with page_words at commit e20d50b, the pages came to 5,982
+        """Measured with embed_word_count at commit e20d50b, the pages came to 5,982
         words between them and the Mining page alone to 1,030, before they
         were cut down to fit one phone screen each. This keeps them from
         growing back a sentence at a time."""
         for section in SECTIONS.values():
             with self.subTest(section=section.key):
-                words = page_words(build_section_embed(section))
+                words = embed_word_count(build_section_embed(section))
                 self.assertLessEqual(
                     words, MAX_PAGE_WORDS,
                     f"Section '{section.key}' shows {words} words; the cap is {MAX_PAGE_WORDS}",

@@ -181,3 +181,21 @@ def add_multi_field(embed: discord.Embed, name: str, lines: list[str], inline: b
             chunk_len += added_len
     if chunk_lines:
         embed.add_field(name=name if first else f"{name} (cont.)", value="\n".join(chunk_lines), inline=inline)
+
+
+def word_count(text: str | None) -> int:
+    """How many words a player reads in `text`. A token with no letter or digit
+    in it - the ` · ` between a command and what it does, a list's leading dash
+    - isn't a word. The length caps in tests/test_manual.py,
+    tests/test_changelog.py and tests/test_player_text.py all count with this,
+    so they agree on what a word is."""
+    return sum(1 for token in (text or "").split() if any(c.isalnum() for c in token))
+
+
+def embed_word_count(embed: discord.Embed) -> int:
+    """The words on one embed's page: its description and every field's name
+    and value. The title and the standard footer are left out."""
+    parts = [embed.description or ""]
+    for field in embed.fields:
+        parts += [field.name, field.value]
+    return word_count(" ".join(parts))

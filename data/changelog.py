@@ -10,6 +10,18 @@ list below, plus bumping config.VERSION. Nothing in the cog, the dropdown or
 the choice list needs touching - VERSIONS' insertion order IS display order,
 newest first, so the newest release is what /changelog opens on.
 
+A release note says what changed for players and nothing else (the rules are
+in CLAUDE.md, "Writing text players read"):
+- The headline is one sentence naming the main changes.
+- One entry per change: what changed, with old -> new numbers when a number
+  changed, and what happened to things players already had (refunds, resets,
+  reversals). Why it changed goes in the commit message, not here.
+- Minor changes and fixes are one-line bullets in a single entry.
+- Condense, don't correct: a release describes the game on the day it
+  shipped, so its numbers are typed out rather than read from data/materials.py,
+  and later releases never rewrite its facts.
+tests/test_changelog.py caps the headline, every entry and the whole page.
+
 Notes start at 1.1. Version 1.0 shipped before there was anywhere to write
 them down, and reconstructing it after the fact would be inventing a record
 rather than keeping one.
@@ -59,34 +71,25 @@ def _add(version: ChangelogVersion):
 _add(ChangelogVersion(
     version="1.4.3",
     released="2026-11-10",
-    emoji="\U0001F48E",
+    emoji="💎",
     color=MINING_COLOR,
     summary="Gem drill levels add the drill's whole base speed, and scrapping one returns upgrade gems",
     headline=(
-        "Levelling a Ruby, Obsidian or Diamond Drill now adds its whole base speed each "
-        "time, and scrapping a levelled one gives back half the gems its levels cost."
+        "Gem drill levels now add the drill's whole base speed, and scrapping a levelled gem "
+        "drill returns gems."
     ),
     entries=(
         ChangelogEntry(
-            "\U0001F48E Gem Drill Levels Add The Whole Base Speed",
-            "Each level on a Ruby, Obsidian or Diamond Drill now adds **all** of that drill's "
-            "base speed instead of half - a Ruby Drill goes 30, 60, 90 an hour where it went "
-            "30, 45, 60. Drills you have already levelled speed up straight away. Iron and "
-            "Steel Drills are unchanged, and so is what an upgrade costs: one pack and one gem, "
-            "doubling every level.\n\n"
-            "A gem drill's first two levels are now a better use of a gem than building "
-            "another drill of that type, and its third is as good as building one to replace "
-            "an older drill. An Obsidian or Diamond Drill's first level also does more for "
-            "what it costs than a new drill of the tier below.\n\n"
-            "One thing to plan around: a well-levelled drill can outmine a brand new drill of "
-            "the next tier, which pulls ahead again from its own first upgrade.",
+            "💎 Gem Drill Levels Add The Whole Base Speed",
+            "Each Ruby, Obsidian or Diamond Drill level now adds the drill's whole base speed, "
+            "not half: a Ruby Drill goes 30, 60, 90 an hour (was 30, 45, 60). Drills already "
+            "levelled speed up too. Iron and Steel Drills and upgrade costs are unchanged.",
         ),
         ChangelogEntry(
-            "\u267B\uFE0F Scrapping A Gem Drill Returns Upgrade Gems",
-            "`/scrapper drill` on a levelled Ruby, Obsidian or Diamond Drill now gives back "
-            "**half the gems its levels cost**, rounded down but never less than one, on top "
-            "of its bit. Upgrade packs are not returned, and a levelled Iron or Steel Drill "
-            "still comes back as the same parts as a level 1.",
+            "♻️ Scrapping A Gem Drill Returns Upgrade Gems",
+            "`/scrapper drill` on a levelled Ruby, Obsidian or Diamond Drill now also returns "
+            "**half the gems its levels cost**, rounded down but at least one. Upgrade packs "
+            "aren't returned, and Iron and Steel Drills are unchanged.",
         ),
     ),
 ))
@@ -95,78 +98,49 @@ _add(ChangelogVersion(
 _add(ChangelogVersion(
     version="1.4.2",
     released="2026-10-11",
-    emoji="\U0001F48E",
+    emoji="💎",
     color=MINING_COLOR,
     summary="Stronger gem drills, a Market Tax, /bet close, bigger bonds, easier containers, a fairer GDP line",
     headline=(
-        "Levelling up a gem drill is now worth the gem it costs. The Treasurer gets a second "
-        "rate to set, bets can close early, bonds come bigger and pay off one at a time, "
-        "containers go on and come off with your drills, and `/economy gdp` stops calling "
-        "self-sufficient servers importers."
+        "Gem drill levels count for more, the Treasurer can set a Market Tax, and bets can "
+        "close early."
     ),
     entries=(
         ChangelogEntry(
-            "\U0001F48E Gem Drill Levels Count For More",
-            "Each level on a Ruby, Obsidian or Diamond Drill now adds **half** of that drill's "
-            "base speed instead of a fifth - a Ruby Drill goes 30, 45, 60 an hour where it "
-            "used to go 30, 36, 42. Drills you have already levelled speed up straight away. "
-            "Iron and Steel Drills are unchanged, and so is what an upgrade costs: one pack "
-            "and one gem, doubling every level.\n\n"
-            "Before, a gem always did more good towards another drill than in an upgrade. Now "
-            "a drill's first level is the best thing a gem can buy, and its second is as good "
-            "as building a new drill to replace an older one. Faster gem drills also empty "
-            "your server's mining pool faster, so they take a bigger share of the gems in it.",
+            "💎 Gem Drill Levels Count For More",
+            "Each Ruby, Obsidian or Diamond Drill level now adds half the drill's base speed, "
+            "not a fifth: a Ruby Drill goes 30, 45, 60 an hour (was 30, 36, 42). Drills already "
+            "levelled speed up too. Iron and Steel Drills and upgrade costs are unchanged.",
         ),
         ChangelogEntry(
-            "\U0001F3DB️ The Fee Share And The Market Tax",
-            "The government's tax is now called the **Fee Share**. It was never a charge on top: "
-            "you pay the same fee at any rate, and the rate is how much of it the government "
-            "keeps instead of burning.\n\n"
-            "The Treasurer can also set a **Market Tax**, taken out of what the seller receives "
-            "on every trade between players - a listing bought, a bid filled, a drill sold. The "
-            "buyer pays the listed price either way, and trades with the server are never taxed.\n\n"
-            "Both are set with `/treasurer rate`, which replaces `/treasurer tax`, from the same "
-            "steps: 0%, 2.5%, 5%, 6.25%, 8%, 10%, 12.5%, 16%, 20%, 40% and 100%. Each can change "
-            "once a day. A Fee Share that sat between two steps was rounded down to the one below.",
+            "🏛️ The Fee Share And The Market Tax",
+            "The government's tax is now the **Fee Share**: the part of each fee it keeps, so "
+            "your fee doesn't change. The Treasurer can also set a **Market Tax** on player "
+            "trades, paid by the seller. `/treasurer rate` sets both, replacing `/treasurer tax`.",
         ),
         ChangelogEntry(
-            "\U0001F4DC Bonds",
-            "Bonds now come in 1, 2, 5, 10, 20, 50, 100, 200, 500 and 1,000 - the bigger ones "
-            "open up as your server's revenue grows. Each payout now finishes your oldest bond "
-            "before starting on the next, instead of creeping them all along together; the "
-            "payout is still shared between bondholders the same way. Bonds repaid before you "
-            "next look arrive as one notice per server with the total returned, and "
-            "`/bonds holdings` is laid out like a status page.",
+            "📜 Bonds",
+            "Bonds now come in sizes from 1 to 1,000, the larger ones opening up as revenue "
+            "grows. Each payout finishes your oldest bond first, and repaid bonds arrive as one "
+            "notice per server.",
         ),
         ChangelogEntry(
-            "\U0001F3B2 Close A Bet Early",
-            "Whoever opened a bet, or anyone with Manage Server, can stop it taking wagers "
-            "before its deadline with `/bet close`. Nothing is paid out or refunded - the bet "
-            "waits to be resolved or cancelled, just as if its deadline had passed.",
+            "📦 Containers Go With The Drill",
+            "`/mine place` can fit a container as the drill goes in, and `/mine remove` now "
+            "hands the container back unless you set `keep_container`.",
         ),
         ChangelogEntry(
-            "\U0001F4CA A Fairer Import/Export Line",
-            "`/economy gdp` now compares **Ore smelted** with **Ore mined**. It used to count "
-            "the same ore twice - once at the furnace and again as the bar a craft used - and "
-            "counted gems built into drill bits and containers as imports, so servers that made "
-            "everything themselves read as net importers. Figures already recorded are "
-            "corrected too. Balanced now means within 15%, shown with the gap: "
-            "*balanced (-8%)*.",
+            "📊 A Fairer Import/Export Line",
+            "`/economy gdp` now compares ore smelted with ore mined, so servers that make "
+            "everything themselves no longer read as importers. Past figures were corrected, "
+            "and balanced means within 15%, shown with the gap.",
         ),
         ChangelogEntry(
-            "\U0001F4E6 Containers Go With The Drill",
-            "`/mine place` takes an optional **container**, fitted as the drill goes in - one "
-            "command instead of a `/mine place` and a `/mine attach`. Any container already "
-            "on the drill comes back to your inventory, as `/mine attach` does.\n\n"
-            "`/mine remove` now hands a drill's container back to your inventory too, ready "
-            "for the next drill. Set `keep_container` to True to leave it fitted, as it always "
-            "used to be. `/mine attach` and `/mine detach` are unchanged.",
-        ),
-        ChangelogEntry(
-            "\U0001F527 Fixes",
-            "A player with enough unread notices could stop getting any reply from the bot. "
-            "Replies now always go through, and notices that don't fit arrive with your next "
-            "commands.",
+            "🔧 Smaller Changes And Fixes",
+            "- `/bet close` stops a bet taking wagers early; its opener or Manage Server can use it.\n"
+            "- A Fee Share between two steps was rounded down to the step below.\n"
+            "- `/bonds holdings` is laid out like a status page.\n"
+            "- Players with many unread notices get replies again; extra notices come later.",
         ),
     ),
 ))
@@ -174,48 +148,41 @@ _add(ChangelogVersion(
 _add(ChangelogVersion(
     version="1.4.1",
     released="2026-09-30",
-    emoji="\U0001F4B0",
+    emoji="💰",
     color=MARKET_COLOR,
     summary="Ores and metals trade with the server only, 5+5 market entries, a week's expiry, tidier menus",
     headline=(
-        "A market and menus patch. The player market now stays out of the job board's way, "
-        "keeps itself tidy, and the pages 1.4 added read like the rest of the game again."
+        "Ores and metals trade only with the server, market entries last a week, and 1.4's "
+        "pages are shorter."
     ),
     entries=(
         ChangelogEntry(
-            "\U0001FA99 Ores And Metals Trade With The Server Only",
-            "Iron ore, copper ore, coal, iron, copper and steel can still be sold and bought "
-            "with `/market sell` and `/market buy`, but no longer listed or bid for. Player "
-            "bids for them were taking job board sales without paying any job progress. Any "
-            "listings or orders you had for them were handed back, with a notice saying what "
-            "came back.",
+            "🪙 Ores And Metals Trade With The Server Only",
+            "Iron ore, copper ore, coal, iron, copper and steel can still be bought and sold with "
+            "the server, but no longer listed or bid for. Listings and orders you had for them "
+            "were returned.",
         ),
         ChangelogEntry(
-            "\U0001F4CB Five Of Each, For A Week",
-            "You can have up to **5 listings** and **5 orders** open on each server, and each "
-            "one lasts **7 days**. Whatever hasn't sold or filled by then comes back to you "
-            "automatically - goods, drills or money - with a notice. `/market entries` shows "
-            "your count and how long each entry has left. Entries already on the market got "
-            "their 7 days from this update.",
+            "📋 Five Of Each, For A Week",
+            "You can have 5 listings and 5 orders per server, each lasting 7 days; entries "
+            "already up got theirs from this update. Anything unsold or unfilled comes back with "
+            "a notice. `/market entries` shows the time left.",
         ),
         ChangelogEntry(
-            "\U0001F9FE Receipts And Status Pages",
-            "Listing, ordering, cancelling, the Mayor's and Treasurer's commands and bonds now "
-            "answer with a receipt - what moved and what you have left - instead of a paragraph. "
-            "`/government status`, `/economy`, `/bet` and `/market` are shorter and name each "
-            "machine the way its own page does.",
+            "🧾 Receipts And Status Pages",
+            "Market, government and bond commands answer with a receipt instead of a paragraph, "
+            "and `/government status`, `/economy`, `/bet` and `/market` are shorter.",
         ),
         ChangelogEntry(
-            "\U0001F4CA GDP Explained In /help",
-            "What GDP counts, and what being a net importer or exporter means, now lives on a "
-            "new **Economy** page of `/help`, so `/economy gdp` can be just the figures. "
-            "`/economy status` only lists gemstones that were actually mined.",
+            "📊 GDP Explained In /help",
+            "What GDP, net importer and net exporter mean is now on the Economy page of `/help`. "
+            "`/economy status` lists only gems actually mined.",
         ),
         ChangelogEntry(
-            "\U0001F527 Fixes",
-            "The losing side of a settled bet no longer reads \"returned to this side\". "
-            "Government refusals quote your server's own currency instead of \U0001F4B0. "
-            "Opening or settling a bet no longer shows you the server notice about it.",
+            "🔧 Fixes",
+            "- Losing bets no longer say \"returned to this side\".\n"
+            "- Government refusals use your server's own currency.\n"
+            "- Opening or settling a bet no longer shows you its own notice.",
         ),
     ),
 ))
@@ -223,93 +190,61 @@ _add(ChangelogVersion(
 _add(ChangelogVersion(
     version="1.4",
     released="2026-09-22",
-    emoji="\U0001F3DB️",
+    emoji="🏛️",
     color=GOVERNMENT_COLOR,
     summary="An elected government, the player market, prediction bets, /economy and Mining Affinity",
     headline=(
-        "Your server runs itself now. Every Thursday it elects a **Mayor** and a **Treasurer** "
-        "who set its fees and spend its tax. Players can trade with each other instead of only "
-        "with the server, bet on what happens next, and see what their server actually "
-        "produces - and a diamond finally unlocks something."
+        "Servers elect a government, players trade and bet with each other, and a Diamond "
+        "unlocks Mining Affinity."
     ),
     entries=(
         ChangelogEntry(
-            "\U0001F3DB️ Mayors and Treasurers",
-            "Every Thursday your server votes (`/vote mayor`, `/vote treasurer`), counted at "
-            "midnight. The Treasurer sets each machine's fee - its default times x0.25 to x4 - "
-            "and a tax on every fee; the Mayor spends the tax. To vote you need a drill that "
-            "has been placed here for 7 days.\n\nAdmins no longer set fees: `/setup fee` is "
-            "gone, and every server's fees are back at their defaults.",
+            "🏛️ Mayors and Treasurers",
+            "Every Thursday your server elects a Mayor and a Treasurer with `/vote`; voting needs "
+            "a drill placed here for 7 days. The Treasurer sets machine fees (x0.25 to x4) and a "
+            "tax on them, and the Mayor spends it. `/setup fee` is gone and fees reset.",
         ),
         ChangelogEntry(
-            "\U0001F3D7️ The Mayor's Projects",
-            "Fund a machine's level, buy an **Infrastructure Enhancement** that doubles a "
-            "machine's speed on top of its level, spend on a **Mining Slot Enhancement** "
-            "(every 1 counts 5 toward the next slot), or throw a **Server Bonanza** - 48 hours "
-            "of double-speed drills and machines. `/government status` has the prices.",
+            "🏗️ The Mayor's Projects",
+            "The Mayor can fund a machine's level, double its speed with an Infrastructure "
+            "Enhancement, buy toward mining slots, or start a 48-hour Server Bonanza.",
         ),
         ChangelogEntry(
-            "\U0001F4DC Bonds",
-            "The Mayor can sell bonds to fund a project early. Buy one with `/bonds buy` and "
-            "the server repays you out of its tax every hour, with the Treasurer's premium on "
-            "top. Leave the server and your bonds wait for you to come back.",
+            "📜 Bonds",
+            "The Mayor can sell bonds: `/bonds buy` lends the server money, repaid hourly from "
+            "its tax with the Treasurer's premium. If you leave, they wait for you.",
         ),
         ChangelogEntry(
-            "\U0001F3F7️ The Player Market",
-            "`/market list` puts anything you own up for sale at your price - ore, gemstones, "
-            "components, containers, even a specific drill. `/market order` is a standing bid "
-            "to buy. Whatever a listing or bid holds is set aside until it fills or you "
-            "`/market cancel` it; `/market entries` shows everything you have up.\n\n"
-            "Gemstones still can't be sold to the server, but other players can buy them. "
-            "Exotic Matter can't be traded at all.",
+            "🏷️ The Player Market",
+            "`/market list` sells anything you own at your price, even a drill, and "
+            "`/market order` places a standing bid; `/market entries` and `/market cancel` "
+            "manage them. Buying and selling try the best player price first. "
+            "Exotic Matter can't be traded.",
         ),
         ChangelogEntry(
-            "\U0001F6D2 The Better Deal, Automatically",
-            "`/market buy` fills from the cheapest player listings before the server, and "
-            "`/market sell` fills the highest player bids first. On anything the server trades, "
-            "a player's price has to beat the server's; prices go down to 0.0001. Both "
-            "commands only offer what you can actually buy or sell right now.",
+            "🎲 Prediction Bets",
+            "`/bet open` stakes your currency on something happening; others back it or bet "
+            "against it. The winners split the whole pot, with no house cut.",
         ),
         ChangelogEntry(
-            "\U0001F3B2 Prediction Bets",
-            "`/bet open` stakes your currency on something happening; everyone else backs you "
-            "or takes the other side, straight from the buttons on their next command. The "
-            "winning side splits the whole pot - no house cut, nothing created or destroyed. "
-            "An admin resolves it, and if nobody backed the winning side, everyone gets their "
-            "stake back.",
+            "📊 /economy",
+            "`/economy status` shows your server on one page, and `/economy gdp` what it "
+            "produced over a day and a week.",
         ),
         ChangelogEntry(
-            "\U0001F4CA /economy",
-            "`/economy status` is the whole server on one page: its wealth, mining slot "
-            "progress, what's queued and today's job. `/economy gdp` is what the server "
-            "actually **produced** over the last day and week, by stage of production. "
-            "Gemstones are counted but left out of GDP, and every server starts from zero "
-            "with this update.",
+            "💎 Mining Affinity",
+            "A Diamond unlocks `/affinity`: every gem you mine arrives as one kind, at better than "
+            "an even trade.",
         ),
         ChangelogEntry(
-            "\U0001F48E Mining Affinity",
-            "The diamond's unlock. `/affinity` commits your gemstones to one kind, and every "
-            "other gem you mine arrives as that one at better than an even trade - 45 rubies "
-            "make a diamond. It stacks with `/focus` and `/efficiency`, and changes are free "
-            "once a day after the first.",
-        ),
-        ChangelogEntry(
-            "⚡ Every Fee Speeds a Machine Up",
-            "Machines no longer wait to level up to get faster. Halfway to its next level, a "
-            "machine runs halfway between the two levels' speeds.",
-        ),
-        ChangelogEntry(
-            "\U0001F9F9 Smaller Changes and Fixes",
-            "- \"Fees collected\" is now **Mining slot progress**, since the Mayor's spending "
-            "counts toward it too.\n"
-            "- `/mine status` shows all your mining enhancements together, and when a Bonanza "
-            "is on.\n"
-            "- A freshly queued job no longer finishes early on the machine's next tick, and a "
-            "drill that just started mining is no longer paid for time it wasn't.\n"
-            "- `/mine remove` now applies your Mining Efficiency, like `/collect` does.\n"
-            "- Your first Diamond comes with a note on what it unlocks.\n"
-            "- The blast furnace says \"batches\", not \"batchs\".\n"
-            "- Commands are quicker on the database side.",
+            "🧹 Smaller Changes and Fixes",
+            "- Every fee now speeds a machine up, not only each level.\n"
+            "- \"Fees collected\" is now **Mining slot progress**.\n"
+            "- `/mine status` shows your enhancements and any Bonanza.\n"
+            "- Fresh jobs and drills are no longer paid for time before they started.\n"
+            "- `/mine remove` applies your Mining Efficiency.\n"
+            "- Your first Diamond comes with a note.\n"
+            "- \"batchs\" now reads \"batches\", and commands are faster.",
         ),
     ),
 ))
@@ -320,23 +255,15 @@ _add(ChangelogVersion(
     emoji="⛏️",
     color=MINING_COLOR,
     summary="Drills sorted by material in /mine status, and a cleaner /collect receipt",
-    headline=(
-        "A small readability patch: `/mine status` and `/collect` are easier to scan, "
-        "nothing about how mining works has changed."
-    ),
+    headline="`/mine status` and `/collect` are easier to read. Mining itself is unchanged.",
     entries=(
         ChangelogEntry(
             "⛏️ Drills Sorted By Material",
-            "`/mine status` now lists **Your Drills**, and the drill-type breakdown under "
-            "**Server Mining Speed**, from Diamond down to Iron, and within a material the "
-            "highest-leveled drill leads - instead of whatever order they happened to be "
-            "placed in.",
+            "`/mine status` lists drills from Diamond down to Iron, highest level first.",
         ),
         ChangelogEntry(
             "📦 A Cleaner /collect Receipt",
-            "`/collect`'s summary now reads over a few short lines instead of one long "
-            "sentence, and leaves room for however many focus- or efficiency-style options "
-            "end up affecting your haul at once.",
+            "`/collect`'s summary is now a few short lines instead of one long sentence.",
         ),
     ),
 ))
@@ -348,126 +275,45 @@ _add(ChangelogVersion(
     color=BLAST_FURNACE_COLOR,
     summary="Fixed prices, a repeatable job board, the blast furnace, mining slots, and efficiency",
     headline=(
-        "Market prices have stopped moving. Every material is now worth one fixed, round "
-        "number, whatever your server is holding - and the job board pays out every single "
-        "time you finish it instead of once a day. Underneath that, a fifth machine: the "
-        "blast furnace smelts a hundred at a time, Mining Efficiency joins Mining Focus as a "
-        "second obsidian-gated way to shape your haul, and every fee your server has ever "
-        "paid now counts toward extra mining slots, for everybody."
+        "Fixed prices, a job board that pays every time, the blast furnace, mining slots and "
+        "Mining Efficiency."
     ),
     entries=(
         ChangelogEntry(
             "🏷️ Fixed Prices",
-            "The market used to pay less for something the more of it your server already "
-            "had. It doesn't any more - **every price is fixed**, and the same on every "
-            "server. Iron Ore is 0.01, Copper Ore 0.02, Coal 0.03, Iron 0.15, Copper 0.30 "
-            "and Steel 0.48. Buying back costs exactly double.\n\nThey're round numbers of "
-            "cents on purpose: what a pile of ore is worth is now something you can work out "
-            "in your head before you sell it, instead of something you find out afterwards.",
-        ),
-        ChangelogEntry(
-            "⛏️ Obsidian and Diamond Drills, Faster Again",
-            "Following 1.2.1's pass on all three gem drills, the top two jump again: "
-            "Obsidian **60 → 120** and Diamond **120 → 480** raw materials an hour, "
-            "containers grown to match (Obsidian **8,000**, Diamond **32,000**) so a full "
-            "one still buys about the same running time. Ruby, Iron and Steel are "
-            "unchanged.",
-        ),
-        ChangelogEntry(
-            "📦 Sell a Million at a Time",
-            "`/market sell` and `/market buy` now take up to **1,000,000** in one command, "
-            "up from 1,000. A drill wearing a Diamond Container holds 32,000 items - that "
-            "used to be thirty-two sales. `/market buy` also gets a full receipt now, "
-            "matching `/market sell`'s since 1.2.1, instead of one line of plain text.",
+            "Prices no longer drop as your server's stock grows. Every price is fixed and the same "
+            "on every server: Iron Ore 0.01, Copper Ore 0.02, Coal 0.03, Iron 0.15, Copper 0.30 "
+            "and Steel 0.48. Buying back costs double.",
         ),
         ChangelogEntry(
             "📋 The Job Board Pays Every Time",
-            "The daily job used to pay its bonus once per player per day. Now it pays **every "
-            "time you finish it** - bring twice what it asks for and you're paid twice, bring "
-            "fifty times it and you're paid fifty times, all in the one sale. Whatever the "
-            "board is asking for is worth about double its market price all day.\n\n"
-            "Anything left over after a finish counts toward the next one, and `/jobboard` "
-            "shows how many times you've finished it today.",
+            "The bonus now pays every time you finish the job, not once a day, and leftovers count "
+            "toward the next one. `/jobboard` counts your finishes.",
         ),
         ChangelogEntry(
             "♨️ The Blast Furnace",
-            "`/blast smelt <material> <batches>` queues bulk smelting in batches of **100**. "
-            "One batch of Iron takes 1,000 Iron Ore and hands back 100 Iron - the exact same "
-            "recipe the furnace runs, multiplied by a hundred. `/blast status` and "
-            "`/blast queue` show its level and what's waiting on it.",
-        ),
-        ChangelogEntry(
-            "⚖️ The Same Price, Not a Cheaper One",
-            "The ore per bar, the coal per bar and the fee per bar are all identical to the "
-            "furnace's - the default fee is **1.00 per batch**, which is the furnace's 0.01 "
-            "an item times the hundred items in a batch. Bulk smelting buys speed and elbow "
-            "room, not a discount.",
-        ),
-        ChangelogEntry(
-            "⚡ Twenty Times the Throughput",
-            "A blast furnace smelts **100 items an hour per level** against the furnace's 5. "
-            "The 27,000 Steel behind one pressed diamond took a level 5 furnace 45 days of "
-            "smelting nothing else; a level 1 blast furnace gets through it in 11.25.",
-        ),
-        ChangelogEntry(
-            "⚙️ Server Settings",
-            "`/setup fee`, `/setup max_queue` and `/donate infrastructure` all list the blast "
-            "furnace alongside the other four machines. Its fee and its queue limit are "
-            "counted in **batches**, and it starts at 5 batches per user per level.",
+            "`/blast smelt` runs the furnace's recipes in batches of 100, at the same cost per "
+            "bar, smelting 100 items an hour per level against the furnace's 5. Its fee and "
+            "queue limit count batches.",
         ),
         ChangelogEntry(
             "⛏️ Mining Slots",
-            "The 3-drills-per-server limit is no longer a fixed rule - it's the **starting "
-            "point of a ladder your server unlocks**. Every fee anyone pays to the furnace, "
-            "blast furnace, factory, press or scrapper adds to one shared total, and so does "
-            "anything given with `/donate infrastructure`. Cross **25** and everybody here "
-            "can place a 4th drill; **125** buys a 5th, **625** a 6th, and so on at five "
-            "times the last each time.",
-        ),
-        ChangelogEntry(
-            "🤝 Slots Are Server-Wide",
-            "A slot isn't bought per player - when the server crosses a threshold, *every* "
-            "member gets the extra slot at once, and a notice goes out saying so. It's the "
-            "server's investment paying off, not an individual purchase. `/mine status` now "
-            "shows how many of your slots are filled and how far along the server is toward "
-            "the next one.\n\nNothing is spent twice: fees still level the machine they "
-            "were paid to. Servers that had already paid their way past a threshold before "
-            "this release had the slots the moment it shipped.",
+            "Every machine fee and donation now counts toward extra drill slots for everyone here: "
+            "25 unlocks a 4th drill, 125 a 5th, 625 a 6th. Servers already past a threshold got "
+            "their slots at once.",
         ),
         ChangelogEntry(
             "🧠 Mining Efficiency",
-            "A second lever next to `/focus`, unlocked with one Obsidian instead of a Ruby. "
-            "`/efficiency` commits you to one smelted recipe - Iron, Copper or Steel - and "
-            "every collection **doubles** the raw materials it needs, then converts a little "
-            "of whichever one you have too much of into the one you're short. Stacked on a "
-            "matching focus it's the biggest jump in the game: at least double the focus's "
-            "own output, up to +180% for Steel over Iron & Coal.\n\nIt stacks independently "
-            "of `/focus` - a mismatched pair still helps, just less. Run it alone to see "
-            "what each option needs before you spend the gem.",
+            "One Obsidian unlocks `/efficiency`: double the raw materials one smelted recipe "
+            "needs, in a mix that wastes less. It stacks with `/focus`.",
         ),
         ChangelogEntry(
-            "♻️ Scrapping a Drill Pays Out More",
-            "Scrapping a drill used to hand back one whole part - an Iron Drill became a "
-            "Drill Chassis - since a drill's recipe is one of each part and half of one is "
-            "nothing. Now it skips straight past the component step: the bit comes back "
-            "whole, plus the iron and copper its wiring and chassis were built from "
-            "(**10 iron, 12 copper**, any drill), instead of a spare part you could build "
-            "another drill from for free. `/recipe scrapper` has the numbers.",
-        ),
-        ChangelogEntry(
-            "💎 A Nudge on Your First Gem",
-            "The first Ruby or Obsidian you ever get now comes with a private note "
-            "explaining what it unlocks. `/focus` and `/efficiency` don't show up "
-            "anywhere until you own the gem that opens them, so it was entirely "
-            "possible to sit on a ruby for weeks without knowing it did anything.",
-        ),
-        ChangelogEntry(
-            "📖 Documentation",
-            "`/recipe furnace` now shows both smelters' recipes side by side, `/recipe "
-            "factory` shows every section on one page instead of asking you to pick one, "
-            "`/help blast` is the new manual page, and `/help mining` covers mining slots "
-            "and mining efficiency. `/help market` and `/help jobboard` have been rewritten "
-            "for the fixed prices and the repeatable bonus.",
+            "🧹 Smaller Changes",
+            "- Obsidian Drills mine 120 an hour (was 60) and Diamond 480 (was 120); containers 8,000 and 32,000.\n"
+            "- A scrapped drill returns its bit plus 10 iron and 12 copper.\n"
+            "- Buy or sell up to 1,000,000 at once (was 1,000); `/market buy` gets a receipt.\n"
+            "- Your first Ruby or Obsidian comes with a note.\n"
+            "- `/recipe` and `/help` cover the new features.",
         ),
     ),
 ))
@@ -480,34 +326,28 @@ _add(ChangelogVersion(
     color=MINING_COLOR,
     summary="Cheaper gem drill upgrades, a smoother job board, and required quantities",
     headline=(
-        "A small hotfix on top of 1.2.1: gem-tier drill upgrades cost a lot less, the job "
-        "board's material selection is smoother, and a few commands that used to default "
-        "their quantity now ask for it explicitly."
+        "Gem drill upgrades cost less, the job board picks materials more smoothly, and some "
+        "quantities are required again."
     ),
     entries=(
         ChangelogEntry(
             "💎 Cheaper Gem Drill Upgrades",
-            "Levelling up a Ruby, Obsidian or Diamond Drill now costs **1** of its gem per "
-            "level instead of 3. The drill bits themselves are unchanged - still 3 gems to "
-            "craft.",
+            "Levelling a Ruby, Obsidian or Diamond Drill costs 1 gem per level instead of 3. "
+            "Drill bits still cost 3.",
         ),
         ChangelogEntry(
             "📋 Job Board Selection Smoothed Out",
-            "The daily job board's odds of landing on a particular material now taper off "
-            "gradually as that material gets more overstocked, instead of levelling off at a "
-            "fixed floor the moment it hit target stock. A material sitting right at target "
-            "stock now has a real shot at coming up; one well past it barely does.",
+            "The more overstocked a material is, the less often the job board asks for it, "
+            "tapering off gradually instead of dropping to a fixed floor.",
         ),
         ChangelogEntry(
             "🔢 Quantities Required Again",
-            "`/market buy`, `/market sell` and `/furnace smelt` now require a quantity - it's "
-            "no longer optional for these three. `/factory craft`, `/press craft` and "
-            "`/scrapper scrap` are unchanged and still default to 1 if left blank.",
+            "`/market buy`, `/market sell` and `/furnace smelt` need a quantity again. "
+            "`/factory craft`, `/press craft` and `/scrapper scrap` still default to 1.",
         ),
         ChangelogEntry(
             "🧾 Job Board Bonus Shown First",
-            "`/market sell`'s receipt now shows the job board bonus (if the sale finished "
-            "today's task) above the new totals instead of below them.",
+            "`/market sell`'s receipt shows the job board bonus above your new totals.",
         ),
     ),
 ))
@@ -518,48 +358,31 @@ _add(ChangelogVersion(
     emoji="⛏️",
     color=MINING_COLOR,
     summary="Faster gem drills, bigger gem containers, and optional quantities",
-    headline=(
-        "A focused follow-up to 1.2. The three gemstone drills mine a lot faster, their "
-        "containers grew to match, mining progress updates in smaller steps, and every "
-        "quantity field you fill in by hand is now optional."
-    ),
+    headline="Gem drills mine much faster, their containers grew to match, and quantities are optional.",
     entries=(
         ChangelogEntry(
             "⛏️ Gem Drills Mine Faster",
-            "Ruby, Obsidian and Diamond Drills all mine much faster at level 1 — Ruby **10 → "
-            "30**, Obsidian **12.5 → 60**, Diamond **15 → 120** raw materials an hour. Their "
-            "matching containers grew by the same factor so a full one still buys about as "
-            "much running time as before: Ruby now holds **2,000** (was 1,000), Obsidian "
-            "**4,000** (was 2,000), Diamond **8,000** (was 4,000). Iron and Steel drills and "
-            "containers are unchanged. `/recipe factory` shows the new rates and capacities.",
+            "At level 1, Ruby Drills mine 30 an hour (was 10), Obsidian 60 (was 12.5) and Diamond "
+            "120 (was 15). Their containers grew to match: 2,000, 4,000 and 8,000 (were 1,000, "
+            "2,000 and 4,000).",
         ),
         ChangelogEntry(
             "⏱️ Smoother Mining Progress",
-            "Drills now check in every **5 minutes** instead of every 24, matching how often "
-            "the other three machines already did. With gem drills running so much faster, "
-            "the old 24-minute tick would fill a drill's own 100-item bay in one jump far "
-            "sooner than it used to; the shorter tick keeps `/mine status` showing real "
-            "progress in between instead of an occasional leap straight to full.",
+            "Drills now update every 5 minutes instead of every 24.",
         ),
         ChangelogEntry(
             "🧾 Sale Receipts",
-            "`/market sell` now hands back a proper receipt: what you sold, what it sold for, "
-            "how much of that material you have left, and your new balance — all in one "
-            "embed, the same way `/collect` already shows post-haul totals. If the sale "
-            "finished today's job board task, the bonus shows up right alongside it.",
+            "`/market sell` answers with a receipt: what sold, for how much, what you have left, "
+            "your balance and any job board bonus.",
         ),
         ChangelogEntry(
             "🔢 Optional Quantities",
-            "Every command that asks how many of an item — `/market buy`, `/market sell`, "
-            "`/factory craft`, `/furnace smelt`, `/press craft`, `/scrapper scrap` — now lets "
-            "you leave the quantity blank and defaults to **1**. Currency amounts still have "
-            "to be typed out.",
+            "Item quantities on `/market buy`, `/market sell`, `/factory craft`, `/furnace smelt`, "
+            "`/press craft` and `/scrapper scrap` now default to 1.",
         ),
         ChangelogEntry(
             "📖 Recipe Book Shows Drill Speed",
-            "`/recipe factory` → Drills now lists each drill's mining speed right next to its "
-            "crafting recipe, so you don't have to leave the recipe book to check what a drill "
-            "you're about to build actually does.",
+            "`/recipe factory` lists each drill's mining speed beside its recipe.",
         ),
     ),
 ))
@@ -571,112 +394,55 @@ _add(ChangelogVersion(
     color=JOBBOARD_COLOR,
     summary="Mining Focus, guaranteed gemstones, cheaper machines, and a market fix",
     headline=(
-        "The biggest update yet. **Mining Focus** lets you commit to one ore and get more of "
-        "it, gemstones are now guaranteed to turn up rather than merely likely to, machines "
-        "level up far sooner, and a hole in the market that was wrecking server economies is "
-        "closed - and repaired."
+        "Mining Focus, no daily mining limit, guaranteed gemstones, and machines that level up "
+        "sooner."
     ),
     entries=(
         ChangelogEntry(
             "⛏️ Mining Focus",
-            "Spend one Ruby, once, and `/focus` lets you commit your mining to a single ore - "
-            "**Iron & Coal**, **Copper & Coal**, or **Coal**. Everything else you dig up "
-            "arrives as your chosen ore instead. A copper ore is worth **two** iron ore, "
-            "because iron drops twice as often, so the trade is even for the digging you "
-            "actually did; you just stop receiving the thing you didn't want. Changing your "
-            "mind is free, once a day. Gemstone odds are identical whatever you pick.\n\n"
-            "Two warnings, because both are easy to find out too late: Copper and Coal focus "
-            "**can't make steel at all** (steel needs iron ore, and neither produces any), and "
-            "Iron focus helps steel less than you'd think - you end up rich in ore and short "
-            "of coal instead. `/focus` on its own explains all of this before you spend "
-            "anything.",
+            "One Ruby unlocks `/focus`: everything you mine arrives as Iron & Coal, Copper & Coal, "
+            "or Coal, traded evenly by rarity. Changing it is free once a day, and gem odds don't "
+            "change. Copper and Coal focus can't make steel.",
         ),
         ChangelogEntry(
             "⛏️ No More Daily Mining Limit",
-            "The daily top-up is **gone**, and so is the cap. Your server's pool used to gain "
-            "200 items per member per day and stop there, which meant a better drill bought you "
-            "nothing once you were already draining the day's allowance - the only real way to "
-            "mine more was to recruit more people. Now the pool is a batch of a million items "
-            "that refills the instant it runs out, and how much your server produces is decided "
-            "by how many drills you have running, how good they are, and how often you empty "
-            "them. Mine as fast as you can build.",
+            "The daily cap is gone. Your server's pool is now a batch of a million items that "
+            "refills as soon as it runs out.",
         ),
         ChangelogEntry(
             "💎 Every Batch Holds A Diamond",
-            "That batch contains exactly **90 Rubies, 9 Obsidian and 1 Diamond**, and drills "
-            "pull from what's genuinely in it. So a gemstone isn't a one-in-a-million chance "
-            "rolled fresh on every single item forever - it's a real thing sitting in the batch "
-            "that somebody's drill **will** find before it runs out. Mine through a batch, get "
-            "a Diamond. Every time, on every server. Your odds per item are exactly what they "
-            "always were; what's gone is the luck. `/mine status` shows precisely which gems "
-            "are still in there.",
+            "Each batch holds exactly 90 Rubies, 9 Obsidian and 1 Diamond, so mining through a "
+            "batch always finds them. `/mine status` shows which are left.",
         ),
         ChangelogEntry(
-            "📋 One Job, One Payout",
-            "Every job board task is now sized to pay a little over **1** of your server's "
-            "currency, whatever it asks for. The amount asked for used to be a share of the "
-            "whole server's stockpile, so it grew every time somebody new joined - on a large "
-            "server the job could ask for more than anyone could mine in a day. It no longer "
-            "depends on how many people are in the server at all.",
-        ),
-        ChangelogEntry(
-            "📋 Jobs Read The Warehouse",
-            "A job on something your server already has plenty of asks for more of it, because "
-            "each one is worth less to them - and still pays about the same at the end. The "
-            "bonus is now what the server would actually pay for the goods rather than a flat "
-            "rate, so it moves with the price like everything else in the market does.",
+            "📋 Job Board Payouts",
+            "Every job now pays a little over 1 of your currency, whatever your server's size, "
+            "and the bonus follows market prices.",
         ),
         ChangelogEntry(
             "📦 Containers Hold More",
-            "Every container above the Iron one now holds a good deal more, and each tier holds "
-            "**twice** what the one below it does - 250, 500, 1,000, 2,000, 4,000. The gemstone "
-            "containers were the reason: they cost a gem and used to buy less running time than "
-            "the Iron Container did, because a faster drill filled them just as quickly. A "
-            "Diamond Container now keeps even a heavily upgraded drill going for days. Nothing "
-            "needs re-crafting: containers you already own are bigger as of right now, and a "
-            "drill sitting full takes up its extra room on your next `/collect`.",
+            "Each container tier holds twice the one below: 250, 500, 1,000, 2,000, 4,000. "
+            "Containers you own grew straight away.",
         ),
         ChangelogEntry(
             "🏗️ Machines Level Up Sooner",
-            "Every machine level now costs **five** times the fees the last one did instead of "
-            "ten, so the ladder runs 5, 25, 125 rather than 5, 50, 500. Because the cost "
-            "compounds, that is a much bigger change than it sounds: getting a machine to level "
-            "6 used to take 55,555 in fees and now takes 3,905. The old ladder was priced for an "
-            "economy nobody has - fees are fractions of a coin, and the market pays about 1.00 "
-            "for a hundred iron ore - so level 4 and beyond were theoretical. Fees you have "
-            "already paid all still count.",
+            "Each machine level costs five times the fees of the last instead of ten: 5, 25, 125. "
+            "Fees already paid still count.",
         ),
         ChangelogEntry(
             "💎 Gemstones Left The Market",
-            "Rubies, obsidian and diamonds can no longer be sold to or bought from the server "
-            "market. A ruby was worth 5,500 to the market against iron ore at about a "
-            "hundredth of a coin, so a single sale minted more currency than a whole server "
-            "could earn playing - and on any server under about thirty members the price "
-            "barely dropped for the second, third or fourth one either. Sales that had "
-            "already happened have been reversed: the currency is gone and the gem is back "
-            "with whoever sold it. Gemstones are crafting materials now and only that.",
+            "Gems can no longer be sold to or bought from the server. Past gem sales were "
+            "reversed: the currency was removed and the gems returned.",
         ),
         ChangelogEntry(
             "💸 Donations",
-            "`/donate infrastructure` pays your own currency into one of the server's machines "
-            "and levels it up for everybody - the first way to push a machine along "
-            "deliberately rather than waiting for use to do it, and it stacks with the fees "
-            "already paid in. `/donate player` hands currency to someone else, with no cut "
-            "taken. Both are per-server, like the currency itself.",
+            "`/donate infrastructure` pays your currency into a machine to level it up for "
+            "everyone; `/donate player` gives currency to another member, with no cut.",
         ),
         ChangelogEntry(
-            "👋 A Welcome For New Servers",
-            "Dragonhoard now says hello when it joins a server and points whoever runs it at "
-            "the three settings worth touching - naming the currency above all, since until "
-            "that's done every price shows a placeholder. Existing servers aren't pestered.",
-        ),
-        ChangelogEntry(
-            "📣 Notifications",
-            "Dragonhoard can now tell you something once, the next time you use it. "
-            "Announcements from the bot and notices from your server are separate, and you "
-            "only ever get the latest of each - being away for a week doesn't mean scrolling "
-            "through a backlog. There's nothing to turn on and no command; they arrive "
-            "alongside whatever you were already doing and don't come back.",
+            "🧹 Smaller Changes",
+            "- The bot greets new servers and points admins at the settings worth setting.\n"
+            "- Notices: the bot can tell you something once, with your next command.",
         ),
     ),
 ))
@@ -687,61 +453,33 @@ _add(ChangelogVersion(
     emoji="♻️",
     color=SCRAPPER_COLOR,
     summary="The scrapper, a daily job board, and a bot channel setting",
-    headline=(
-        "A new machine, a new reason to log in daily, and a handful of things that should "
-        "always have worked the way they do now."
-    ),
+    headline="The scrapper, a daily job board, a bot channel setting, and some fixes.",
     entries=(
         ChangelogEntry(
             "♻️ The Scrapper",
-            "A fourth machine, and the factory in reverse. Feed it components, containers, "
-            "upgrade packs or whole drills and it gives back half of what they were made "
-            "from, one tier at a time. It never destroys a gemstone, and a scrapped drill "
-            "loses its levels - see `/recipe scrapper` for exactly what everything returns.",
+            "A fourth machine that breaks components, containers, upgrade packs and drills back "
+            "into half of what they were made from, one tier at a time. It never destroys a "
+            "gemstone, and scrapped drills lose their levels.",
         ),
         ChangelogEntry(
             "📋 Job Board",
-            "Every day your server posts one job asking for a material it's short of. Sell it "
-            "that material with `/market sell` and you're paid a bonus on top of the sale. "
-            "Everyone can claim it, once each, and progress adds up across as many sales as "
-            "you like. A new job is posted at midnight Arizona time. `/jobboard` shows "
-            "today's.",
+            "Each day your server posts one job: sell it a material with `/market sell` for a "
+            "bonus on top of the sale. Everyone can claim it once. A new job comes at midnight "
+            "Arizona time.",
         ),
         ChangelogEntry(
             "📺 Bot Channel",
-            "`/setup channel` restricts Dragonhoard to a single channel and the threads inside "
-            "it, for servers that would rather keep the traffic in one place. `/setup` and the "
-            "manual always work anywhere, so it can't lock anyone out, and the restriction "
-            "lifts itself if the channel is deleted.",
+            "`/setup channel` keeps Dragonhoard to one channel and its threads. `/setup` and "
+            "`/help` still work anywhere, and the limit lifts if the channel is deleted.",
         ),
         ChangelogEntry(
-            "⚙️ Queue Limits Scale",
-            "A machine's per-player queue limit is now multiplied by its level, so a furnace "
-            "leveled from 5 items/hour to 50 has ten times the room to match. Admins still "
-            "set the base with `/setup max_queue`.",
-        ),
-        ChangelogEntry(
-            "📦 Collecting",
-            "`/collect` now shows what you hold of each material altogether, not just what "
-            "this haul brought in, the same way a queue receipt shows what's left after it "
-            "takes something. No more running `/inventory` straight afterwards to find out.",
-        ),
-        ChangelogEntry(
-            "⛏️ Drills",
-            "`/factory upgrade` now offers drills placed in the server you're in, pulling them "
-            "out of the ground for you and handing back whatever they were holding. Storage "
-            "containers, in exchange, can only be fitted to or pulled off drills that are in "
-            "your inventory or placed in the server you're actually in.",
-        ),
-        ChangelogEntry(
-            "💰 Market Order",
-            "`/market status` and both market commands now list materials from raw to smelted "
-            "to gemstones, commonest to rarest, instead of mixing gemstones in among the ores.",
-        ),
-        ChangelogEntry(
-            "🐛 Fixes",
-            "`/mine remove` could pay out a drill's contents twice if a `/collect` landed at "
-            "exactly the wrong moment. It can't now.",
+            "🧹 Smaller Changes And Fixes",
+            "- Queue limits now scale with a machine's level.\n"
+            "- `/collect` shows your totals, not just the haul.\n"
+            "- `/factory upgrade` can pull a drill straight out of the ground.\n"
+            "- Containers can only be swapped on drills in your inventory or this server.\n"
+            "- Market lists run from raw materials to gemstones.\n"
+            "- `/mine remove` can no longer pay out a drill's contents twice.",
         ),
     ),
 ))

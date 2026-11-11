@@ -13,6 +13,7 @@ import discord
 
 import config
 import utils.embeds as embeds
+from utils.embeds import embed_word_count, word_count
 from cogs.changelog import VERSION_CHOICES, _SELECTABLE, _version_options
 from data.changelog import (
     VERSIONS,
@@ -26,6 +27,15 @@ MAX_EMBED_LENGTH = 6000
 MAX_EMBED_FIELDS = 25
 MAX_SELECT_OPTIONS = 25
 MAX_SELECT_DESCRIPTION = 100
+
+# Our limits, not Discord's: release notes say what changed and nothing else
+# (the docstring of data/changelog.py). A release page may run longer than a
+# /help page's 250 because one release can bundle many changes, and the limit
+# is there to cut wording, not to drop changes from the record.
+MAX_HEADLINE_WORDS = 25
+MAX_ENTRY_WORDS = 50
+MAX_BULLET_WORDS = 20
+MAX_RELEASE_WORDS = 300
 
 PALETTE = {
     value for name, value in vars(embeds).items()
@@ -92,6 +102,39 @@ class ChangelogRenderingTests(unittest.TestCase):
         for version in VERSIONS.values():
             with self.subTest(version=version.version):
                 self.assertIn(version.version, build_version_embed(version).title)
+
+
+class ChangelogLengthTests(unittest.TestCase):
+    """Measured with embed_word_count at commit 3d91ed9, the releases came to
+    4,850 words between them; 1.3 alone was 1,036, and 1.4.3's first entry 149.
+    These keep them from growing back a sentence at a time."""
+
+    def test_every_headline_is_one_short_sentence(self):
+        for version in VERSIONS.values():
+            with self.subTest(version=version.version):
+                self.assertLessEqual(word_count(version.headline), MAX_HEADLINE_WORDS)
+
+    def test_every_entry_is_short(self):
+        """A list of minor changes is held to a limit per line instead, so a
+        release with many small fixes doesn't have to split them up."""
+        for version in VERSIONS.values():
+            for entry in version.entries:
+                with self.subTest(version=version.version, entry=entry.heading):
+                    lines = entry.text.split("\n")
+                    if all(line.startswith("- ") for line in lines):
+                        for line in lines:
+                            self.assertLessEqual(word_count(line), MAX_BULLET_WORDS, line)
+                    else:
+                        self.assertLessEqual(word_count(entry.text), MAX_ENTRY_WORDS)
+
+    def test_every_release_fits_one_page(self):
+        for version in VERSIONS.values():
+            with self.subTest(version=version.version):
+                words = embed_word_count(build_version_embed(version))
+                self.assertLessEqual(
+                    words, MAX_RELEASE_WORDS,
+                    f"{version.version} shows {words} words; the cap is {MAX_RELEASE_WORDS}",
+                )
 
 
 class ChangelogDropdownTests(unittest.TestCase):
