@@ -272,9 +272,8 @@ is not a machine job or a trade - whose lines say `remaining` after a spend and
 `total` after a gain. A machine is named through `MACHINE_DISPLAY` wherever a
 player reads it. Embeds carry figures; where a player needs one explained, a
 footer points to the feature's `/help` page, which explains it in a line
-(1.4.1). `/help` pages are short by rule - what to keep is in the docstring of
-`data/manual.py`, and `tests/test_manual.py` caps every page's word count -
-so design reasoning goes in `docs/`, not there. See `docs/stylization.md` for the full color table (each
+(1.4.1). How short that page, and all other player text, is kept: see
+"Writing text players read" below. See `docs/stylization.md` for the full color table (each
 feature area owns a fully-saturated color) and layout rules before adding a new
 embed or a sixth machine's status command.
 
@@ -316,6 +315,30 @@ historical figure ("the previous ladder was 150/200/300/400/500") is safe
 because it describes a past state. A derived one ("a level 2 Steel Drill mines
 9/hr") goes wrong the moment anything is retuned — point at the test that pins
 it instead.
+
+## Writing text players read
+
+Every extra sentence is paid for by every reader, every time (see "Figures,
+not explanations" in `docs/stylization.md`), so text players read is short by
+rule: `/help` pages, release notes, embeds, receipts, notices, error messages
+and command descriptions.
+
+- Keep a fact only if a player would lose something, get stuck or be
+  surprised without it.
+- Say what, not why. Design reasoning belongs in `docs/`; the reasoning
+  behind a change belongs in its commit message.
+- Say each thing once, in one place, and point to it (`/help <topic>`).
+- No filler or hype.
+- Keep the numbers a player decides with. Text about the current game takes
+  them from constants; release notes type them out, because they describe
+  the game on the day it shipped.
+- Short sentences, plain words, "you".
+
+`data/manual.py` and `data/changelog.py` describe their page shapes, and
+`tests/test_manual.py` and `tests/test_changelog.py` cap their word counts. If
+a cap fails, cut words; ask the owner before raising one. None of this applies
+to code comments or `docs/` (see "Writing comments"), or to announcements the
+owner writes in their own voice in `data/notifications.py`.
 
 ## Design docs
 

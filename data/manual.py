@@ -10,12 +10,10 @@ Numbers that come from balance data are interpolated from the modules that
 own them (data/materials.py, utils/government.py, ...) rather than typed out,
 so tuning the game doesn't quietly make the manual lie.
 
-Every page is short on purpose: a sentence or two on what this part of the
-game is, one line per command, and at most three tips. A fact belongs here
-only if a player would lose something, get stuck or be surprised without it.
-Why the game works the way it does belongs in docs/, not here. Each fact is
-stated on one page, and other pages point to it with /help <topic>. The word
-cap in tests/test_manual.py holds every page to this.
+Every page has the same shape: a sentence or two on what this part of the
+game is, one line per command, and at most three tips. What earns a place on
+it is in CLAUDE.md, "Writing text players read", and tests/test_manual.py
+caps every page's word count.
 
 Adding a game later means adding a ManualSection here (and claiming a color in
 docs/stylization.md) - the /help topic choices and the section dropdown are

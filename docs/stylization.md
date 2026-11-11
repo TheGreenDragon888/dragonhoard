@@ -114,8 +114,9 @@ explained - how GDP is counted, how bonds are repaid - a footer note points to
 the feature's page of `/help` (`data/manual.py`), which explains it in a line.
 Repeating the explanation on the embed made every reader pay for it on every
 command, and 1.4's embeds had grown sentences for each. The `/help` page says
-what a figure means, not why the game works that way; that reasoning lives in
-`docs/`, and `tests/test_manual.py` caps every page's word count.
+what a figure means, not why the game works that way. The rules for that page
+and every other piece of player text are in `CLAUDE.md`, "Writing text players
+read".
 
 ## One separator inside a line
 
