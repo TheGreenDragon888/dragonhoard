@@ -280,17 +280,18 @@ class MarketTaxRateTests(_GovernmentTestCase):
         await self.set_rate(12.5, now=FRIDAY)
         self.assertEqual((await self.cfg())["market_tax_percent"], 12.5)
 
-    async def test_it_cannot_drop_below_the_rate_bonds_were_sold_at(self):
-        await self.set(market_tax_percent=10.0)
+    async def test_it_can_be_cut_below_the_rate_a_bond_was_sold_at(self):
+        """The 1.4.2 bug: a bond sold under a 40% Market Tax stopped the
+        Treasurer setting anything lower until it was repaid."""
+        await self.set(market_tax_percent=40.0)
         await self.open_sale(500)
         bond = await self.buy(BOB, 500)
+        await self.set_rate(10.0)
+        self.assertEqual((await self.cfg())["market_tax_percent"], 10.0)
         row = await self.db.fetchone(
             "SELECT market_tax_percent_at_sale FROM government_bonds WHERE bond_id = ?", (bond.bond_id,)
         )
-        self.assertEqual(row["market_tax_percent_at_sale"], 10.0)
-        with self.assertRaises(GovernmentError):
-            await self.set_rate(8.0)
-        await self.set_rate(12.5)
+        self.assertEqual(row["market_tax_percent_at_sale"], 40.0, "still recorded at sale")
 
     async def test_it_repays_bondholders_and_counts_toward_the_cap(self):
         await self.open_sale(500)
@@ -378,15 +379,28 @@ class TreasurerTests(_GovernmentTestCase):
         async with self.db.transaction() as tx:
             await set_rate(tx, GUILD, TREASURER_ID, FEE_SHARE, 20.0, datetime(2026, 9, 25, 7, 0, tzinfo=timezone.utc))
 
-    async def test_fee_share_cannot_drop_below_the_rate_bonds_were_sold_at(self):
-        await self.set(tax_percent=40)
+    async def test_every_rate_can_change_while_bonds_are_owed(self):
+        """A bond fixes what it repays when it is bought, so neither rate nor
+        the bond rate is held where it was while the server owes on it - and
+        changing them leaves what the bond is owed alone."""
+        await self.set(tax_percent=40, market_tax_percent=40.0, bond_rate_percent=5)
         await self.open_sale(500)
-        await self.buy(BOB, 500)
-        with self.assertRaises(GovernmentError):
-            async with self.db.transaction() as tx:
-                await set_rate(tx, GUILD, TREASURER_ID, FEE_SHARE, 20.0, THURSDAY)
+        bond = await self.buy(BOB, 500)
         async with self.db.transaction() as tx:
-            await set_rate(tx, GUILD, TREASURER_ID, FEE_SHARE, 100.0, THURSDAY)
+            await set_rate(tx, GUILD, TREASURER_ID, FEE_SHARE, 0.0, THURSDAY)
+            await set_rate(tx, GUILD, TREASURER_ID, MARKET_TAX, 0.0, THURSDAY)
+            await set_bond_rate(tx, GUILD, TREASURER_ID, 0, THURSDAY)
+        cfg = await self.cfg()
+        self.assertEqual(cfg["tax_percent"], 0.0)
+        self.assertEqual(cfg["market_tax_percent"], 0.0)
+        self.assertEqual(cfg["bond_rate_percent"], 0)
+        row = await self.db.fetchone(
+            "SELECT rate_percent, owed_cents, remaining_cents FROM government_bonds WHERE bond_id = ?",
+            (bond.bond_id,),
+        )
+        self.assertEqual(row["rate_percent"], 5)
+        self.assertEqual(row["owed_cents"], 525)
+        self.assertEqual(row["remaining_cents"], 525)
 
     async def test_the_bond_rate_is_capped(self):
         with self.assertRaises(GovernmentError):

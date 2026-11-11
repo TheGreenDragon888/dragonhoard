@@ -102,11 +102,11 @@ FEE_SHARE = "fee-share"
 MARKET_TAX = "market-tax"
 RATE_KINDS = (FEE_SHARE, MARKET_TAX)
 RATE_LABELS = {FEE_SHARE: "Fee Share", MARKET_TAX: "Market Tax"}
-# Each kind's server_config rate column, the column that stamps the day it
-# last changed, and the government_bonds column recording it at each sale.
+# Each kind's server_config rate column and the column that stamps the day it
+# last changed.
 _RATE_COLUMNS = {
-    FEE_SHARE: ("tax_percent", "tax_changed", "tax_percent_at_sale"),
-    MARKET_TAX: ("market_tax_percent", "market_tax_changed", "market_tax_percent_at_sale"),
+    FEE_SHARE: ("tax_percent", "tax_changed"),
+    MARKET_TAX: ("market_tax_percent", "market_tax_changed"),
 }
 
 # The steps either rate may be set to - one list for both, so /treasurer rate
@@ -432,24 +432,13 @@ async def set_fee_multiplier(
     )
 
 
-async def rate_floor(db: _Executor, guild_id: int, kind: str) -> float:
-    """The lowest a rate may be set while the server owes active creditors:
-    the rate in force when the most recent bond still owed was sold. Both rates
-    repay bondholders, so they lent against both, and they are the only thing
-    that repays them."""
-    at_sale = _RATE_COLUMNS[kind][2]
-    row = await db.fetchone(
-        f"SELECT {at_sale} FROM government_bonds WHERE guild_id = ? "
-        f"AND {OWED_BONDS_SQL} AND frozen = 0 ORDER BY bond_id DESC LIMIT 1",
-        (guild_id,),
-    )
-    return row[at_sale] if row else 0.0
-
-
 async def set_rate(
     tx: _Executor, guild_id: int, actor_id: int, kind: str, percent: float,
     now: datetime | None = None,
 ) -> None:
+    """Sets the Fee Share or the Market Tax. Bonds owed put no floor under
+    either: a bond fixes what it repays when it is bought (docs/government.md
+    section 2)."""
     if kind not in RATE_KINDS:
         raise ValueError(f"unknown rate {kind!r}")
     label = RATE_LABELS[kind]
@@ -457,17 +446,11 @@ async def set_rate(
         raise GovernmentError(
             f"The {label} must be one of " + ", ".join(format_percent(p) for p in RATE_PERCENTS) + "."
         )
-    rate, changed, _ = _RATE_COLUMNS[kind]
+    rate, changed = _RATE_COLUMNS[kind]
     await ensure_server_row(tx, guild_id)
     await require_office(tx, guild_id, actor_id, TREASURER)
     row = await tx.fetchone(f"SELECT {changed} FROM server_config WHERE guild_id = ?", (guild_id,))
     _refuse_second_change(row[changed], label, now)
-    floor = await rate_floor(tx, guild_id, kind)
-    if percent < floor:
-        raise GovernmentError(
-            f"The server owes bondholders who lent at a {format_percent(floor)} {label}, so the "
-            f"{label} can't go below {format_percent(floor)} until they are repaid."
-        )
     await tx.execute(
         f"UPDATE server_config SET {rate} = ?, {changed} = ? WHERE guild_id = ?",
         (percent, game_date(now), guild_id),
@@ -557,9 +540,9 @@ async def open_bond_sale(
         room = await debt_cap_cents(tx, guild_id, now) - await outstanding_debt_cents(tx, guild_id)
         if owed_if_sold > room:
             raise GovernmentError(
-                f"Selling that much would leave the server owing more than it collected in "
-                f"revenue over the last {DEBT_CAP_DAYS} days. It has room for "
-                f"{await _money(tx, guild_id, max(0, room) / 100)} more debt, interest included."
+                f"That would put the server over its debt limit of {DEBT_CAP_DAYS} days' "
+                f"revenue. It has room for {await _money(tx, guild_id, max(0, room) / 100)} "
+                f"more, interest included."
             )
     await tx.execute(
         "UPDATE server_config SET bond_sale_cents = ? WHERE guild_id = ?", (total_cents, guild_id)
@@ -595,9 +578,9 @@ async def buy_bond(
     room = await debt_cap_cents(tx, guild_id, now) - await outstanding_debt_cents(tx, guild_id)
     if owed > room:
         raise GovernmentError(
-            f"The server can't take on that much debt: it may owe no more than its revenue over "
-            f"the last {DEBT_CAP_DAYS} days, and has room for {await _money(tx, guild_id, max(0, room) / 100)}, "
-            f"interest included."
+            f"That would put the server over its debt limit of {DEBT_CAP_DAYS} days' "
+            f"revenue. It has room for {await _money(tx, guild_id, max(0, room) / 100)} "
+            f"more, interest included."
         )
     try:
         await deduct_currency_balance(tx, guild_id, buyer_id, denomination_cents / 100)
@@ -723,17 +706,11 @@ def repaid_bonds_notice(count: int, returned_cents: int, currency_emoji: str | N
     returned = format_currency(from_cents(returned_cents), currency_emoji)
     if count == 1:
         title = "🏛️ Bond Repaid"
-        opening = f"The server has finished repaying one of your bonds, returning **{returned}** with interest."
+        opening = f"The server has repaid one of your bonds: **{returned}** with interest."
     else:
         title = "🏛️ Bonds Repaid"
-        opening = (
-            f"The server has finished repaying **{count}** of your bonds, "
-            f"returning **{returned}** in total with interest."
-        )
-    return title, (
-        f"{opening} Every payment went straight to your balance; "
-        "`/bonds holdings` shows any you still hold."
-    )
+        opening = f"The server has repaid **{count}** of your bonds: **{returned}** with interest."
+    return title, f"{opening} `/bonds holdings` shows any you still hold."
 
 
 async def announce_repaid_bonds(tx: _Executor, guild_id: int, holder_id: int, bond_ids: list[int]) -> None:
@@ -892,9 +869,8 @@ async def cast_vote(
     voting_day = current_voting_day(now)
     if not await can_vote(tx, guild_id, voter_id, voting_day):
         raise GovernmentError(
-            f"To vote you need a drill that has been placed in this server for at least "
-            f"{VOTER_DRILL_DAYS} days when voting opens (or one that was already placed "
-            f"when elections were added)."
+            f"To vote, you need a drill placed in this server for at least "
+            f"{VOTER_DRILL_DAYS} days when voting opens."
         )
     if not await has_played(tx, guild_id, candidate_id):
         raise GovernmentError(
@@ -1096,10 +1072,9 @@ async def announce_voting(tx: _Executor, guild_id: int, now: datetime | None = N
     closes = int(game_midnight((date.fromisoformat(today) + timedelta(days=1)).isoformat()).timestamp())
     await post_server_notification(
         tx, guild_id, "🗳️ Election Day",
-        f"Voting for this server's Mayor and Treasurer is open until <t:{closes}:t>.\n\n"
-        f"Use `/vote mayor` and `/vote treasurer` to back somebody - you can't vote for "
-        f"yourself, and you need a drill that has been placed here for at least "
-        f"{VOTER_DRILL_DAYS} days. An office nobody votes on keeps its holder.",
+        f"Voting for Mayor and Treasurer is open until <t:{closes}:t>: use `/vote mayor` and "
+        f"`/vote treasurer`. You can't vote for yourself, and you need a drill placed here "
+        f"for at least {VOTER_DRILL_DAYS} days.",
     )
     await tx.execute(
         "UPDATE server_config SET election_announced = ? WHERE guild_id = ?", (today, guild_id)
@@ -1232,9 +1207,8 @@ async def start_bonanza(tx: _Executor, guild_id: int, actor_id: int, now: dateti
     ends = int((now + timedelta(hours=BONANZA_HOURS)).timestamp())
     await post_server_notification(
         tx, guild_id, "🎉 Server Bonanza!",
-        f"The Mayor has started a Server Bonanza. Until <t:{ends}:f>, every drill in this server "
-        f"mines at **double** speed and every machine runs at **double** speed. Drills fill up "
-        f"twice as fast too, so `/collect` often.",
+        f"The Mayor has started a Server Bonanza: until <t:{ends}:f>, drills and machines here "
+        f"run at **double** speed. Drills fill twice as fast too, so `/collect` often.",
     )
     return quote._replace(running_until=until)
 

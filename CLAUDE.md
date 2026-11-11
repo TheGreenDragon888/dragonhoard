@@ -235,7 +235,12 @@ than reading a cache — `bot.py` turns the member cache off
 every member of every server in memory for one number was the largest thing
 the process kept in RAM. The count is remembered for
 `MEMBER_COUNT_CACHE_SECONDS`. Do not reintroduce `guild.members` or
-`guild.get_member` reads anywhere; they read as empty now.
+`guild.get_member` reads anywhere; they read as empty now. The request gives
+up after `CHUNK_TIMEOUT_SECONDS` and evicts itself from discord.py's private
+`_chunk_requests` table: discord.py never times out or clears a member request
+whose reply was lost in a gateway resume, and on 2026-11-04 one hung one
+server's job board and selling, and the furnace loop for every server, until a
+restart. Call `guild.chunk()` nowhere else.
 
 **`utils/channel_guard.py`**: the designated-bot-channel restriction
 (`/setup channel`) is enforced in exactly one place — `DragonhoardTree.
@@ -265,8 +270,10 @@ beta bots are separate Discord applications with separately uploaded icons
 with a receipt from `utils/receipts.py` - `build_action_receipt` for whatever
 is not a machine job or a trade - whose lines say `remaining` after a spend and
 `total` after a gain. A machine is named through `MACHINE_DISPLAY` wherever a
-player reads it. Embeds carry figures; what they mean goes on the feature's
-`/help` page (1.4.1). See `docs/stylization.md` for the full color table (each
+player reads it. Embeds carry figures; where a player needs one explained, a
+footer points to the feature's `/help` page, which explains it in a line
+(1.4.1). How short that page, and all other player text, is kept: see
+"Writing text players read" below. See `docs/stylization.md` for the full color table (each
 feature area owns a fully-saturated color) and layout rules before adding a new
 embed or a sixth machine's status command.
 
@@ -308,6 +315,31 @@ historical figure ("the previous ladder was 150/200/300/400/500") is safe
 because it describes a past state. A derived one ("a level 2 Steel Drill mines
 9/hr") goes wrong the moment anything is retuned — point at the test that pins
 it instead.
+
+## Writing text players read
+
+Every extra sentence is paid for by every reader, every time (see "Figures,
+not explanations" in `docs/stylization.md`), so text players read is short by
+rule: `/help` pages, release notes, embeds, receipts, notices, error messages
+and command descriptions.
+
+- Keep a fact only if a player would lose something, get stuck or be
+  surprised without it.
+- Say what, not why. Design reasoning belongs in `docs/`; the reasoning
+  behind a change belongs in its commit message.
+- Say each thing once, in one place, and point to it (`/help <topic>`).
+- No filler or hype.
+- Keep the numbers a player decides with. Text about the current game takes
+  them from constants; release notes type them out, because they describe
+  the game on the day it shipped.
+- Short sentences, plain words, "you".
+
+`data/manual.py` and `data/changelog.py` describe their page shapes, and
+`tests/test_manual.py` and `tests/test_changelog.py` cap their word counts;
+`tests/test_player_text.py` caps any other single message at 40 words. If a
+cap fails, cut words; ask the owner before raising one. None of this applies
+to code comments or `docs/` (see "Writing comments"), or to announcements the
+owner writes in their own voice in `data/notifications.py`.
 
 ## Design docs
 

@@ -10,19 +10,19 @@ Dragonhoard is a personal project in active development. The code is public to r
 
 ## The game
 
-Every server the bot joins gets its **own currency and its own economy** — nothing carries over between servers, and everything you own is yours alone.
+Every server the bot joins gets its **own currency and its own economy** — nothing carries over between servers.
 
 The core loop:
 
-1. **Mine** — `/mine place` puts a drill in the ground (your first Iron Drill is free). It mines on its own, online or not, pulling from a server-wide bag of raw materials that refills the moment it runs out — no daily allowance, no cap.
-2. **Collect** — `/collect` empties everything your drills have produced into your inventory.
-3. **Sell** — `/market sell` sells materials for currency. The server is itself an economic actor: buying from players is the *only* way new currency enters circulation, and it resells its stock back at a markup via `/market buy`. Players also trade with each other — `/market list` and `/market order` put your own asks and bids on the server's books, for the gemstones, components, containers and drills the server won't touch (ores and smelted metals trade only with the server, so every sale can count toward the job board) — and buying and selling route across both automatically.
-4. **Reinvest** — smelt ore in the `/furnace` (or a hundred at a time in the `/blast` furnace), craft better gear in the `/factory`, compress materials into gems with the hydraulic `/press`, break what you no longer want back down in the `/scrapper`, and upgrade your drills so the whole loop runs faster. Production fees burn currency back out of the economy — and every fee the server has ever collected adds up toward **mining slots**, which let *everyone* in that server keep another drill in the ground.
-5. **Check the board** — `/jobboard` shows the one task your server is paying a bonus for today. Everyone can claim it, and it pays again every time you finish it.
-6. **Bet on it** — `/bet open` puts your currency on something you think will happen, and everyone else can back you or take the other side. The winning side splits the whole pot; nothing is created and the bot takes no cut.
-7. **Elect a government** — every Thursday the server votes (`/vote`) for a **Mayor** and a **Treasurer**. The Treasurer sets each machine's fee and a Fee Share on it, plus a Market Tax on trades between players; the Mayor spends that revenue on projects — machine levels, Infrastructure Enhancements that double a machine's speed, Mining Slot Enhancements, and 48-hour Server Bonanzas — and can sell bonds (`/bonds buy`) repaid out of it. Admins don't set fees.
+1. **Mine** — `/mine place` puts a drill in the ground (your first Iron Drill is free). It mines on its own, online or not, with no daily cap.
+2. **Collect** — `/collect` empties your drills into your inventory.
+3. **Sell** — `/market sell` sells to the best bidder and `/market buy` buys from the cheapest seller, player or server. Ores and metals trade only with the server; gemstones, components, containers and drills trade between players with `/market list` and `/market order`.
+4. **Reinvest** — smelt ore in the `/furnace` (or a hundred at a time in the `/blast` furnace), craft gear and drill upgrades in the `/factory`, press gems in the `/press`, and break things back down in the `/scrapper`. Every fee counts toward **mining slots**: another drill for everyone in the server.
+5. **Check the board** — `/jobboard` shows the task your server pays a bonus for today. It pays every time you finish it.
+6. **Bet on it** — `/bet open` stakes your currency on something happening; others back you or bet against you, and the winners split the pot. The bot takes no cut.
+7. **Elect a government** — every Thursday the server votes (`/vote`) for a **Mayor** and a **Treasurer**. The Treasurer sets fees and taxes; the Mayor spends them on projects and can sell bonds (`/bonds buy`). Admins don't set fees.
 
-Look anything up in-game with `/recipe` (the recipe book) or the built-in manual: `/help`, `/manual`, or `/man` — same book, three names.
+Look things up in-game with `/recipe` (the recipe book) or `/help` (also `/manual` or `/man`).
 
 And `/honk` plays a honk. No further questions.
 
@@ -54,7 +54,7 @@ And `/honk` plays a honk. No further questions.
 | `/setup currency\|channel\|max_queue\|messages` | Server-manager configuration |
 | `/honk` | Honk |
 
-By default every response is private (ephemeral) so the bot never clutters a channel; a server manager can flip that with `/setup messages public`, or confine the bot to one channel entirely with `/setup channel`.
+Replies are private by default; a server manager can make them public with `/setup messages public`, or keep the bot to one channel with `/setup channel`.
 
 ## Project structure
 

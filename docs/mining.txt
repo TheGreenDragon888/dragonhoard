@@ -17,7 +17,7 @@ Those gemstone counts are the point. A drill draws from what is genuinely in the
 
 The bag is deliberately NOT scaled to server size. A smaller bag for a smaller server would make its diamonds commoner per item mined, which is a different game rather than the same one at a different pace.
 
-How long a bag lasts is now entirely a matter of investment. At the base 3 slots per player (a server that has unlocked more drains it proportionally faster): 5 members on level 1 Iron Drills mine 1,800/day and take 556 days; the same 5 on level 10 Diamond Drills mine 483,840/day and take 2; 200 members on level 1 Iron Drills take 14. A lone player on starter drills waits years. That is the accepted trade for removing the ceiling - gem timing is now the player's own choice, where before it was their member count's. An earlier design floored it at one diamond a year by injecting gems on a timer; that was dropped along with the daily top-up it hung off.
+How long a bag lasts is now entirely a matter of investment. At the base 3 slots per player (a server that has unlocked more drains it proportionally faster): 5 members on level 1 Iron Drills mine 1,800/day and take 556 days; the same 5 on level 3 Diamond Drills mine 518,400/day and take 1.9; 200 members on level 1 Iron Drills take 14. A lone player on starter drills waits years. That is the accepted trade for removing the ceiling - gem timing is now the player's own choice, where before it was their member count's. An earlier design floored it at one diamond a year by injecting gems on a timer; that was dropped along with the daily top-up it hung off.
 
 /mine status shows what is actually in the bag, including exactly which gemstones are still in it. Every number it prints is a fact read from the database; there are no estimates anywhere in that embed.
 
@@ -49,15 +49,23 @@ Why 25 for the first one: it is five times UPGRADE_THRESHOLD_BASE, which is exac
 An unlocked slot is not a granted drill. It is permission to place one more, and the player still has to own or craft it - so a server unlocking its fourth slot does not hand every member a fourth drill, it lets the members who built one use it.
 
 Drill Levels
-Every drill starts at level 1 mining at its type's base rate, and each level above that adds a share of that drill's own base rate rather than a flat amount - so the upgrade path doesn't get worse the better your drill is. On an Iron or Steel Drill the share is a fifth (LEVEL_RATE_ANCHOR); on a Ruby, Obsidian or Diamond Drill it is a half (GEM_LEVEL_RATE_ANCHOR, 1.4.2). Which one a drill gets is decided by whether its upgrade costs a gem (data/materials.py: level_rate_anchor). There is no maximum level; the cost is the only limit.
+Every drill starts at level 1 mining at its type's base rate, and each level above that adds a share of that drill's own base rate rather than a flat amount - so the upgrade path doesn't get worse the better your drill is. On an Iron or Steel Drill the share is a fifth (LEVEL_RATE_ANCHOR); on a Ruby, Obsidian or Diamond Drill it is the whole base (GEM_LEVEL_RATE_ANCHOR, 1.4.3 - a half in 1.4.2, a fifth before that). Which one a drill gets is decided by whether its upgrade costs a gem (data/materials.py: level_rate_anchor). There is no maximum level; the cost is the only limit.
 
-Why the gem drills get a half. Until 1.4.2 every drill got a fifth, and a gem drill upgrade was never the best thing a gem could buy. Count in gems, which are essentially the whole cost of a gem-tier drill, and call the drill's base rate b:
+Why the gem drills get the whole base. There are two things an upgrade's gem could have bought instead, and the upgrade has to hold up against both.
 
-  - a level-1 upgrade costs 1 gem and adds b/5 (now b/2)
+Another drill of the same tier. Count in gems, which are essentially the whole cost of a gem-tier drill, and call the drill's base rate b:
+
+  - a level-1 upgrade costs 1 gem and adds b (b/5 until 1.4.2, b/2 in 1.4.2)
   - a new drill of the same tier costs 3 gems, in its bit. In an empty slot it adds b, which is b/3 per gem.
   - in place of a drill from the tier below it adds 3b/4, which is b/4 per gem - each gem tier mines four times the one under it, the Ruby Drill over the Steel Drill included.
 
-At a fifth, both kinds of new drill beat the upgrade, so a gem was always better spent on another drill until every slot already held that tier. At a half, the first upgrade (b/2) beats both, and the second (2 gems for b/2) ties the replacement at b/4 per gem: level a gem drill twice, then build the next one. The third (4 gems) loses. tests/test_drills.py: GemUpgradeIsWorthItsGemTests pins all three.
+At a fifth, both kinds of new drill beat the upgrade, so a gem was always better spent on another drill until every slot already held that tier. At a half the first upgrade beat both but the second (2 gems for b/2) only tied the replacement. At the whole base the first (b per gem) and the second (b/2) beat both, the third (4 gems, b/4 per gem) ties the replacement and the fourth loses: level a gem drill three times, then build the next one.
+
+A drill of the tier below. This is what a half did not fix. Gems of different kinds are compared by the mining it takes to turn one up, 1 / drop chance, which makes an obsidian ten rubies and a diamond nine obsidian - the same ratio a mining affinity converts at. Each tier mines four times the one below it, but its gem is nine or ten times rarer, so at a half the first upgrade of an Obsidian or Diamond Drill added less speed for the mining it cost than a brand new drill of the tier below in an empty slot. At the whole base it adds more. It still adds less than UPGRADING a drill of the tier below, and that was left alone on purpose: the dearer drill gains more in absolute terms from the one slot it occupies, and levelling several cheaper drills takes each of them out of the ground for a factory job. tests/test_drills.py: GemUpgradeIsWorthItsGemTests pins every comparison in this section.
+
+What this gave up. From 1.2.1 until 1.4.3 a new drill of a tier was cheaper than levelling the tier below up to match its speed. That no longer holds between gem tiers: a Ruby Drill matches a level 1 Obsidian Drill at level 4, and an Obsidian Drill a level 1 Diamond Drill likewise, for far less than the new drill's bit. The owner accepted that in 1.4.3 because the higher tier still pulls ahead as soon as it is levelled: a level 2 Obsidian or Diamond Drill outmines any drill of the tier below that cost no more mining than it did (TheHigherTierWinsFromItsSecondLevelTests). The practical consequence is a dip - swapping a well-levelled drill for a level 1 drill of the next tier can be a step down until that drill's first upgrade.
+
+Scrapping a levelled gem drill gives back half the gems its levels cost, rounded down but never less than one, on top of its bit (1.4.3; data/materials.py: drill_scrap_yield). Before that the levels were simply lost, which made any drill a player expected to replace a drill not worth levelling. Upgrade packs are not returned, and neither are the bars an Iron or Steel Drill's levels cost.
 
 Iron and Steel were left at a fifth. The argument above only works for drills whose bit is essentially their whole cost; on an Iron or Steel Drill the chassis and wiring are a large share of it too (compare raw_input_cost of the bit and of the drill's recipe in data/materials.py), so counting in bits says nothing about them.
 
@@ -125,7 +133,7 @@ The following are the currently planned materials:
 <:ObsidianDrillBit:1523433758139748372> Obsidian Drill Bit (10 Steel, 3 Obsidian)
 <:DiamondDrillBit:1523433768076050551> Diamond Drill Bit (10 Steel, 3 Diamond)
 (Drills, also produced in a factory)
-Rates below are at level 1; every level adds a fifth of that drill's own level 1 rate on an Iron or Steel Drill, and half on a Ruby, Obsidian or Diamond Drill. Every drill stores 100 raw materials on its own, whatever its type - more storage comes from containers, not from the drill.
+Rates below are at level 1; every level adds a fifth of that drill's own level 1 rate on an Iron or Steel Drill, and all of it on a Ruby, Obsidian or Diamond Drill. Every drill stores 100 raw materials on its own, whatever its type - more storage comes from containers, not from the drill.
 <:IronMiningDrill:1523433637398450347> Iron Drill (Wiring, Drill Chassis, and Iron Drill Bit) [Mines 5 raw materials / hour]
 <:SteelMiningDrill:1523433646613069824> Steel Drill (Wiring, Drill Chassis, and Steel Drill Bit) [Mines 7.5 raw materials / hour]
 <:RubyMiningDrill:1523433666800517262> Ruby Drill (Wiring, Drill Chassis, and Ruby Drill Bit) [Mines 30 raw materials / hour]

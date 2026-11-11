@@ -571,8 +571,8 @@ class Database(_Executor):
                 if column not in config_columns:
                     conn.execute(f"ALTER TABLE server_config ADD COLUMN {column} {definition}")
 
-            # The Market Tax's floor (utils/government.py: rate_floor)
-            # reads the rate each bond was sold under. A plain add with a
+            # The rate each bond was sold under, read by the Market Tax's floor
+            # until that floor was removed after 1.4.2. A plain add with a
             # default, introspection-gated like the columns above. Every bond
             # already sold gets 0, which is right: there was no Market Tax when
             # it was sold, so it was lent against none.
@@ -979,7 +979,8 @@ class Database(_Executor):
         """Rounds every Fee Share that is not one of the steps down to the step
         below it - the server's rate, and the rate each bond recorded at its
         sale, so a bond's floor never sits above every rate a Treasurer could
-        set. Down rather than to the nearest, as decided when one command came
+        set (that floor was removed after 1.4.2; the rounding stands as
+        history). Down rather than to the nearest, as decided when one command came
         to set both rates (docs/government.md section 2)."""
         from utils.government import RATE_PERCENTS, rate_step_at_or_below
 

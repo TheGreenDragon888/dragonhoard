@@ -1323,11 +1323,9 @@ class MiningCog(commands.Cog):
     def _focus_embed(self, current: str, unlocked: bool) -> discord.Embed:
         """The focus menu: what you're on, and what each of the others does.
 
-        Every focus is described in full even when the player hasn't unlocked
-        one, because the two facts that decide the choice are both bad news and
-        both easy to discover too late - copper and coal can't make steel at
-        all, and iron helps steel far less than doubling your iron ore sounds
-        like it should.
+        Every focus is listed whether or not the player has unlocked one. A
+        focus that can't feed the player's efficiency is flagged on the
+        efficiency menu, not here.
         """
         embed = make_embed("Mining Focus", MINING_COLOR)
         if unlocked:
@@ -1338,12 +1336,9 @@ class MiningCog(commands.Cog):
                 for m, q in MINING_FOCUS_UNLOCK_COST.items()
             )
             embed.description = (
-                f"A mining focus converts the ore you don't want into the one you do. Copper is "
-                f"worth two iron because iron drops around twice as often "
-                f"— you get more of what you want and none of what you don't.\n\n"
-                f"Unlocking it costs {costs}, once. After that, changing is free, once a day.\n\n"
-                f"Gemstones are unaffected by focus; rubies, obsidian and diamonds are equally "
-                f"likely whatever you choose."
+                f"Turns every ore you mine into the one you pick. Unlocking it costs {costs}, "
+                f"once; after that, changing is free once a day.\n\n"
+                f"Gem odds are the same whatever you pick."
             )
 
         # Icon and marker both belong in the heading: the icon because it is how
@@ -1482,12 +1477,9 @@ class MiningCog(commands.Cog):
                 for m, q in MINING_EFFICIENCY_UNLOCK_COST.items()
             )
             embed.description = (
-                "A mining efficiency doubles the raw materials one smelted recipe needs, "
-                "then converts a little of whichever one you have too much of into the "
-                "other — so what you collect smelts down with less left over.\n\n"
-                f"Unlocking it costs {costs}, once. After that, changing is free, once a day.\n\n"
-                "It's separate from your mining focus: you can have either, both or neither, "
-                "and the two stack."
+                "Doubles the ores one metal's recipe needs, mixed to waste less. Unlocking it "
+                f"costs {costs}, once; after that, changing is free once a day. It stacks with "
+                "`/focus`."
             )
 
         kept = MINING_FOCUSES[focus_id]["keep"]
@@ -1501,7 +1493,7 @@ class MiningCog(commands.Cog):
                     names = " or ".join(get_material_info(m)["name"] for m in missing)
                     value += (
                         f"\n⚠️ Your **{focus_label(focus_id)}** focus mines no {names}, "
-                        f"so this would have very little to work with."
+                        f"so this does little."
                     )
             embed.add_field(name=f"{info['emoji']} {info['name']}{marker}", value=value, inline=False)
 
@@ -1621,10 +1613,8 @@ class MiningCog(commands.Cog):
         """The affinity menu, laid out exactly as the focus and efficiency
         menus are: one field per option, "(selected)" on the one you're on.
 
-        The text above the fields is deliberately shorter than theirs. Those
-        two need sentences - a focus that can't feed steel, an efficiency your
-        focus can't supply - but an affinity's options are exchange rates, and
-        the rates say what the feature does on their own.
+        The text above the fields is only the price: an affinity's options are
+        exchange rates, and the rates say what the feature does on their own.
 
         The third of the three places progress is shown, and the only one a
         player can reach without mining anything.

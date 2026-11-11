@@ -33,6 +33,7 @@ from cogs.fun import FunCog
 from data.manual import SECTIONS, DEFAULT_SECTION, build_section_embed
 
 import utils.embeds as embeds
+from utils.embeds import embed_word_count
 
 COGS = (
     SetupCog,
@@ -58,6 +59,10 @@ MAX_EMBED_LENGTH = 6000
 MAX_EMBED_FIELDS = 25
 MAX_SELECT_DESCRIPTION = 100
 
+# The most words one manual page may show. Ours, not Discord's: each page is
+# meant to fit on one phone screen (see the docstring of data/manual.py).
+MAX_PAGE_WORDS = 250
+
 PALETTE = {
     value for name, value in vars(embeds).items()
     if name.endswith("_COLOR") and isinstance(value, discord.Color)
@@ -80,8 +85,15 @@ def registered_commands() -> set[str]:
 
 def documented_commands() -> list[str]:
     """Every command name the manual claims to document, in order, including
-    duplicates so they can be caught."""
-    return [cmd.name for section in SECTIONS.values() for cmd in section.commands]
+    duplicates so they can be caught. A line's aliases count: "/furnace queue"
+    is documented by the "/furnace status" line it shares."""
+    return [
+        name
+        for section in SECTIONS.values()
+        for cmd in section.commands
+        for name in (cmd.name, *cmd.aliases)
+    ]
+
 
 
 class ManualCoverageTests(unittest.TestCase):
@@ -162,6 +174,19 @@ class ManualEmbedTests(unittest.TestCase):
                     f"Section '{section.key}' renders to {len(embed)} characters",
                 )
                 self.assertLessEqual(len(embed.fields), MAX_EMBED_FIELDS)
+
+    def test_every_page_stays_short(self):
+        """Measured with embed_word_count at commit e20d50b, the pages came to 5,982
+        words between them and the Mining page alone to 1,030, before they
+        were cut down to fit one phone screen each. This keeps them from
+        growing back a sentence at a time."""
+        for section in SECTIONS.values():
+            with self.subTest(section=section.key):
+                words = embed_word_count(build_section_embed(section))
+                self.assertLessEqual(
+                    words, MAX_PAGE_WORDS,
+                    f"Section '{section.key}' shows {words} words; the cap is {MAX_PAGE_WORDS}",
+                )
 
     def test_every_section_carries_the_standard_footer(self):
         for section in SECTIONS.values():

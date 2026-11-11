@@ -109,11 +109,14 @@ a trade answered with a paragraph of prose instead.
 
 ## Figures, not explanations
 
-A status page or receipt carries figures. What they mean - how GDP is counted,
-where government revenue goes, how bonds are repaid - is written once, on the feature's page
-of `/help` (`data/manual.py`), and a footer note points there when a reader
-might need it. Repeating the explanation on the embed made every reader pay
-for it on every command, and 1.4's embeds had grown sentences for each.
+A status page or receipt carries figures. Where a reader might need one
+explained - how GDP is counted, how bonds are repaid - a footer note points to
+the feature's page of `/help` (`data/manual.py`), which explains it in a line.
+Repeating the explanation on the embed made every reader pay for it on every
+command, and 1.4's embeds had grown sentences for each. The `/help` page says
+what a figure means, not why the game works that way. The rules for that page
+and every other piece of player text are in `CLAUDE.md`, "Writing text players
+read".
 
 ## One separator inside a line
 

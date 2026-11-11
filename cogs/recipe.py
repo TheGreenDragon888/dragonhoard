@@ -144,10 +144,9 @@ class RecipeCog(commands.Cog):
         embed.add_field(
             name="Which to use",
             value=(
-                f"The blast furnace runs these same recipes {BLAST_FURNACE_BATCH_SIZE} at a "
-                "time - the same ore per bar, the same coal per bar, the same fee per bar, "
-                "and a lot faster. Its own fuel and fee are charged per batch, so it's worth "
-                "it once you're smelting in the thousands. `/blast smelt` queues one."
+                f"The blast furnace runs these recipes {BLAST_FURNACE_BATCH_SIZE} at a time, "
+                "much faster, with the same ore, coal and fee per bar. `/blast smelt` queues "
+                "a batch."
             ),
             inline=False,
         )
@@ -156,11 +155,6 @@ class RecipeCog(commands.Cog):
     @recipe_group.command(name="press", description="List every hydraulic press recipe")
     async def recipe_press(self, interaction: discord.Interaction):
         embed = make_embed("⚙️ Hydraulic Press Recipes", RECIPE_COLOR)
-        embed.description = (
-            "Each recipe costs a little under what you'd have mined alongside that gem "
-            "on average before finding one - the press trades a very large pile of ore "
-            "for the certainty of a gem."
-        )
         lines = [
             f"{line} [{PRESS_RECIPES[product_id]['press_days']} press-day"
             f"{'s' if PRESS_RECIPES[product_id]['press_days'] != 1 else ''}]"
@@ -169,11 +163,7 @@ class RecipeCog(commands.Cog):
         add_multi_field(embed, "Recipes", lines)
         embed.add_field(
             name="Press Time",
-            value=(
-                "A press produces one press-day of work per day for each level it has, "
-                "so a level 1 press takes nine days over a diamond and a level 3 press "
-                "takes three."
-            ),
+            value="A press does one press-day of work per day for each level it has.",
             inline=False,
         )
         await respond(interaction, self.db, embed=embed)
@@ -183,13 +173,9 @@ class RecipeCog(commands.Cog):
     async def recipe_scrapper(self, interaction: discord.Interaction):
         embed = make_embed("♻️ Scrapper Returns", RECIPE_COLOR)
         embed.description = (
-            "The scrapper undoes **one tier** of crafting and gives back **half** of that "
-            "recipe, rounded down. It never returns less than one of a recipe's most valuable "
-            "part - that's why a gem-tier item never has its gem destroyed.\n\n"
-            "Drills are the one exception: scrapping one skips the component tier entirely. "
-            "It returns the drill's bit whole, plus half the raw materials (rounded down) that "
-            "its wiring and chassis were made from - never a whole chassis or wiring to build "
-            "another drill from for free."
+            "Undoes **one tier** of crafting, returning **half** the recipe, rounded down, but "
+            "always at least one of its most valuable part. Drills return their bit, half the "
+            "metal in their wiring and chassis, and half of any upgrade gems."
         )
         add_multi_field(embed, "Components", _scrap_lines(COMPONENT_RECIPES))
         add_multi_field(embed, "Drill Bits", _scrap_lines(DRILL_BIT_RECIPES))

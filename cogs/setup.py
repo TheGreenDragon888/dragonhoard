@@ -44,17 +44,14 @@ def setup_guide_embed(guild_name: str) -> discord.Embed:
     """
     embed = make_embed(f"Welcome to Dragonhoard, {guild_name}", DEFAULT_COLOR)
     embed.description = (
-        "Everyone can start mining right away - `/mine place` puts a drill in the ground "
-        "and `/help` explains the rest. There are two things an admin should set, though, "
-        "and the first one matters most."
+        "Anyone can start mining now with `/mine place`, and `/help` explains the rest. "
+        "Admins have two settings to make:"
     )
     embed.add_field(
         name="1. Name your currency  ⭐",
         value=(
             "```/setup currency <name> <emoji>```"
-            "Every server has its own money with its own name and symbol, and until you pick "
-            "one, prices show a placeholder. It's the only setting with no sensible default - "
-            "the one below already works."
+            "Until you do, prices show a placeholder symbol."
         ),
         inline=False,
     )
@@ -62,9 +59,7 @@ def setup_guide_embed(guild_name: str) -> discord.Embed:
         name="2. Decide how the bot talks",
         value=(
             "```/setup messages <public|private>\n/setup channel [channel]```"
-            "Replies are private by default so the bot stays out of the way. If you'd rather "
-            "everyone saw each other's hauls, make them public - and `/setup channel` keeps "
-            "all of it in one room."
+            "Replies are private by default. `/setup channel` keeps the bot to one channel."
         ),
         inline=False,
     )
@@ -72,9 +67,8 @@ def setup_guide_embed(guild_name: str) -> discord.Embed:
         name="Machine fees are elected",
         value=(
             "```/vote mayor <member>\n/vote treasurer <member>```"
-            "Every Thursday your players elect a Mayor and a Treasurer. The Treasurer sets "
-            "what the machines charge and the government's share of it; the Mayor spends "
-            "that on projects. Admins don't set either - `/government status` shows who does."
+            "Every Thursday players elect a Mayor and a Treasurer, and the Treasurer sets "
+            "the fees, not admins (`/help government`)."
         ),
         inline=False,
     )
@@ -141,10 +135,9 @@ class SetupCog(commands.Cog):
         # runs the first command instead of being lost entirely.
         await post_server_notification(
             self.db, guild.id, embed.title,
-            "An admin needs to run `/setup currency <name> <emoji>` to name this server's "
-            "money - until then prices show a placeholder symbol, and `/setup messages public` "
-            "makes the bot reply where everyone can see. Both need Manage Server. Machine fees "
-            "are set by the Treasurer your players elect every Thursday (`/vote`).",
+            "An admin should name this server's currency with `/setup currency <name> <emoji>`; "
+            "until then, prices show a placeholder. `/setup messages public` shows replies to "
+            "everyone. Both need Manage Server, and fees are set by the elected Treasurer.",
         )
 
     # A "group" bundles related slash commands under one parent, so users

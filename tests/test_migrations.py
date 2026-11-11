@@ -902,11 +902,12 @@ class MarketTaxMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(row["market_tax_changed"])
         self.assertEqual(row["tax_percent"], 20, "the Fee Share is untouched")
 
-    async def test_existing_bonds_put_no_floor_under_it(self):
-        from utils.government import FEE_SHARE, MARKET_TAX, rate_floor
-
-        self.assertEqual(await rate_floor(self.db, GUILD, MARKET_TAX), 0.0)
-        self.assertEqual(await rate_floor(self.db, GUILD, FEE_SHARE), 20)
+    async def test_existing_bonds_record_no_market_tax(self):
+        row = await self.db.fetchone(
+            "SELECT tax_percent_at_sale, market_tax_percent_at_sale FROM government_bonds"
+        )
+        self.assertEqual(row["market_tax_percent_at_sale"], 0.0)
+        self.assertEqual(row["tax_percent_at_sale"], 20, "the Fee Share it recorded is untouched")
 
     async def test_opening_it_again_changes_nothing(self):
         await self.db.init_schema()
