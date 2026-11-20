@@ -274,14 +274,16 @@ For `BONANZA_HOURS` (48), every drill in the server mines and every machine
 runs at double speed. It cannot be bought while one is running, and it
 multiplies with enhancements.
 
-**Price: half the server's 7-day GDP, never less than 50** (`bonanza_price`).
+**Price: 2.5% of the server's 7-day GDP, never less than 2.50** (`bonanza_price`).
+1.4 charged half the 7-day GDP and at least 50; 1.5 cut both to a twentieth
+because no server could afford to invest in one at that price.
 
-- *It stays a net sink.* Doubling everything for 48 of a week's 168 hours adds
-  at most 2/7 of a week's output (about 0.29 of the week's GDP). Any share of
-  2/7 or more takes out at least as much currency as that extra output could
-  mint by being sold; at 0.5 it returns at most 57% of the price.
+- *It is no longer a net sink.* Doubling everything for 48 of a week's 168
+  hours adds at most 2/7 of a week's output (about 0.29 of the week's GDP). At
+  1.4's share of 0.5 that extra output returned at most 57% of the price; at
+  0.025 it can be worth up to about 11.4 times the price if sold.
 - *Gaming it does not pay.* Idling to depress GDP costs a server that output
-  one-for-one and saves only half as much on the price - true of any share
+  one-for-one and saves only 2.5% as much on the price - true of any share
   below 1.
 - *It scales with the server* above the minimum, which sets the price for every
   server whose 7-day GDP is under 100.

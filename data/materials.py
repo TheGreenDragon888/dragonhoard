@@ -679,14 +679,15 @@ BONANZA_SPEED_MULTIPLIER = 2
 # less than BONANZA_MINIMUM_PRICE, which sets the price for every server whose
 # 7-day GDP is under 100.
 #
-# The share is bounded on both sides by what a Bonanza can produce. Doubling
-# everything for 48 of a week's 168 hours adds at most 2/7 of a week's output,
-# so any share of 2/7 or more takes at least as much currency out as the extra
-# output could mint by being sold; at 0.5 the extra output returns at most 57%
-# of the price. And any share below 1 means a server that idles to depress its
-# GDP loses more output than it saves on the price. See docs/government.md.
-BONANZA_GDP_SHARE = 0.5
-BONANZA_MINIMUM_PRICE = 50.00
+# 1.5 cut both to a twentieth of 1.4's 0.5 and 50.00, because at those prices
+# no server could afford to invest in one. That gives up 1.4's argument that a
+# Bonanza is a net sink: doubling everything for 48 of a week's 168 hours adds
+# at most 2/7 of a week's output, which at a share of 0.025 is worth up to
+# about 11.4 times the price if sold. What still holds is that any share below
+# 1 means a server that idles to depress its GDP loses more output than it
+# saves on the price. See docs/government.md.
+BONANZA_GDP_SHARE = 0.025
+BONANZA_MINIMUM_PRICE = 2.50
 
 # A Bonanza is not offered until a server's production ledger reaches back
 # this far. GDP is read over a 7-day window, and a ledger younger than that

@@ -926,13 +926,14 @@ class ProjectTests(_GovernmentTestCase):
             async with self.db.transaction() as tx:
                 await start_bonanza(tx, GUILD, MAYOR_ID, now)
 
-    async def test_a_bonanza_costs_half_the_weeks_gdp_and_never_under_the_minimum(self):
+    async def test_a_bonanza_costs_a_fortieth_of_the_weeks_gdp_and_never_under_the_minimum(self):
         now = THURSDAY
+        self.assertEqual(BONANZA_MINIMUM_PRICE, 2.50)
         await self.ledger(8, 1.0, now)        # history, outside the window
         await self.ledger(1, 60.0, now)
         self.assertEqual((await bonanza_quote(self.db, GUILD, now)).price, BONANZA_MINIMUM_PRICE)
         await self.ledger(2, 140.0, now)      # 200.00 this week
-        self.assertEqual((await bonanza_quote(self.db, GUILD, now)).price, 100.0)
+        self.assertEqual((await bonanza_quote(self.db, GUILD, now)).price, 5.0)
 
     async def test_a_bonanza_doubles_machines_for_its_duration_and_cannot_stack(self):
         now = datetime.now(timezone.utc)
