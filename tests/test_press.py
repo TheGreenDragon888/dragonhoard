@@ -16,6 +16,7 @@ from data.materials import (
     factory_rate,
     furnace_rate,
     get_material_info,
+    press_output,
     press_rate_per_day,
     raw_input_cost,
     upgrade_threshold,
@@ -106,10 +107,83 @@ class PressRecipeTests(unittest.TestCase):
         )
 
     def test_every_recipe_output_and_input_resolves(self):
-        for product_id, recipe in PRESS_RECIPES.items():
-            self.assertIsNotNone(get_material_info(product_id), product_id)
+        for recipe_id, recipe in PRESS_RECIPES.items():
+            self.assertIsNotNone(get_material_info(press_output(recipe_id)), recipe_id)
             for input_id in recipe["inputs"]:
                 self.assertIsNotNone(get_material_info(input_id), input_id)
+
+    def test_a_recipe_named_after_its_output_makes_that_output(self):
+        # The four recipes from before 1.5 are keyed by what they make, and
+        # jobs queued under those keys have to keep crediting the same thing.
+        for recipe_id in ("ruby", "obsidian", "diamond", "ultra_dense_matter"):
+            self.assertEqual(press_output(recipe_id), recipe_id)
+
+
+class GemFusionRecipeTests(unittest.TestCase):
+    """1.5: the press fuses lower gems into the next tier up - rubies into
+    obsidian, obsidian into diamonds - at the rarity ratio (docs/mining-affinity.md,
+    "Why the rarity ratio")."""
+
+    FUSIONS = (("obsidian_from_ruby", "ruby", "obsidian"), ("diamond_from_obsidian", "obsidian", "diamond"))
+
+    def test_the_two_fusions_and_what_they_make(self):
+        self.assertEqual(press_output("obsidian_from_ruby"), "obsidian")
+        self.assertEqual(press_output("diamond_from_obsidian"), "diamond")
+        self.assertEqual(PRESS_RECIPES["obsidian_from_ruby"]["inputs"], {"ruby": 10})
+        self.assertEqual(PRESS_RECIPES["diamond_from_obsidian"]["inputs"], {"obsidian": 9})
+
+    def test_the_cost_is_the_rarity_ratio(self):
+        # Recomputed from the drop chances, so a retune moves both together.
+        for recipe_id, lower, higher in self.FUSIONS:
+            with self.subTest(recipe=recipe_id):
+                ratio = RAW_MATERIALS[lower]["drop_chance"] / RAW_MATERIALS[higher]["drop_chance"]
+                self.assertEqual(PRESS_RECIPES[recipe_id]["inputs"][lower], round(ratio))
+
+    def test_a_fused_gem_costs_exactly_the_mining_behind_it(self):
+        # Ten rubies are as much mining as one obsidian, nine obsidian as one
+        # diamond: fusing neither creates nor destroys value, unlike the metal
+        # recipes' small discount.
+        for recipe_id, lower, higher in self.FUSIONS:
+            with self.subTest(recipe=recipe_id):
+                given = PRESS_RECIPES[recipe_id]["inputs"][lower] / RAW_MATERIALS[lower]["drop_chance"]
+                made = 1 / RAW_MATERIALS[higher]["drop_chance"]
+                self.assertAlmostEqual(given / made, 1.0, places=9)
+
+    def test_press_time_is_the_outputs_own(self):
+        # The same rule ultra dense matter's 27 press-days follows: a recipe
+        # takes the press time of the tier it makes.
+        for recipe_id, _, higher in self.FUSIONS:
+            with self.subTest(recipe=recipe_id):
+                self.assertEqual(
+                    PRESS_RECIPES[recipe_id]["press_days"], PRESS_RECIPES[higher]["press_days"]
+                )
+
+    def test_each_fusion_is_listed_after_the_recipe_for_the_same_output(self):
+        order = list(PRESS_RECIPES)
+        self.assertEqual(
+            order,
+            ["ruby", "obsidian", "obsidian_from_ruby", "diamond", "diamond_from_obsidian", "ultra_dense_matter"],
+        )
+
+
+class PressChoiceLabelTests(unittest.TestCase):
+    """/press craft names every choice by what it makes and from what, since
+    two recipes now make obsidian and two make diamonds."""
+
+    def test_labels(self):
+        from cogs.press import press_choice_label
+
+        self.assertEqual(press_choice_label("ruby"), "Ruby from 600 Iron")
+        self.assertEqual(press_choice_label("obsidian"), "Obsidian from 3,000 Copper")
+        self.assertEqual(press_choice_label("obsidian_from_ruby"), "Obsidian from 10 Rubies")
+        self.assertEqual(press_choice_label("diamond"), "Diamond from 27,000 Steel")
+        self.assertEqual(press_choice_label("diamond_from_obsidian"), "Diamond from 9 Obsidian")
+
+    def test_every_label_fits_a_discord_choice(self):
+        from cogs.press import press_choice_label
+
+        for recipe_id in PRESS_RECIPES:
+            self.assertLessEqual(len(press_choice_label(recipe_id)), 100)
 
     def test_ultra_dense_matter_is_a_registered_material(self):
         info = get_material_info("ultra_dense_matter")

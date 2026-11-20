@@ -293,8 +293,8 @@ _add(ManualSection(
     color=PRESS_COLOR,
     summary="Crush bulk ore into guaranteed gemstones",
     body=(
-        "Turns a huge pile of ordinary ore into a guaranteed gemstone, slowly. `/recipe press` "
-        "lists each recipe and how many press-days it takes."
+        "Turns a huge pile of ordinary ore into a guaranteed gemstone, or lower gems into the "
+        "next tier up, slowly. `/recipe press` lists each recipe and how many press-days it takes."
     ),
     commands=(
         ManualCommand(

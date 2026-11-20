@@ -100,7 +100,7 @@ Three consequences worth stating plainly, because two of them are bad news that 
 Mining Affinity
 A player who has reached the diamond stage can spend one Diamond, once, to unlock a mining affinity with /affinity. It is the focus's argument one tier up: every gemstone they mine that isn't the one they chose arrives as the one they chose, converted at the same rarity ratio a focus uses - 90 rubies or 9 obsidian to a diamond, because the drop chances are 90:9:1 - and then better than even, at MINING_AFFINITY_CONVERSION_BONUS. At the live bonus of 2.0 that is 45 rubies to a diamond.
 
-It exists because gem progression was otherwise all-or-nothing. A bag holds exactly one diamond, so a player either dug it up or didn't, and the 90 rubies they found on the way had no route toward it. The press turns ore into gems; nothing turned gems into gems.
+It exists because gem progression was otherwise all-or-nothing. A bag holds exactly one diamond, so a player either dug it up or didn't, and the 90 rubies they found on the way had no route toward it. The press turned ore into gems; nothing turned gems into gems. (Since 1.5 the press fuses them too - see the press section - at the plain rarity ratio, half what an affinity converts at, so an affinity is still the better rate.)
 
 It changes which gem a player gets and never how many. The pool decides that alone, and an affinity that boosted the draw would be incoherent with a bag containing a single diamond - and would take that diamond from the other people sharing the bag. Ores are never touched, the exact mirror of the promise a focus makes about gems.
 
@@ -191,19 +191,23 @@ The blast furnace has no auto-smelt of its own. The market's surplus-ore smeltin
 Factories: (/factory craft <component, drill, container, or upgrade pack> <quantity>, and /factory upgrade <drill>)
 1 component / hour, per level
 
-Hydraulic presses: (/press craft <gemstone or ultra dense matter> <quantity>)
+Hydraulic presses: (/press craft <recipe> <quantity>)
 1 press-day of work / day, per level
 
 The press turns bulk smelted material into gemstones. Every recipe costs a little under what a player would have received alongside that gem on average before mining one - the stretch between two rubies yields about 6,297 Iron Ore, which smelts into 630 Iron, and a pressed ruby costs 600. So the press doesn't create gems out of nothing; it trades an enormous pile of ore for the certainty of a gem instead of the one-in-a-million chance of digging one up, with a ~4.7% discount as the reward for having built one.
 
-That discount is deliberately identical for every recipe. The three costs sit in a fixed 1 : 5 : 45 ratio that falls out of the drop rates (gem rarities are 90:9:1, Copper Ore drops at half Iron Ore's rate, and Steel takes 20 ore per unit against Iron's 10), and that ratio is what makes the three recipes worth the same as each other per unit of mining effort. Discounting one gem more than the others would quietly make it the only one worth pressing. Pressed gemstones are identical to mined ones. Neither can be sold on the market - gemstones left it in 1.2 (docs/market.md section 3), so the press's output is a crafting material rather than a payday.
+That discount is deliberately identical for every recipe. The three costs sit in a fixed 1 : 5 : 45 ratio that falls out of the drop rates (gem rarities are 90:9:1, Copper Ore drops at half Iron Ore's rate, and Steel takes 20 ore per unit against Iron's 10), and that ratio is what makes the three recipes worth the same as each other per unit of mining effort. Discounting one gem more than the others would quietly make it the only one worth pressing. Pressed gemstones are identical to mined ones. Neither can be sold to the server - gemstones left the server market in 1.2 (docs/market.md section 3) - though since 1.4 players can trade them with each other.
 
 A recipe's cost in press time is measured in press-days, against a ruby. A press earns one press-day per day for each level it has, so a level 1 press spends nine days on a diamond while a level 3 press spends three. A press earns nothing while its queue is empty - it can't bank weeks of idle time and then finish a diamond the instant one is queued.
 
 <:Ruby:1523433101840089208> Ruby (600 Iron) [1 press-day]
 <:Obsidian:1523433115450736690> Obsidian (3,000 Copper) [3 press-days]
 <:Diamond:1523433355708858612> Diamond (27,000 Steel) [9 press-days]
+<:Obsidian:1523433115450736690> Obsidian (10 Rubies) [3 press-days]
+<:Diamond:1523433355708858612> Diamond (9 Obsidian) [9 press-days]
 🌑 Ultra Dense Matter (10 Diamond) [27 press-days]
+
+Gem fusion (1.5): the last two recipes above combine lower gems into the next tier up, at the owner's request. They cost the plain rarity ratio - 10 rubies to an obsidian, 9 obsidian to a diamond, the same 90:9:1 the drop chances give - so a fused gem costs exactly the mining behind its inputs, with none of the metal recipes' discount. That is half what a mining affinity converts at, so an affinity stays the better rate, and the two can't be looped: an affinity converts only the gems in a haul, and the press only fuses upward. Each fusion takes its output's own press time, the rule ultra dense matter already follows. /press craft names every recipe by what it makes and from what ("Obsidian from 10 Rubies"), since two recipes now make each of obsidian and diamond.
 
 Ultra dense matter is priced in diamonds rather than ore: at 27x a ruby's press time it sits a full tier beyond diamond, and costing it in ore would put it out of reach of any server that will ever exist. Nothing consumes it yet - it's reserved for a later feature, and it can never be traded at all: not to the server, not to another player, not for any price. That used to be the same rule that covered drills and components, but as of 1.4 those CAN be sold to other players (docs/market.md section 3), so Exotic Matter is now a genuine exception rather than an instance of a general rule. It accrues and it stays yours - see PERMANENT_MATERIALS in data/materials.py, which is where the reason is written down.
 

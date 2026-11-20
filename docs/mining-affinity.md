@@ -22,7 +22,10 @@ Why the gem tier needed anything
 Gem progression was otherwise all-or-nothing. A bag holds exactly one diamond
 (docs/mining.txt), so a player either dug it up or didn't, and the 90 rubies
 they found on the way were worth the same mining with no way to trade them
-toward it. The press converts ore into gems; nothing converted gems into gems.
+toward it. The press converted ore into gems; nothing converted gems into gems.
+(Since 1.5 the press also fuses gems upward, at the plain rarity ratio - 10
+rubies to an obsidian, 9 obsidian to a diamond. That is half the rate an
+affinity converts at, so an affinity is still the better route.)
 
 Affinity is the focus's argument applied one tier up. A copper ore is worth two
 iron ore because iron drops twice as often; a ruby is worth a ninetieth of a

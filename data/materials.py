@@ -298,6 +298,19 @@ def _press_cost(gem_id: str, material_id: str) -> int:
     return round(PRESS_COST_BASE * ratio)
 
 
+def _fusion_cost(lower_gem: str, higher_gem: str) -> int:
+    """How many of `lower_gem` the press fuses into one `higher_gem`: the
+    rarity ratio, read off the drop chances (the 1 / focus_conversion_rate of
+    the pair, which is defined further down this file). Fraction because the
+    float division of two drop chances lands a hair off the whole number."""
+    ratio = Fraction(
+        RAW_MATERIALS[lower_gem]["drop_chance"] / RAW_MATERIALS[higher_gem]["drop_chance"]
+    ).limit_denominator(1000)
+    if ratio.denominator != 1:
+        raise ValueError(f"{lower_gem} -> {higher_gem} is not a whole-number ratio: {ratio}")
+    return int(ratio)
+
+
 # The hydraulic press: turns bulk smelted material into gemstones, trading a
 # lot of ore for the certainty of a gem instead of the one-in-a-million chance
 # of mining one.
@@ -315,12 +328,39 @@ def _press_cost(gem_id: str, material_id: str) -> int:
 # Ultra dense matter is priced in diamonds rather than ore: at 27x a ruby's
 # press time it sits one full tier beyond diamond, and costing it in ore would
 # put it out of reach of any server that will ever exist.
+#
+# Gem fusion (1.5, the owner's request): the press also combines lower gems
+# into the next tier up, rubies into obsidian and obsidian into diamonds. The
+# cost is the plain rarity ratio (_fusion_cost) - the owner's choice, and the
+# ratio docs/mining-affinity.md argues for under "Why the rarity ratio" - so a
+# fused gem costs exactly the mining behind it, neither more nor less. That is
+# half what a mining affinity converts at (its bonus doubles the ratio), so an
+# affinity stays the better rate. Each fusion takes its output's own press
+# time, the rule ultra dense matter's 27 press-days already follow.
+#
+# A fusion is keyed by what it is rather than by what it makes, because two
+# recipes now make obsidian and two make diamonds: production_jobs.target_id
+# stores the key, and press_output says what it makes. The four older recipes
+# are keyed by their output, so jobs queued before 1.5 still resolve.
 PRESS_RECIPES = {
     "ruby":     {"inputs": {"iron":   _press_cost("ruby", "iron")},       "press_days": 1},
     "obsidian": {"inputs": {"copper": _press_cost("obsidian", "copper")}, "press_days": 3},
+    "obsidian_from_ruby": {
+        "output": "obsidian", "inputs": {"ruby": _fusion_cost("ruby", "obsidian")}, "press_days": 3,
+    },
     "diamond":  {"inputs": {"steel":  _press_cost("diamond", "steel")},   "press_days": 9},
+    "diamond_from_obsidian": {
+        "output": "diamond", "inputs": {"obsidian": _fusion_cost("obsidian", "diamond")}, "press_days": 9,
+    },
     "ultra_dense_matter": {"inputs": {"diamond": 10}, "press_days": 27},
 }
+
+
+def press_output(recipe_id: str) -> str:
+    """The material a press recipe makes: its "output" if it names one, else
+    the recipe's own key. Every place that turns a press job into an item -
+    crediting it, recording it, naming it - goes through here."""
+    return PRESS_RECIPES[recipe_id].get("output", recipe_id)
 
 # Ultra dense matter is the only press output that isn't already a material in
 # its own right, so it carries its recipe on its entry too - that's what

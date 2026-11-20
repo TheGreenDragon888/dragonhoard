@@ -4,7 +4,9 @@ cogs/press.py
 Implements the hydraulic press: /press craft <product> <quantity>, plus
 /press status and /press queue.
 
-The press turns bulk smelted material into gemstones. Its recipes cost a little
+The press turns bulk smelted material into gemstones, and since 1.5 fuses
+lower gems into the next tier up (rubies into obsidian, obsidian into
+diamonds) at the rarity ratio. Its metal recipes cost a little
 under what a player would have mined alongside that gem on average before
 finding one (see PRESS_RECIPES), so the press doesn't create gems out of
 nothing - it trades a very large pile of ore for the certainty of a gem
@@ -70,6 +72,8 @@ from utils.db_helpers import (
 from data.materials import (
     PRESS_RECIPES,
     get_material_info,
+    material_name,
+    press_output,
     press_rate_per_day,
     upgrade_threshold,
 )
@@ -92,6 +96,19 @@ JOB_DISPLAY_LIMIT = 10
 PROGRESS_EPSILON = 1e-9
 
 
+def press_choice_label(recipe_id: str) -> str:
+    """How /press craft names a recipe: what it makes and from what, e.g.
+    "Obsidian from 10 Rubies". Since 1.5 two recipes make obsidian and two
+    make diamonds, so the output's name alone no longer says which is which.
+    Built from the recipe itself, so a retuned cost can't leave it stale."""
+    recipe = PRESS_RECIPES[recipe_id]
+    inputs = " and ".join(
+        f"{quantity:,} {material_name(get_material_info(input_id), quantity)}"
+        for input_id, quantity in recipe["inputs"].items()
+    )
+    return f"{get_material_info(press_output(recipe_id))['name']} from {inputs}"
+
+
 class PressCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -107,7 +124,7 @@ class PressCog(commands.Cog):
     @press_group.command(name="craft", description="Queue a gemstone to be pressed")
     @app_commands.describe(product="What to press", quantity="How many to produce — leave blank for 1")
     @app_commands.choices(product=[
-        app_commands.Choice(name=get_material_info(key)["name"], value=key)
+        app_commands.Choice(name=press_choice_label(key), value=key)
         for key in PRESS_RECIPES
     ])
     async def press_craft(
@@ -118,6 +135,10 @@ class PressCog(commands.Cog):
     ):
         quantity = quantity or 1
         recipe = PRESS_RECIPES[product.value]
+        # What the job makes. product.name is the recipe's label ("Obsidian
+        # from 10 Rubies"), which is not the item.
+        output_id = press_output(product.value)
+        output_name = get_material_info(output_id)["name"]
         press_days = recipe["press_days"]
         needs = {input_id: per_unit * quantity for input_id, per_unit in recipe["inputs"].items()}
 
@@ -132,7 +153,7 @@ class PressCog(commands.Cog):
                         info = get_material_info(input_id)
                         label = f"{info['emoji']} {info['name']}" if info else f"`{input_id}`"
                         await interaction.response.send_message(
-                            f"Pressing {quantity}x {product.name} needs {needed:,}x {label}, "
+                            f"Pressing {quantity}x {output_name} needs {needed:,}x {label}, "
                             f"but you only have {have[input_id]:,}.",
                             ephemeral=True,
                         )
@@ -234,7 +255,7 @@ class PressCog(commands.Cog):
             title="⚙️ Pressing Receipt",
             color=PRESS_COLOR,
             action="pressing",
-            product_id=product.value,
+            product_id=output_id,
             quantity=quantity,
             consumed=[
                 (input_id, needed, have[input_id] - needed)
@@ -313,7 +334,7 @@ class PressCog(commands.Cog):
         if jobs:
             current = jobs[0]
             cost_days = PRESS_RECIPES[current["target_id"]]["press_days"]
-            info = get_material_info(current["target_id"])
+            info = get_material_info(press_output(current["target_id"]))
             embed.add_field(
                 name="Currently Pressing",
                 value=(
@@ -325,7 +346,7 @@ class PressCog(commands.Cog):
 
         lines = []
         for job in jobs[:JOB_DISPLAY_LIMIT]:
-            info = get_material_info(job["target_id"])
+            info = get_material_info(press_output(job["target_id"]))
             emoji = info["emoji"] if info else "❓"
             name = info["name"] if info else job["target_id"]
             lines.append(
@@ -394,10 +415,15 @@ class PressCog(commands.Cog):
                     # leave a negative carry behind.
                     progress = max(0.0, progress - cost)
 
-                    await adjust_user_quantity(tx, job["user_id"], job["target_id"], 1)
+                    # The item the recipe makes, not the recipe's key: a gem
+                    # fusion's key names the recipe (data/materials.py:
+                    # press_output).
+                    output_id = press_output(job["target_id"])
+                    await adjust_user_quantity(tx, job["user_id"], output_id, 1)
                     # One press job, one gem (or one ultra dense matter), and
                     # one row. Its input side is real - hundreds of Iron or
-                    # thousands of Copper leaving circulation - but it is bars,
+                    # thousands of Copper leaving circulation, or for a fusion
+                    # gems, which inputs_value leaves out - but bars are
                     # already counted on the import/export line as the ore
                     # they were smelted from (utils/production_ledger.py:
                     # ORE_SMELTING_SOURCES). Its output side is a gemstone,
@@ -405,7 +431,7 @@ class PressCog(commands.Cog):
                     # 'press' has no place in GDP_SOURCES either. The row is
                     # written so that widening GDP later needs no backfill.
                     await record_output(
-                        tx, job["guild_id"], "press", job["target_id"], 1,
+                        tx, job["guild_id"], "press", output_id, 1,
                         PRESS_RECIPES[job["target_id"]]["inputs"],
                     )
                     remaining = job["quantity"] - 1

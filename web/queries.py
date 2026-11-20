@@ -28,6 +28,7 @@ from data.materials import (
     TRADEABLE_ORDER,
     effective_capacity,
     get_material_info,
+    press_output,
     mining_slot_level,
     mining_slots,
     mining_slot_threshold,
@@ -143,7 +144,10 @@ def _job_target_label(job: sqlite3.Row, drills_by_id: dict[int, sqlite3.Row]) ->
             return f"{verb} {dname} (Lv.{drow['level']}) #{job['target_drill_id']}"
         return f"{verb} drill #{job['target_drill_id']}"
     unit = " batches" if job["job_type"] == "blast_furnace" else ""
-    return f"{job['quantity']}× {_material_label(job['target_id'])}{unit}"
+    # A press job's target_id is a recipe, which since 1.5's gem fusions is
+    # not always the item it makes (data/materials.py: press_output).
+    target = press_output(job["target_id"]) if job["job_type"] == "press" else job["target_id"]
+    return f"{job['quantity']}× {_material_label(target)}{unit}"
 
 
 def _group(rows, key: str) -> dict:

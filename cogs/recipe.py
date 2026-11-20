@@ -33,6 +33,7 @@ from data.materials import (
     effective_capacity,
     effective_rate,
     get_material_info,
+    press_output,
     scrap_yield,
     upgrade_cost,
 )
@@ -117,6 +118,27 @@ def _drill_upgrade_lines() -> list[str]:
     ]
 
 
+def _press_lines() -> list[str]:
+    """One line per press recipe, named by what it makes, with its press time.
+    Not build_recipe_lines, which names a line by its recipe's key: since 1.5
+    the gem fusions are keyed by recipe ("obsidian_from_ruby") and only
+    press_output says what they make. Thousands separators because the metal
+    recipes run to five figures, as _blast_furnace_lines' do."""
+    lines = []
+    for recipe_id, recipe in PRESS_RECIPES.items():
+        info = get_material_info(press_output(recipe_id))
+        costs = []
+        for input_id, quantity in recipe["inputs"].items():
+            input_info = get_material_info(input_id)
+            costs.append(f"{input_info['emoji'] if input_info else '❓'} {quantity:,}")
+        days = recipe["press_days"]
+        lines.append(
+            f"{info['emoji']} {info['name']} - {' , '.join(costs)} "
+            f"[{days} press-day{'s' if days != 1 else ''}]"
+        )
+    return lines
+
+
 class RecipeCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -167,12 +189,7 @@ class RecipeCog(commands.Cog):
     @recipe_group.command(name="press", description="List every hydraulic press recipe")
     async def recipe_press(self, interaction: discord.Interaction):
         embed = make_embed("⚙️ Hydraulic Press Recipes", RECIPE_COLOR)
-        lines = [
-            f"{line} [{PRESS_RECIPES[product_id]['press_days']} press-day"
-            f"{'s' if PRESS_RECIPES[product_id]['press_days'] != 1 else ''}]"
-            for product_id, line in zip(PRESS_RECIPES, build_recipe_lines(PRESS_RECIPES))
-        ]
-        add_multi_field(embed, "Recipes", lines)
+        add_multi_field(embed, "Recipes", _press_lines())
         embed.add_field(
             name="Press Time",
             value="A press does one press-day of work per day for each level it has.",

@@ -5,9 +5,39 @@ Pure functions over data/materials.py - no database, no discord.py.
 """
 import unittest
 
-from cogs.recipe import _container_lines, _drill_upgrade_lines
-from data.materials import DRILLS, STORAGE_CONTAINERS, effective_rate
+from cogs.recipe import _container_lines, _drill_upgrade_lines, _press_lines
+from data.materials import (
+    DRILLS,
+    PRESS_RECIPES,
+    STORAGE_CONTAINERS,
+    effective_rate,
+    get_material_info,
+)
 from utils.formatting import format_rate
+
+
+class PressLinesTests(unittest.TestCase):
+    """/recipe press names each recipe by what it makes, so the two that make
+    obsidian (and the two that make diamonds) read as two ways to the same gem."""
+
+    def lines(self):
+        return dict(zip(PRESS_RECIPES, _press_lines()))
+
+    def test_a_fusion_reads_as_the_gem_it_makes(self):
+        obsidian = get_material_info("obsidian")
+        ruby = get_material_info("ruby")
+        line = self.lines()["obsidian_from_ruby"]
+        self.assertTrue(line.startswith(f"{obsidian['emoji']} Obsidian - {ruby['emoji']} 10"), line)
+        self.assertTrue(line.endswith("[3 press-days]"), line)
+
+    def test_large_inputs_are_comma_separated(self):
+        self.assertIn("27,000", self.lines()["diamond"])
+
+    def test_a_one_day_recipe_is_singular(self):
+        self.assertTrue(self.lines()["ruby"].endswith("[1 press-day]"))
+
+    def test_nothing_renders_as_unknown(self):
+        self.assertNotIn("❓", "".join(self.lines().values()))
 
 
 class DrillUpgradeLinesTests(unittest.TestCase):
