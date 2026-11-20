@@ -1257,6 +1257,64 @@ class AutocompleteTests(MarketTestCase):
         self.assertIn("Lv.2", drill)
         self.assertIn("Steel Container", drill)
 
+    async def list_drill(self, price, drill_type="iron_drill", level=1, container=None,
+                         expires="+30 days"):
+        drill_id = await self.db.execute(
+            "INSERT INTO drills (guild_id, owner_id, drill_type, level, container_type) "
+            "VALUES (NULL, ?, ?, ?, ?)", (BOB, drill_type, level, container)
+        )
+        listing_id = await self.db.execute(
+            "INSERT INTO market_listings (guild_id, seller_id, drill_id, quantity, price_units, expires_at) "
+            "VALUES (?, ?, ?, 1, ?, datetime('now', ?))",
+            (GUILD, BOB, drill_id, player_price_units(price), expires),
+        )
+        await self.db.execute("UPDATE drills SET listed_id = ? WHERE drill_id = ?", (listing_id, drill_id))
+        return listing_id
+
+    async def buyable_choices(self):
+        return await self.cog._buyable_autocomplete(FakeInteraction(ALICE), "")
+
+    async def test_identical_listed_drills_are_one_choice_at_the_cheapest_price(self):
+        # 1.5: one row per identical drill, in the material rows' grammar.
+        await self.list_drill(4.0)
+        cheapest = await self.list_drill(3.0)
+        await self.list_drill(3.5)
+        drills = [c for c in await self.buyable_choices() if c.value.startswith("listing:")]
+        self.assertEqual(len(drills), 1)
+        self.assertTrue(drills[0].name.startswith("Iron Drill Lv.1 - 3 at "), drills[0].name)
+        self.assertIn("3.00", drills[0].name)
+        self.assertEqual(drills[0].value, f"listing:{cheapest}")
+
+    async def test_a_container_makes_another_choice(self):
+        await self.list_drill(3.0)
+        await self.list_drill(4.5, container="iron_container")
+        names = [c.name for c in await self.buyable_choices()]
+        self.assertTrue(any(n.startswith("Iron Drill Lv.1 · Iron Container - 1 at ") for n in names), names)
+        self.assertTrue(any(n.startswith("Iron Drill Lv.1 - 1 at ") for n in names), names)
+
+    async def test_an_expired_drill_listing_is_not_offered(self):
+        # Every read of the books spells LIVE_ENTRY_SQL; this one did not.
+        await self.list_drill(3.0, expires="-1 minute")
+        self.assertEqual(await self.buyable_choices(), [])
+
+    async def test_drills_keep_room_when_materials_fill_the_list(self):
+        for material_id in ORDERABLE_MATERIALS:
+            if material_id in SERVER_ONLY_MATERIALS:
+                await adjust_server_stock(self.db, GUILD, material_id, 100)
+            else:
+                await self.list_directly(BOB, material_id, 10, 1.0)
+        for level in range(1, 11):
+            await self.list_drill(5.0, level=level)
+        choices = await self.buyable_choices()
+        self.assertEqual(len(choices), 25)
+        self.assertEqual(sum(c.value.startswith("listing:") for c in choices), 8)
+
+    async def test_few_materials_leave_the_rest_to_drills(self):
+        for level in range(1, 31):
+            await self.list_drill(5.0, level=level)
+        choices = await self.buyable_choices()
+        self.assertEqual(len(choices), 25)
+
     async def test_selling_offers_only_what_you_hold(self):
         await adjust_user_quantity(self.db, ALICE, "coal", 500)
         names = await self.sellable()

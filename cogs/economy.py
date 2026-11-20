@@ -248,6 +248,11 @@ DRILL_VALUE_PREFIX = "drill:"
 # names an offer somebody else has already made.
 LISTING_VALUE_PREFIX = "listing:"
 
+# How many of /market buy's 25 autocomplete rows drill listings keep when
+# materials and drills together overflow it (1.5, the owner's call). Materials
+# come first; without a share, a busy book left no row for any drill.
+BUY_DRILL_ROWS = 8
+
 # How /market cancel names one of the caller's own orders. A listing is named
 # with LISTING_VALUE_PREFIX, as on /market buy. The prefix is what says which
 # book an id belongs to: listing and order ids come from separate tables, so
@@ -683,7 +688,7 @@ class EconomyCog(commands.Cog):
         drill id: what is being accepted is the offer.
         """
         search = current.strip().lower()
-        choices = []
+        materials = []
 
         listed = await listed_quantities(self.db, interaction.guild_id, interaction.user.id)
         stocks = await get_server_stocks(self.db, interaction.guild_id)
@@ -697,34 +702,47 @@ class EconomyCog(commands.Cog):
             if not quantity:
                 continue
             choice = self._offer_choice(material_id, quantity, price_units, search)
-            if choice is None:
-                continue
-            choices.append(choice)
-            if len(choices) >= MAX_AUTOCOMPLETE_RESULTS:
-                return choices
+            if choice is not None:
+                materials.append(choice)
 
+        # Identical drills - same type, level and container - are one row
+        # (1.5), in the material rows' "count at cheapest price" grammar, and
+        # the row buys the cheapest of them; buy again for the next. The owner
+        # asked for a better way to show drill listings here, and identical
+        # ones each taking a row was most of what was wrong.
         rows = await self.db.fetchall(
             "SELECT l.listing_id, l.price_units, d.* FROM market_listings l "
             "JOIN drills d ON d.drill_id = l.drill_id "
-            "WHERE l.guild_id = ? AND l.seller_id != ? "
-            "ORDER BY l.price_units ASC",
+            f"WHERE l.guild_id = ? AND l.seller_id != ? AND l.{LIVE_ENTRY_SQL} "
+            "ORDER BY l.price_units ASC, l.listing_id ASC",
             (interaction.guild_id, interaction.user.id),
         )
+        groups: dict[tuple, list] = {}
         for row in rows:
+            key = (row["drill_type"], row["level"], row["container_type"])
+            if key in groups:
+                groups[key][1] += 1
+            else:
+                groups[key] = [row, 1]
+        drills = []
+        for row, count in groups.values():
             label = f"{drill_short_label(row)}"
             if row["container_type"]:
                 label += f" \u00b7 {container_name(row['container_type'])}"
-            label += f" - {format_price(player_price_total(row['price_units'], 1))}"
+            label += f" - {count:,} at {format_price(player_price_total(row['price_units'], 1))}"
             if search and search not in label.lower():
                 continue
-            choices.append(
+            drills.append(
                 app_commands.Choice(
                     name=label[:100], value=f"{LISTING_VALUE_PREFIX}{row['listing_id']}"
                 )
             )
-            if len(choices) >= MAX_AUTOCOMPLETE_RESULTS:
-                break
-        return choices
+
+        # Materials come first, but drills keep up to BUY_DRILL_ROWS of the 25
+        # when the list overflows, so a busy book can't push every drill out.
+        reserved = min(len(drills), BUY_DRILL_ROWS)
+        materials = materials[:MAX_AUTOCOMPLETE_RESULTS - reserved]
+        return materials + drills[:MAX_AUTOCOMPLETE_RESULTS - len(materials)]
 
     async def _sellable_autocomplete(self, interaction: discord.Interaction, current: str):
         """What /market sell can actually move: things the player HOLDS that
