@@ -29,7 +29,7 @@ from data.materials import (
 )
 from utils.formatting import format_currency, plural
 from utils.notifications import post_server_notification, post_user_notification
-from data.notifications import GEM_UNLOCK_NOTICES
+from data.notifications import GEM_UNLOCK_NOTICES, ULTRA_DENSE_MATTER_NOTICE
 
 # Every machine whose per-server settings live in <machine>_level,
 # _fees_collected, _max_queue, _fee_multiplier and _enhancement_level columns on
@@ -252,6 +252,22 @@ async def announce_first_gem(db: _Executor, user_id: int, material_id: str) -> b
     if notice is None:
         return False
     return await post_user_notification(db, user_id, notice.key, notice.title, notice.body)
+
+
+async def announce_ultra_dense_matter(db: _Executor, user_id: int, guild_id: int) -> bool:
+    """Tells a player they have won the game, the first time the press
+    finishes an Ultra Dense Matter for them in this server (1.5). Returns
+    whether this raised the notice.
+
+    Once per player per server: the server is part of the key, so the
+    (user_id, notice_key) primary key is the whole once-only mechanism, as in
+    announce_first_gem, and the notice is shown only in that server. Nothing is
+    backfilled for anyone who pressed one before 1.5 - their next one in that
+    server raises it. Wording: data/notifications.py: ULTRA_DENSE_MATTER_NOTICE."""
+    notice = ULTRA_DENSE_MATTER_NOTICE
+    return await post_user_notification(
+        db, user_id, f"{notice.key}:{guild_id}", notice.title, notice.body, guild_id=guild_id
+    )
 
 
 async def adjust_user_quantity(db: _Executor, user_id: int, material_id: str, delta: int):

@@ -144,6 +144,55 @@ class GemFusionTests(PressTestCase):
         self.assertNotIn("diamond_from_obsidian", "".join(f.value for f in i.embed.fields))
 
 
+class WinNoticeTests(PressTestCase):
+    """1.5: the first Ultra Dense Matter a player presses in a server tells
+    them they have won the game - once per server, and only in that server."""
+
+    OTHER_GUILD = 5252
+
+    async def win_notices(self):
+        return await self.db.fetchall(
+            "SELECT notice_key, guild_id, title, body FROM user_notifications "
+            "WHERE user_id = ? AND notice_key LIKE 'ultra-dense-matter%' ORDER BY rowid",
+            (USER,),
+        )
+
+    async def press_one(self, recipe_id="ultra_dense_matter", guild_id=GUILD):
+        await self.queue(recipe_id, guild_id=guild_id)
+        await self.run_press(27, guild_id=guild_id)
+
+    async def test_the_first_one_wins_the_game(self):
+        await self.press_one()
+        notices = await self.win_notices()
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["guild_id"], GUILD)
+        self.assertIn("You win the game!", notices[0]["body"])
+        self.assertEqual(await get_user_quantity(self.db, USER, "ultra_dense_matter"), 1)
+
+    async def test_a_second_one_in_the_same_server_says_nothing(self):
+        await self.press_one()
+        await self.press_one()
+        self.assertEqual(await get_user_quantity(self.db, USER, "ultra_dense_matter"), 2)
+        self.assertEqual(len(await self.win_notices()), 1)
+
+    async def test_another_server_is_another_game(self):
+        await self.press_one()
+        await self.press_one(guild_id=self.OTHER_GUILD)
+        self.assertEqual(
+            [n["guild_id"] for n in await self.win_notices()], [GUILD, self.OTHER_GUILD]
+        )
+
+    async def test_a_diamond_wins_nothing(self):
+        await self.press_one("diamond")
+        self.assertEqual(await self.win_notices(), [])
+
+    async def test_the_notice_is_short(self):
+        from utils.embeds import word_count
+
+        await self.press_one()
+        self.assertLessEqual(word_count((await self.win_notices())[0]["body"]), 40)
+
+
 class DashboardLabelTests(unittest.TestCase):
     def test_a_fusion_job_reads_as_the_gem_it_makes(self):
         from web.queries import _job_target_label

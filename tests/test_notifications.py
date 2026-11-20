@@ -378,6 +378,14 @@ class RewrittenNoticeTests(NotificationTestCase):
         self.assertEqual(await self.bodies(OTHER_GUILD), [])
         self.assertEqual(await self.bodies(None), [], "nor in a DM")
 
+    async def test_a_one_time_notice_can_belong_to_one_server(self):
+        # post_user_notification's guild_id (1.5): the Ultra Dense Matter win
+        # notice is once per player per server, and shown in that server.
+        self.assertTrue(await post_user_notification(self.db, USER, "k", "T", "here", guild_id=GUILD))
+        self.assertFalse(await post_user_notification(self.db, USER, "k", "T", "again", guild_id=GUILD))
+        self.assertEqual(await self.bodies(GUILD), ["here"])
+        self.assertEqual(await self.bodies(OTHER_GUILD), [])
+
     async def test_a_notice_with_no_server_is_shown_anywhere(self):
         await post_user_notification(self.db, USER, "k", "T", "anywhere")
         for guild_id in (GUILD, OTHER_GUILD, None):

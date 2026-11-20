@@ -34,7 +34,8 @@ Server notifications are not here. Those belong to one guild and are raised at
 runtime by whatever feature needs them (utils/notifications.py:
 post_server_notification), not shipped with a release.
 
-PERSONAL notices ARE here, at the bottom - GEM_UNLOCK_NOTICES. They are raised
+PERSONAL notices ARE here, at the bottom - ULTRA_DENSE_MATTER_NOTICE and
+GEM_UNLOCK_NOTICES. They are raised
 at runtime like a server notice, but unlike one their wording is fixed content
 that ships with a release, so it belongs in this file with the rest of the
 text rather than inline in the code that fires it.
@@ -167,6 +168,18 @@ class PersonalNotice:
     key: str      # unique per notice; one row per (user, key) - see above
     title: str    # the embed title
     body: str     # the embed description
+
+
+# The first Ultra Dense Matter a player presses in a server (1.5): the owner
+# asked for a personal notice that says, in effect, "You win the game!". Once
+# per player per SERVER rather than once ever, because every server is its own
+# economy and so its own game - utils/db_helpers.py: announce_ultra_dense_matter
+# appends the server to this key, and shows the notice only in that server.
+ULTRA_DENSE_MATTER_NOTICE = PersonalNotice(
+    key="ultra-dense-matter",
+    title="🏆 You Win the Game!",
+    body="You pressed your first **Ultra Dense Matter** in this server. You win the game!",
+)
 
 
 GEM_UNLOCK_NOTICES: dict[str, PersonalNotice] = {

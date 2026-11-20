@@ -60,6 +60,7 @@ from utils.db_helpers import (
     guilds_with_queued_work,
     get_user_quantity,
     adjust_user_quantity,
+    announce_ultra_dense_matter,
     deduct_user_quantity,
     get_currency_balance,
     machine_fee,
@@ -420,6 +421,11 @@ class PressCog(commands.Cog):
                     # press_output).
                     output_id = press_output(job["target_id"])
                     await adjust_user_quantity(tx, job["user_id"], output_id, 1)
+                    if output_id == "ultra_dense_matter":
+                        # The first one in a server wins the game (1.5). In
+                        # this transaction, so the notice commits with the
+                        # item it announces.
+                        await announce_ultra_dense_matter(tx, job["user_id"], job["guild_id"])
                     # One press job, one gem (or one ultra dense matter), and
                     # one row. Its input side is real - hundreds of Iron or
                     # thousands of Copper leaving circulation, or for a fusion

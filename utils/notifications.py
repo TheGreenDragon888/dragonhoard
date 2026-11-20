@@ -24,8 +24,9 @@ read state lives on the row rather than in a per-feed watermark, and nothing is
 skipped for being superseded - two things that happened to you are two things
 you should be told. Raised at runtime by a feature via post_user_notification,
 with the wording in data/notifications.py alongside the global announcements.
-The first gemstone of a kind a player obtains is the only thing that raises one
-so far (utils/db_helpers.py: announce_first_gem).
+The first gemstone of a kind a player obtains raises one (utils/db_helpers.py:
+announce_first_gem), and since 1.5 so does a player's first Ultra Dense Matter
+in each server (announce_ultra_dense_matter, beside it).
 
 One exception to "two things, two notices": a feature can keep a personal notice
 open and rewrite it while it is still unread (set_user_notification), when the
@@ -171,7 +172,8 @@ async def post_server_notification(
 
 
 async def post_user_notification(
-    db: _Executor, user_id: int, notice_key: str, title: str, body: str
+    db: _Executor, user_id: int, notice_key: str, title: str, body: str,
+    guild_id: int | None = None,
 ) -> bool:
     """Raises a notice for one player, shown to them once. The entry point for
     features that need to tell a single person something.
@@ -186,11 +188,15 @@ async def post_user_notification(
 
     Safe to call inside a caller's transaction, and that is where it belongs:
     the notice should commit or roll back with the thing it is announcing.
+
+    `guild_id` limits it to that one server (fetch_unseen_personal), as on
+    set_user_notification. A notice that should fire once per server rather
+    than once per player puts the server in its key as well.
     """
     return bool(await db.execute_changes(
-        "INSERT OR IGNORE INTO user_notifications (user_id, notice_key, title, body) "
-        "VALUES (?, ?, ?, ?)",
-        (user_id, notice_key, title, body),
+        "INSERT OR IGNORE INTO user_notifications (user_id, notice_key, title, body, guild_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (user_id, notice_key, title, body, guild_id),
     ))
 
 
