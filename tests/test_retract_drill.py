@@ -222,6 +222,69 @@ class DrillScopeTests(DrillTestCase):
                     await drill_choices(self.db, OWNER, "", scope=scope, guild_id=None)
 
 
+class DrillChoiceGroupingTests(DrillTestCase):
+    """1.5: identical unplaced drills are one autocomplete choice with a count,
+    in every command that offers drills (/mine place, attach, detach and
+    remove, /factory upgrade, /scrapper drill, /market list), so a player with
+    a dozen Lv.1 Iron Drills sees one line rather than a dozen."""
+
+    async def choices(self, scope=DrillScope.UNPLACED, current=""):
+        return await drill_choices(self.db, OWNER, current, scope=scope, guild_id=HERE)
+
+    async def test_identical_unplaced_drills_are_one_choice(self):
+        ids = [(await self.add_drill(guild_id=None))["drill_id"] for _ in range(3)]
+        result = await self.choices()
+        self.assertEqual(len(result), 1)
+        self.assertTrue(result[0].name.endswith(" (3)"), result[0].name)
+        self.assertEqual(result[0].value, min(ids), "the first drill stands for the set")
+
+    async def test_a_single_drill_carries_no_count(self):
+        await self.add_drill(guild_id=None)
+        self.assertNotIn("(", (await self.choices())[0].name)
+
+    async def test_a_different_level_or_container_is_another_choice(self):
+        await self.add_drill(guild_id=None)
+        await self.add_drill(guild_id=None, level=2)
+        await self.add_drill(guild_id=None, container_type="iron_container")
+        self.assertEqual(len(await self.choices()), 3)
+
+    async def test_placed_drills_are_never_merged(self):
+        # Two placed drills can look identical and hold different gems.
+        await self.add_drill(guild_id=HERE)
+        await self.add_drill(guild_id=HERE)
+        result = await self.choices(scope=DrillScope.PLACED_HERE)
+        self.assertEqual(len(result), 2)
+        self.assertFalse(any(choice.name.endswith(")") for choice in result))
+
+    async def test_local_merges_the_inventory_and_lists_the_placed(self):
+        for _ in range(2):
+            await self.add_drill(guild_id=None)
+            await self.add_drill(guild_id=HERE)
+        self.assertEqual(len(await self.choices(scope=DrillScope.LOCAL)), 3)
+
+    async def test_the_search_still_narrows(self):
+        for _ in range(2):
+            await self.add_drill(guild_id=None)
+            await self.add_drill(guild_id=None, drill_type="steel_drill")
+        result = await self.choices(current="steel")
+        self.assertEqual(len(result), 1)
+        self.assertIn("Steel Drill", result[0].name)
+        self.assertTrue(result[0].name.endswith(" (2)"))
+
+    async def test_the_cap_counts_choices_not_drills(self):
+        for level in range(1, 31):
+            for _ in range(2):
+                await self.add_drill(guild_id=None, level=level)
+        self.assertEqual(len(await self.choices()), 25)
+
+    async def test_a_long_label_keeps_its_count(self):
+        for _ in range(12):
+            await self.add_drill(guild_id=None, container_type="obsidian_container", level=12)
+        name = (await self.choices())[0].name
+        self.assertLessEqual(len(name), 100)
+        self.assertTrue(name.endswith(" (12)"))
+
+
 if __name__ == "__main__":
     unittest.main()
 

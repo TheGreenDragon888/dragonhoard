@@ -341,12 +341,29 @@ async def drill_choices(
 
     guild_names = guild_name_map(bot, rows) if bot is not None else {}
     search = current.strip().lower()
-    choices = []
+
+    # Identical UNPLACED drills are one choice with a count (1.5): the owner
+    # asked for every drill autocomplete to stop listing a dozen identical
+    # lines. drill_label's docstring is why that is safe - two unplaced drills
+    # whose labels match are interchangeable - so the first one's id stands
+    # for the set. A placed drill keeps a line of its own: two that read the
+    # same can be holding different gems.
+    groups: dict = {}
     for row in rows:
-        location = guild_names.get(row["guild_id"])
-        label = drill_label(row, location)
+        label = drill_label(row, guild_names.get(row["guild_id"]))
         if search and search not in label.lower():
             continue
+        key = label if row["guild_id"] is None else row["drill_id"]
+        if key in groups:
+            groups[key][2] += 1
+        else:
+            groups[key] = [row, label, 1]
+
+    choices = []
+    for row, label, count in groups.values():
+        if count > 1:
+            suffix = f" ({count:,})"
+            label = label[:_MAX_CHOICE_NAME - len(suffix)] + suffix
         choices.append(app_commands.Choice(name=label, value=row["drill_id"]))
         if len(choices) >= MAX_AUTOCOMPLETE_RESULTS:
             break
