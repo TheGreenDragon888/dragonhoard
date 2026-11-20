@@ -39,6 +39,7 @@ from utils.embeds import (
     BLAST_FURNACE_COLOR,
     GOVERNMENT_COLOR,
     MARKET_COLOR,
+    PRESS_COLOR,
 )
 
 
@@ -66,6 +67,62 @@ VERSIONS: dict[str, ChangelogVersion] = {}
 
 def _add(version: ChangelogVersion):
     VERSIONS[version.version] = version
+
+
+_add(ChangelogVersion(
+    version="1.5",
+    released="2026-11-20",
+    emoji="🏆",
+    color=PRESS_COLOR,
+    summary="4x containers, gem fusion, a 100-diamond UDM, 1/20 Bonanzas, open voting, 30-day market entries",
+    headline=(
+        "Containers hold four times as much, the press fuses gems, Bonanzas cost a twentieth, "
+        "and anyone can vote."
+    ),
+    entries=(
+        ChangelogEntry(
+            "📦 Containers Hold Four Times As Much",
+            "Iron, Steel, Ruby, Obsidian and Diamond Containers now hold 1,000, 2,000, 8,000, "
+            "32,000 and 128,000 (was 250, 500, 2,000, 8,000, 32,000). Containers you have grew "
+            "too, and full drills with one started mining again.",
+        ),
+        ChangelogEntry(
+            "💎 The Press Fuses Gems",
+            "`/press craft` can turn 10 Rubies into an Obsidian and 9 Obsidian into a Diamond. "
+            "Ultra Dense Matter now costs 100 Diamonds (was 10); jobs already queued finish at "
+            "the old price. Your first one in a server wins you the game.",
+        ),
+        ChangelogEntry(
+            "🎉 Bonanzas Cost A Twentieth",
+            "A Server Bonanza now costs 2.5% of the server's 7-day GDP, never less than 2.50 "
+            "(was half, never less than 50).",
+        ),
+        ChangelogEntry(
+            "🗳️ Anyone Can Vote",
+            "Any member can vote in Thursday's elections. You no longer need a drill placed for "
+            "7 days.",
+        ),
+        ChangelogEntry(
+            "🏗️ Enhancements Double The Queue",
+            "Each Infrastructure Enhancement now doubles a machine's queue cap as well as its "
+            "speed, including enhancements already bought.",
+        ),
+        ChangelogEntry(
+            "💰 Market Entries Last 30 Days",
+            "Listings and orders now last 30 days (was 7). Entries already up now end 30 days "
+            "after they were placed.",
+        ),
+        ChangelogEntry(
+            "🔧 Smaller Changes And Fixes",
+            "- `/factory upgrade` hands back the drill's container.\n"
+            "- A refused `/factory upgrade` no longer takes a placed drill out of the ground.\n"
+            "- `/inventory` and every drill menu group identical drills with a count.\n"
+            "- `/market buy` lists identical drills once, at the cheapest price, and hides expired listings.\n"
+            "- `/recipe factory` shows what each drill level adds per hour.\n"
+            "- `/market status` leaves out player listings or orders when there are none.",
+        ),
+    ),
+))
 
 
 _add(ChangelogVersion(
