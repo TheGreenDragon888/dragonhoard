@@ -26,7 +26,15 @@ from data.materials import (
     raw_input_cost,
     upgrade_cost,
 )
-from utils.drills import drill_cell, drill_label, material_breakdown_lines
+from utils.drills import (
+    EMPTY_SLOT_EMOJI,
+    drill_cell,
+    drill_grid_cell,
+    drill_grid_text,
+    drill_label,
+    group_identical_drills,
+    material_breakdown_lines,
+)
 
 # Matches HARVEST_TICK_MINUTES = 5 in cogs/mining.py.
 TICKS_PER_HOUR = 12
@@ -439,8 +447,54 @@ class AdvanceHarvestTests(unittest.TestCase):
         self.assertEqual(self._mine(2, 48), 8)
 
 
+class DrillGridCellTests(unittest.TestCase):
+    """/inventory's aligned grid cell (1.5): identical drills merge into one
+    cell with a count, and every cell is the same width so the columns line
+    up - a fixed-size emoji in each of two slots, then fixed-width text in a
+    code span (docs/stylization.md, "Inventory drill grid")."""
+
+    row = staticmethod(lambda **columns: DrillDisplayTests.row(**columns))
+
+    def test_a_bare_drill_fills_the_container_slot_with_the_placeholder(self):
+        self.assertEqual(
+            drill_grid_cell(self.row()), f"{DRILLS['iron_drill']['emoji']}{EMPTY_SLOT_EMOJI}`Lv.1`"
+        )
+
+    def test_a_fitted_container_takes_the_slot(self):
+        cell = drill_grid_cell(self.row(container_type="steel_container", level=3))
+        self.assertEqual(
+            cell,
+            f"{DRILLS['iron_drill']['emoji']}{STORAGE_CONTAINERS['steel_container']['emoji']}`Lv.3`",
+        )
+
+    def test_a_count_follows_the_level(self):
+        self.assertTrue(drill_grid_cell(self.row(level=2), count=6).endswith("`Lv.2 ×6`"))
+
+    def test_the_text_is_padded_to_the_grid_width_with_no_break_spaces(self):
+        # A plain space at the end of a code span is not guaranteed to survive
+        # rendering; a no-break space is a character like any other.
+        cell = drill_grid_cell(self.row(), width=7)
+        self.assertTrue(cell.endswith("`Lv.1   `"), repr(cell))
+
+    def test_the_text_width_is_what_the_grid_pads_to(self):
+        self.assertEqual(len(drill_grid_text(12, 34)), len("Lv.12 ×34"))
+        self.assertEqual(drill_grid_text(1, 1), "Lv.1")
+
+
+class DrillGroupingTests(unittest.TestCase):
+    row = staticmethod(lambda **columns: DrillDisplayTests.row(**columns))
+
+    def test_identical_drills_merge_and_keep_their_first_row(self):
+        rows = [
+            self.row(drill_id=1), self.row(drill_id=2, level=2), self.row(drill_id=3),
+            self.row(drill_id=4, container_type="iron_container"),
+        ]
+        grouped = group_identical_drills(rows)
+        self.assertEqual([(row["drill_id"], count) for row, count in grouped], [(1, 2), (2, 1), (4, 1)])
+
+
 class DrillDisplayTests(unittest.TestCase):
-    """The compact form /inventory and /mine status render drills as."""
+    """The compact form /mine status renders drills as, one per line."""
 
     @staticmethod
     def row(**columns):

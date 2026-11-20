@@ -158,6 +158,24 @@ column and a name cannot. A listed drill is the exception and carries its
 level and container instead of a count, because those are most of what one is
 worth and a bare "1" would not say which drill was on offer.
 
+## Inventory drill grid
+
+`/inventory` shows unplaced drills as a grid of cells, four to a line (1.5):
+
+```
+<:RubyDrill:…><:RubyContainer:…>`Lv.2   ` <:SteelDrill:…>▫️`Lv.1 ×2`
+```
+
+One cell per set of identical drills - same type, level and container - with
+a `×N` count when there is more than one, ordered best tier, then level, then
+container. The owner asked for the drills to be compressed without losing the
+grid, and for the grid to stay aligned. It is aligned by the same rule as the
+book lines above: two fixed-size emoji lead every cell - the drill's, then its
+container's or `EMPTY_SLOT_EMOJI` when none is fitted - and the text follows in
+a code span padded with no-break spaces to the grid's widest
+(`utils/drills.py: drill_grid_cell`). `/mine status` lists one drill per line
+and keeps the unpadded `drill_cell`.
+
 ## Currency emoji in a repeated column
 
 A field whose every line carries a price names the currency **once in the

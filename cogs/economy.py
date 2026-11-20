@@ -117,8 +117,11 @@ from utils.job_board import credit_job_progress, ensure_todays_job, hours_until_
 from utils.drills import (
     DRILL_AVAILABLE_SQL,
     DrillScope,
-    drill_cell,
     drill_choices,
+    drill_grid_cell,
+    drill_grid_order,
+    drill_grid_text,
+    group_identical_drills,
     container_name,
     drill_emoji,
     drill_label,
@@ -194,8 +197,9 @@ from data.materials import (
 # reorders all three surfaces without anyone remembering to.
 TRADEABLE_MATERIALS = {material_id: ALL_MATERIALS[material_id] for material_id in TRADEABLE_ORDER}
 
-# How many drills /inventory lists individually before collapsing the rest
-# into a count, mirroring the pending-jobs cap in /factory status.
+# How many drill CELLS /inventory shows before collapsing the rest into a count
+# of the drills they hold, mirroring the pending-jobs cap in /factory status.
+# Since 1.5 a cell can stand for any number of identical drills.
 DRILL_DISPLAY_LIMIT = 20
 
 # How many drill cells /inventory fits on one line. Fewer than the six used for
@@ -561,15 +565,25 @@ class EconomyCog(commands.Cog):
             "ORDER BY level DESC, drill_id ASC",
             (interaction.user.id,),
         )
+        #
+        # Identical drills share one cell with a count (1.5): one cell per drill
+        # filled the field fast, which the owner asked to compress without
+        # losing the grid. Sorted best tier, then level, then container first,
+        # and every cell padded to one width so the columns stay aligned
+        # (utils/drills.py: drill_grid_cell).
         if drill_rows:
             has_items = True
-            cells = [drill_cell(row) for row in drill_rows[:DRILL_DISPLAY_LIMIT]]
+            groups = sorted(group_identical_drills(drill_rows), key=lambda g: drill_grid_order(g[0]))
+            shown = groups[:DRILL_DISPLAY_LIMIT]
+            width = max(len(drill_grid_text(row["level"], count)) for row, count in shown)
+            cells = [drill_grid_cell(row, count, width) for row, count in shown]
             grid_lines = [
                 " ".join(cells[i:i + DRILL_GRID_COLUMNS])
                 for i in range(0, len(cells), DRILL_GRID_COLUMNS)
             ]
-            if len(drill_rows) > DRILL_DISPLAY_LIMIT:
-                grid_lines.append(f"... and {len(drill_rows) - DRILL_DISPLAY_LIMIT} more")
+            hidden = sum(count for _, count in groups[DRILL_DISPLAY_LIMIT:])
+            if hidden:
+                grid_lines.append(f"... and {hidden:,} more drill{'s' if hidden != 1 else ''}")
             add_multi_field(embed, "Drills", grid_lines)
 
         if not has_items:

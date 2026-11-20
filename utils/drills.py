@@ -77,11 +77,74 @@ def container_emoji(container_type: str | None) -> str:
 
 
 def drill_cell(drill_row) -> str:
-    """The compact form used in grids: the drill's emoji, its container's emoji
-    if one is fitted, and its level. Sized to sit alongside other drills in an
-    /inventory row rather than to be read on a line of its own, which is why it
-    carries no name, no fill and no location."""
+    """The compact form /mine status leads each drill's line with: the drill's
+    emoji, its container's emoji if one is fitted, and its level. It carries no
+    name, no fill and no location - the line it starts says those. /inventory's
+    grid uses drill_grid_cell instead (1.5)."""
     return f"{drill_emoji(drill_row)}{container_emoji(drill_row['container_type'])} Lv.{drill_row['level']}"
+
+
+# What stands in the container slot of an /inventory grid cell when no
+# container is fitted. Without it a bare drill's cell is one emoji narrower
+# than a fitted one's and every column after it shifts; the owner asked for
+# the grid to stay aligned once identical drills were merged (1.5). Unicode,
+# so it needs no upload, and it renders at the custom emoji's fixed size.
+EMPTY_SLOT_EMOJI = "▫️"
+
+# Pads a grid cell's text out to the grid's width. A no-break space rather than
+# a plain one, which is not guaranteed to survive at the end of a code span.
+_GRID_PAD = " "
+
+
+def drill_grid_text(level: int, count: int) -> str:
+    """The text half of an /inventory grid cell: the level, and how many
+    identical drills the cell stands for when there is more than one."""
+    return f"Lv.{level}" + (f" ×{count:,}" if count > 1 else "")
+
+
+def drill_grid_cell(drill_row, count: int = 1, width: int = 0) -> str:
+    """One cell of /inventory's drill grid (1.5): the drill's emoji, its
+    container's emoji or EMPTY_SLOT_EMOJI, then its level and count in a code
+    span padded to `width` characters.
+
+    Every cell in a grid is passed the same width, which is what keeps its
+    columns aligned: custom emoji render at one fixed size, and a code span is
+    monospace - the same construction /market status's book lines use
+    (docs/stylization.md)."""
+    text = drill_grid_text(drill_row["level"], count).ljust(width, _GRID_PAD)
+    slot = container_emoji(drill_row["container_type"]) or EMPTY_SLOT_EMOJI
+    return f"{drill_emoji(drill_row)}{slot}`{text}`"
+
+
+def group_identical_drills(drill_rows) -> list:
+    """(first row, count) for each set of identical drills - same type, level
+    and container - in the order each set first appears.
+
+    drill_label's docstring is the reason this is safe for unplaced drills:
+    two that match on all three are interchangeable, so one row can stand for
+    them all."""
+    groups: dict[tuple, list] = {}
+    for row in drill_rows:
+        key = (row["drill_type"], row["level"], row["container_type"])
+        if key in groups:
+            groups[key][1] += 1
+        else:
+            groups[key] = [row, 1]
+    return [(row, count) for row, count in groups.values()]
+
+
+# Drill types in tier order, Iron first, for sorting the /inventory grid.
+_DRILL_TIER = {drill_type: tier for tier, drill_type in enumerate(DRILLS)}
+
+
+def drill_grid_order(drill_row) -> tuple:
+    """Sort key for /inventory's grid: the best tier first, then the highest
+    level, then the biggest container."""
+    return (
+        -_DRILL_TIER[drill_row["drill_type"]],
+        -drill_row["level"],
+        -effective_capacity(drill_row["container_type"]),
+    )
 
 
 def drill_short_label(drill_row) -> str:

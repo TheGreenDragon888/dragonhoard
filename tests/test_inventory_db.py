@@ -10,14 +10,17 @@ Also covers the material grid's quantity formatting - a stack in the
 thousands has to read with thousands separators, the same as every other
 number the bot displays.
 """
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 from cogs.economy import EconomyCog
+from data.materials import DRILLS, STORAGE_CONTAINERS
 from database.db import Database
 from utils.db_helpers import ensure_server_row, ensure_user_row
+from utils.drills import EMPTY_SLOT_EMOJI
 
 GUILD = 9191
 USER = 5151
@@ -57,11 +60,11 @@ class InventoryTestCase(unittest.IsolatedAsyncioTestCase):
         self.db.close()
         self._dir.cleanup()
 
-    async def add_drill(self, level, locked_job_id=None):
+    async def add_drill(self, level, locked_job_id=None, drill_type="iron_drill", container=None):
         return await self.db.execute(
-            "INSERT INTO drills (guild_id, owner_id, drill_type, level, locked_job_id) "
-            "VALUES (NULL, ?, 'iron_drill', ?, ?)",
-            (USER, level, locked_job_id),
+            "INSERT INTO drills (guild_id, owner_id, drill_type, level, locked_job_id, container_type) "
+            "VALUES (NULL, ?, ?, ?, ?, ?)",
+            (USER, drill_type, level, locked_job_id, container),
         )
 
     async def set_quantity(self, material_id, quantity):
@@ -107,6 +110,58 @@ class InventoryDrillListingTests(InventoryTestCase):
         field = await self.drills_field()
         self.assertIn("Lv.3", field)
         self.assertNotIn("Lv.7", field)
+
+
+class InventoryDrillGridTests(InventoryTestCase):
+    """1.5: identical drills share one cell, and the grid stays aligned."""
+
+    async def test_identical_drills_share_one_cell(self):
+        for _ in range(6):
+            await self.add_drill(level=1)
+        field = await self.drills_field()
+        self.assertIn("Lv.1 ×6", field)
+        self.assertEqual(field.count(DRILLS["iron_drill"]["emoji"]), 1)
+
+    async def test_different_containers_are_different_cells(self):
+        await self.add_drill(level=1)
+        await self.add_drill(level=1, container="iron_container")
+        field = await self.drills_field()
+        self.assertEqual(field.count(DRILLS["iron_drill"]["emoji"]), 2)
+        self.assertNotIn("×", field)
+
+    async def test_the_order_is_tier_then_level_then_container(self):
+        await self.add_drill(level=1)
+        await self.add_drill(level=1, drill_type="steel_drill")
+        await self.add_drill(level=1, drill_type="steel_drill", container="steel_container")
+        await self.add_drill(level=3, drill_type="steel_drill")
+        await self.add_drill(level=2, drill_type="ruby_drill", container="ruby_container")
+        field = await self.drills_field()
+        order = [
+            field.index(f"{DRILLS['ruby_drill']['emoji']}{STORAGE_CONTAINERS['ruby_container']['emoji']}`Lv.2"),
+            field.index(f"{DRILLS['steel_drill']['emoji']}{EMPTY_SLOT_EMOJI}`Lv.3"),
+            field.index(f"{DRILLS['steel_drill']['emoji']}{STORAGE_CONTAINERS['steel_container']['emoji']}`Lv.1"),
+            field.index(f"{DRILLS['steel_drill']['emoji']}{EMPTY_SLOT_EMOJI}`Lv.1"),
+            field.index(f"{DRILLS['iron_drill']['emoji']}{EMPTY_SLOT_EMOJI}`Lv.1"),
+        ]
+        self.assertEqual(order, sorted(order), field)
+
+    async def test_every_cell_is_the_same_width(self):
+        await self.add_drill(level=1)
+        for _ in range(12):
+            await self.add_drill(level=12, drill_type="steel_drill")
+        await self.add_drill(level=3, container="iron_container")
+        spans = re.findall(r"`([^`]*)`", await self.drills_field())
+        self.assertEqual(len(spans), 3)
+        self.assertEqual(len({len(span) for span in spans}), 1, spans)
+
+    async def test_the_cap_counts_cells_and_names_the_drills_left_over(self):
+        for level in range(2, 22):  # twenty distinct cells, levels 21 down to 2
+            await self.add_drill(level=level)
+        for _ in range(4):
+            await self.add_drill(level=1)  # a twenty-first cell, four drills
+        field = await self.drills_field()
+        self.assertIn("... and 4 more drills", field)
+        self.assertNotIn("Lv.1 ×4", field)
 
 
 class InventoryMaterialGridTests(InventoryTestCase):
