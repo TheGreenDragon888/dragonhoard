@@ -75,7 +75,8 @@ class PressRecipeTests(unittest.TestCase):
         self.assertEqual(PRESS_RECIPES["ruby"]["inputs"], {"iron": 600})
         self.assertEqual(PRESS_RECIPES["obsidian"]["inputs"], {"copper": 3000})
         self.assertEqual(PRESS_RECIPES["diamond"]["inputs"], {"steel": 27000})
-        self.assertEqual(PRESS_RECIPES["ultra_dense_matter"]["inputs"], {"diamond": 10})
+        # 100 since 1.5 (was 10), the owner's call.
+        self.assertEqual(PRESS_RECIPES["ultra_dense_matter"]["inputs"], {"diamond": 100})
 
     def test_every_recipe_is_worth_about_the_same_per_unit_mined(self):
         # Gem ceiling prices are set so mining one item is worth the same
@@ -178,6 +179,9 @@ class PressChoiceLabelTests(unittest.TestCase):
         self.assertEqual(press_choice_label("obsidian_from_ruby"), "Obsidian from 10 Rubies")
         self.assertEqual(press_choice_label("diamond"), "Diamond from 27,000 Steel")
         self.assertEqual(press_choice_label("diamond_from_obsidian"), "Diamond from 9 Obsidian")
+        self.assertEqual(
+            press_choice_label("ultra_dense_matter"), "Ultra Dense Matter from 100 Diamonds"
+        )
 
     def test_every_label_fits_a_discord_choice(self):
         from cogs.press import press_choice_label

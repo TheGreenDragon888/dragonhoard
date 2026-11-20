@@ -205,7 +205,7 @@ A recipe's cost in press time is measured in press-days, against a ruby. A press
 <:Diamond:1523433355708858612> Diamond (27,000 Steel) [9 press-days]
 <:Obsidian:1523433115450736690> Obsidian (10 Rubies) [3 press-days]
 <:Diamond:1523433355708858612> Diamond (9 Obsidian) [9 press-days]
-🌑 Ultra Dense Matter (10 Diamond) [27 press-days]
+🌑 Ultra Dense Matter (100 Diamonds) [27 press-days] - 10 Diamonds until 1.5
 
 Gem fusion (1.5): the last two recipes above combine lower gems into the next tier up, at the owner's request. They cost the plain rarity ratio - 10 rubies to an obsidian, 9 obsidian to a diamond, the same 90:9:1 the drop chances give - so a fused gem costs exactly the mining behind its inputs, with none of the metal recipes' discount. That is half what a mining affinity converts at, so an affinity stays the better rate, and the two can't be looped: an affinity converts only the gems in a haul, and the press only fuses upward. Each fusion takes its output's own press time, the rule ultra dense matter already follows. /press craft names every recipe by what it makes and from what ("Obsidian from 10 Rubies"), since two recipes now make each of obsidian and diamond.
 

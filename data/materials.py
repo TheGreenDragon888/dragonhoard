@@ -352,7 +352,8 @@ PRESS_RECIPES = {
     "diamond_from_obsidian": {
         "output": "diamond", "inputs": {"obsidian": _fusion_cost("obsidian", "diamond")}, "press_days": 9,
     },
-    "ultra_dense_matter": {"inputs": {"diamond": 10}, "press_days": 27},
+    # 100 diamonds since 1.5 (was 10), the owner's call.
+    "ultra_dense_matter": {"inputs": {"diamond": 100}, "press_days": 27},
 }
 
 

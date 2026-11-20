@@ -85,7 +85,7 @@ figure and not on the structure.
 player's gems are worth; 5x is how many of the chosen one they hold. The second
 is the one the endgame is priced against, because diamonds gate diamond drill
 bits (3 each), drill upgrades (3 per level, doubling), the Diamond Container
-and Ultra Dense Matter (10).
+and Ultra Dense Matter (100 since 1.5; 10 before).
 
 
 Why the rarity ratio, when the prices disagree
