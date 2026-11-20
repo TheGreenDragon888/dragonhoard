@@ -376,9 +376,10 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         the materials that became server-only, and 7 moves every Fee Share onto
         the rate steps. 8 takes gemstones out of the ledger's stored input
         values. 1.5 adds 9, which gives entries already on the books the
-        longer lifetime."""
+        longer lifetime, and 10, which restarts drills the larger containers
+        have room in again."""
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 9)
+        self.assertEqual(row[0], 10)
 
     async def test_the_daily_top_ups_bookkeeping_is_gone(self):
         # There is no daily event left for it to record, and a column nothing
@@ -776,7 +777,7 @@ class ServerOnlyEntriesMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_lands_on_the_current_version_and_does_not_run_twice(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 9)
+        self.assertEqual(row[0], 10)
         await self.db.init_schema()
         balance = await self.db.fetchone(
             "SELECT balance FROM server_currency_balances WHERE user_id = ?", (self.BUYER,)
@@ -966,7 +967,7 @@ class FeeShareStepMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_runs_once(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 9)
+        self.assertEqual(row[0], 10)
         await self.db.execute("UPDATE server_config SET tax_percent = 15 WHERE guild_id = 2")
         await self.db.init_schema()
         row = await self.db.fetchone("SELECT tax_percent FROM server_config WHERE guild_id = 2")
@@ -1176,7 +1177,7 @@ class LedgerGemInputMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_runs_once(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 9)
+        self.assertEqual(row[0], 10)
         await self.db.execute(
             "UPDATE production_ledger SET input_value = 52500 WHERE material_id = 'drill_upgrade'"
         )
@@ -1255,7 +1256,7 @@ class EntryLifetimeExtensionMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_runs_once(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 9)
+        self.assertEqual(row[0], 10)
         await self.db.execute(
             "UPDATE market_listings SET expires_at = datetime('now', '+1 day') WHERE listing_id = 1"
         )
@@ -1264,6 +1265,88 @@ class EntryLifetimeExtensionMigrationTests(unittest.IsolatedAsyncioTestCase):
             await self.days_left("market_listings", "listing_id", 1), 1, delta=0.01,
             msg="a later open must not touch it again",
         )
+
+
+class ContainerCapacityMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """1.5 quadrupled every container. A placed drill that was full at the old
+    capacity has room again, but the harvest loop only selects drills with
+    is_full = 0, so user_version 10 re-derives the flag - and restarts the
+    clock of every drill it frees, or its first tick would pay for the time it
+    sat full (utils/drills.py: set_container keeps the same rule).
+
+    The old state is a current database with user_version wound back to 9 and
+    drills as the old capacities left them.
+    """
+
+    LONG_AGO = "2026-01-01 00:00:00"
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        conn.execute("INSERT INTO server_config (guild_id) VALUES (?)", (GUILD,))
+        # (drill_id, container_type, stored_amount, is_full)
+        for drill_id, container, stored, full in (
+            (1, "steel_container", 500, 1),      # full at the old 500
+            (2, None, 100, 1),                   # bare: still full at 100
+            (3, "iron_container", 120, 0),       # was never full
+            (4, "diamond_container", 32000, 1),  # full at the old 32,000
+        ):
+            conn.execute(
+                "INSERT INTO drills (drill_id, guild_id, owner_id, drill_type, container_type, "
+                "stored_amount, is_full, mined_until) VALUES (?, ?, ?, 'iron_drill', ?, ?, ?, ?)",
+                (drill_id, GUILD, USER, container, stored, full, self.LONG_AGO),
+            )
+        conn.execute("PRAGMA user_version = 9")
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def drill(self, drill_id):
+        return await self.db.fetchone(
+            "SELECT is_full, stored_amount, mined_until, "
+            "(julianday('now') - julianday(mined_until)) * 86400 AS seconds_ago "
+            "FROM drills WHERE drill_id = ?",
+            (drill_id,),
+        )
+
+    async def test_a_drill_with_room_again_restarts_now(self):
+        for drill_id in (1, 4):
+            with self.subTest(drill_id=drill_id):
+                row = await self.drill(drill_id)
+                self.assertEqual(row["is_full"], 0)
+                self.assertLess(row["seconds_ago"], 60, "its clock restarts at the upgrade")
+
+    async def test_its_contents_are_left_alone(self):
+        self.assertEqual((await self.drill(1))["stored_amount"], 500)
+
+    async def test_a_bare_drill_stays_full(self):
+        row = await self.drill(2)
+        self.assertEqual(row["is_full"], 1)
+        self.assertEqual(row["mined_until"], self.LONG_AGO)
+
+    async def test_a_drill_that_was_not_full_is_untouched(self):
+        row = await self.drill(3)
+        self.assertEqual(row["is_full"], 0)
+        self.assertEqual(row["mined_until"], self.LONG_AGO)
+
+    async def test_it_runs_once(self):
+        row = await self.db.fetchone("PRAGMA user_version")
+        self.assertEqual(row[0], 10)
+        await self.db.execute("UPDATE drills SET is_full = 1 WHERE drill_id = 1")
+        await self.db.init_schema()
+        self.assertEqual((await self.drill(1))["is_full"], 1, "a later open must not touch it again")
 
 
 if __name__ == "__main__":

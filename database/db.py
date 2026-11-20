@@ -725,6 +725,13 @@ class Database(_Executor):
             if version < 9:
                 self._migrate_extend_market_entries(conn)
 
+            # 1.5 quadrupled every container, so a placed drill that stopped
+            # full at the old capacity has room again - but is_full is stored,
+            # and the harvest loop never selects a full drill. A value, not a
+            # shape: gated on user_version.
+            if version < 10:
+                self._migrate_restart_drills_with_room(conn)
+
             # server_mining_pool.carry banked the fraction of a gemstone a pool
             # had accrued from the daily top-up. The bag replaced that outright
             # - the gems are simply in it - so nothing has read or written this
@@ -1208,6 +1215,34 @@ class Database(_Executor):
                     (ENTRY_LIFETIME_MODIFIER,),
                 )
             conn.execute("PRAGMA user_version = 9")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    @staticmethod
+    def _migrate_restart_drills_with_room(conn: sqlite3.Connection):
+        """Clears is_full on every placed drill whose container now holds more
+        than it is carrying, and restarts its clock (1.5's 4x containers).
+
+        utils/drills.py: set_container's rule, written as SQL because a
+        migration runs before the async helpers can: a full drill that a new
+        capacity frees starts mining NOW, so mined_until moves with it -
+        otherwise its next tick would pay for the time it spent full. Its
+        contents are left alone. A bare drill's capacity did not change, so
+        only drills with a container can be freed."""
+        from data.materials import STORAGE_CONTAINERS, effective_capacity
+
+        conn.execute("BEGIN")
+        try:
+            for container_type in STORAGE_CONTAINERS:
+                conn.execute(
+                    "UPDATE drills SET is_full = 0, mined_until = datetime('now') "
+                    "WHERE guild_id IS NOT NULL AND is_full = 1 "
+                    "AND container_type = ? AND stored_amount < ?",
+                    (container_type, effective_capacity(container_type)),
+                )
+            conn.execute("PRAGMA user_version = 10")
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

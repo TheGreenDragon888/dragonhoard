@@ -141,13 +141,13 @@ Rates below are at level 1; every level adds a fifth of that drill's own level 1
 <:DiamondMiningDrill:1523433688656908408> Diamond Drill (Wiring, Drill Chassis, and Diamond Drill Bit) [Mines 480 raw materials / hour]
 
 (Storage containers, produced in a factory - attach with /mine attach)
-📦 Iron Container (10 Iron, 5 Copper) [+150 storage, so 250 on a drill]
-🗃️ Steel Container (10 Steel, 10 Copper) [+400 storage, so 500 on a drill]
-💼 Ruby Container (1 Ruby, 20 Copper) [+1900 storage, so 2000 on a drill]
-🧳 Obsidian Container (1 Obsidian, 40 Copper) [+7900 storage, so 8000 on a drill]
-🎁 Diamond Container (1 Diamond, 80 Copper) [+31900 storage, so 32000 on a drill]
+📦 Iron Container (10 Iron, 5 Copper) [+900 storage, so 1,000 on a drill]
+🗃️ Steel Container (10 Steel, 10 Copper) [+1,900 storage, so 2,000 on a drill]
+💼 Ruby Container (1 Ruby, 20 Copper) [+7,900 storage, so 8,000 on a drill]
+🧳 Obsidian Container (1 Obsidian, 40 Copper) [+31,900 storage, so 32,000 on a drill]
+🎁 Diamond Container (1 Diamond, 80 Copper) [+127,900 storage, so 128,000 on a drill]
 
-Every step from Steel up is now a uniform x4 on both the matched drill's speed and its container's capacity (Steel->Ruby, Ruby->Obsidian and Obsidian->Diamond all x4; only Iron->Steel is x2). That keeps a container proportionally as useful relative to its own tier's drill as it always was, and because capacity and rate scale by the same factor at every one of those steps, a container buys an identical 66.67 hours of runtime from Steel through Diamond - Iron is the only tier that still buys strictly less (50 hours). Ruby->Obsidian and Obsidian->Diamond were only x2 from 1.2.1 through 1.2.2; see the STORAGE_CONTAINERS comment in data/materials.py for the full reasoning and history.
+Every step from Steel up is now a uniform x4 on both the matched drill's speed and its container's capacity (Steel->Ruby, Ruby->Obsidian and Obsidian->Diamond all x4; only Iron->Steel is x2). That keeps a container proportionally as useful relative to its own tier's drill as it always was, and because capacity and rate scale by the same factor at every one of those steps, a container buys an identical 266.67 hours of runtime from Steel through Diamond - Iron is the only tier that still buys strictly less (200 hours). 1.5 quadrupled every container's capacity to make absences from the game less punishing; before it those figures were 66.67 and 50 hours. Ruby->Obsidian and Obsidian->Diamond were only x2 from 1.2.1 through 1.2.2; see the STORAGE_CONTAINERS comment in data/materials.py for the full reasoning and history.
 
 (Upgrade materials, produced in a factory)
 🧰 Drill Upgrade Pack (5 Copper) [consumed by /factory upgrade]

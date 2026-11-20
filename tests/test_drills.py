@@ -101,12 +101,13 @@ class EffectiveCapacityTests(unittest.TestCase):
         self.assertEqual(effective_capacity(None), BASE_STORAGE_CAPACITY)
 
     def test_container_bonus_is_additive(self):
+        # Quadrupled in 1.5 from 250/500/2,000/8,000/32,000.
         expected = {
-            "iron_container": 250,
-            "steel_container": 500,
-            "ruby_container": 2000,
-            "obsidian_container": 8000,
-            "diamond_container": 32000,
+            "iron_container": 1000,
+            "steel_container": 2000,
+            "ruby_container": 8000,
+            "obsidian_container": 32000,
+            "diamond_container": 128000,
         }
         self.assertEqual(
             {c: effective_capacity(c) for c in STORAGE_CONTAINERS}, expected

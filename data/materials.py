@@ -195,23 +195,29 @@ UPGRADE_MATERIALS = {
 #
 # The ladder is set by TOTAL capacity, not by the bonus, and the bonuses are
 # simply those totals minus BASE_STORAGE_CAPACITY - that's why they read as
-# 150/400/1,900/7,900/31,900 rather than round numbers; the round number is
-# the total, which is also the only one a player ever sees (/recipe factory
+# 900/1,900/7,900/31,900/127,900 rather than round numbers; the round number
+# is the total, which is also the only one a player ever sees (/recipe factory
 # renders effective_capacity, not the bonus).
 #
 # Every container from Steel up is set by scaling that tier's ladder-mate
 # total by the exact same factor its drill's speed was scaled by (Steel->Ruby
-# is a 4x jump on both the drill, 7.5->30, and the container, 500->2,000; as
+# is a 4x jump on both the drill, 7.5->30, and the container, 2,000->8,000; as
 # of 1.3, Ruby->Obsidian and Obsidian->Diamond are 4x jumps too, on both drill
-# and container alike - 30->120->480 and 2,000->8,000->32,000). That keeps a
+# and container alike - 30->120->480 and 8,000->32,000->128,000). That keeps a
 # container proportionally as useful relative to its own tier's drill as it
 # always was - but because capacity and rate scale by an identical factor at
 # every one of those three steps, runtime (capacity / effective_rate) is flat
-# at 66.67 hours from Steel through Diamond (500/7.5 = 2,000/30 = 8,000/120 =
-# 32,000/480). Iron is the only tier that still buys strictly less runtime
-# (250/5 = 50 hours). See
-# EffectiveCapacityTests.test_a_dearer_container_buys_more_runtime_than_a_cheaper_one
+# at 266.67 hours from Steel through Diamond (2,000/7.5 = 8,000/30 =
+# 32,000/120 = 128,000/480). Iron is the only tier that still buys strictly
+# less runtime (1,000/5 = 200 hours). See
+# EffectiveCapacityTests.test_a_dearer_container_buys_at_least_as_much_runtime_as_a_cheaper_one
 # in tests/test_drills.py, where this is pinned.
+#
+# 1.5 quadrupled every total, to make absences from the game less punishing.
+# Before it the ladder was 250/500/2,000/8,000/32,000, which held 66.67 hours
+# from Steel through Diamond and 50 for Iron. Placed drills that were full at
+# the old capacities were restarted by a migration (database/db.py:
+# _migrate_restart_drills_with_room).
 #
 # The previous ladder was 150/200/300/400/500, and its problem was not that the
 # gem tiers were low but that they were exactly cancelled out: totals of
@@ -228,18 +234,17 @@ UPGRADE_MATERIALS = {
 # cost of scaling containers proportionally to drill speed, not the same bug
 # recurring by accident.
 #
-# No attempt is made to price these against what the gems cost - the usefulness
-# of storage saturates within about a week of autonomy, so proportionality to a
-# gemstone's value is not reachable and chasing it would put absurd numbers
-# here. Note also that the gem is not really spent: scrap_yield's keystone
+# No attempt is made to price these against what the gems cost - chasing
+# proportionality to a gemstone's value would put absurd numbers here. Note
+# also that the gem is not really spent: scrap_yield's keystone
 # guarantee returns it (along with half the copper), so a gem container costs
 # half its copper, the factory time, and having the gem parked.
 STORAGE_CONTAINERS = {
-    "iron_container":     {"name": "Iron Container",     "emoji": custom_emoji("IronContainer", 1533713574977994793, 1533714646551363684), "inputs": {"iron": 10, "copper": 5},      "storage_bonus": 150},   # holds 250
-    "steel_container":    {"name": "Steel Container",    "emoji": custom_emoji("SteelContainer", 1533713578811461642, 1533714649990824036), "inputs": {"steel": 10, "copper": 10},    "storage_bonus": 400},   # holds 500
-    "ruby_container":     {"name": "Ruby Container",     "emoji": custom_emoji("RubyContainer", 1533713577607954542, 1533714648736469033), "inputs": {"ruby": 1, "copper": 20},      "storage_bonus": 1900},  # holds 2,000
-    "obsidian_container": {"name": "Obsidian Container", "emoji": custom_emoji("ObsidianContainer", 1533713576261587107, 1533714647687893093), "inputs": {"obsidian": 1, "copper": 40},  "storage_bonus": 7900},  # holds 8,000
-    "diamond_container":  {"name": "Diamond Container",  "emoji": custom_emoji("DiamondContainer", 1533713574076219502, 1533714644965916805), "inputs": {"diamond": 1, "copper": 80},   "storage_bonus": 31900},  # holds 32,000
+    "iron_container":     {"name": "Iron Container",     "emoji": custom_emoji("IronContainer", 1533713574977994793, 1533714646551363684), "inputs": {"iron": 10, "copper": 5},      "storage_bonus": 900},     # holds 1,000
+    "steel_container":    {"name": "Steel Container",    "emoji": custom_emoji("SteelContainer", 1533713578811461642, 1533714649990824036), "inputs": {"steel": 10, "copper": 10},    "storage_bonus": 1900},    # holds 2,000
+    "ruby_container":     {"name": "Ruby Container",     "emoji": custom_emoji("RubyContainer", 1533713577607954542, 1533714648736469033), "inputs": {"ruby": 1, "copper": 20},      "storage_bonus": 7900},    # holds 8,000
+    "obsidian_container": {"name": "Obsidian Container", "emoji": custom_emoji("ObsidianContainer", 1533713576261587107, 1533714647687893093), "inputs": {"obsidian": 1, "copper": 40},  "storage_bonus": 31900},   # holds 32,000
+    "diamond_container":  {"name": "Diamond Container",  "emoji": custom_emoji("DiamondContainer", 1533713574076219502, 1533714644965916805), "inputs": {"diamond": 1, "copper": 80},   "storage_bonus": 127900},  # holds 128,000
 }
 
 # Made only by the hydraulic press. Deliberately has no market_price:

@@ -126,7 +126,7 @@ class MineStatusDrillStorageTests(MineStatusTestCase):
     async def test_a_four_figure_capacity_is_comma_separated(self):
         await self.add_drill(USER, "diamond_drill", container_type="diamond_container", stored_amount=12345)
         field = await self.field("Your Drills")
-        self.assertIn("12,345/32,000", field)
+        self.assertIn("12,345/128,000", field)
 
     async def test_a_three_figure_amount_has_no_stray_comma(self):
         await self.add_drill(USER, stored_amount=42)
