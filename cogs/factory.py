@@ -51,6 +51,7 @@ from utils.db_helpers import (
 )
 from utils.drills import (
     DrillScope,
+    container_name,
     drill_choices,
     drill_label,
     drill_unavailable_message,
@@ -61,6 +62,7 @@ from utils.drills import (
     material_breakdown_lines,
     release_stale_drill_locks,
     retract_drill,
+    strip_container,
 )
 
 from data.materials import (
@@ -91,6 +93,19 @@ CRAFTABLE = {**COMPONENT_MATERIALS, **DRILLS, **UPGRADE_MATERIALS, **STORAGE_CON
 # Crafting one of these produces a tracked drill instance rather than an
 # inventory stack, so the drain step has to insert rows instead of counting up.
 DRILL_IDS = frozenset(DRILLS)
+
+
+class _UpgradeRefused(Exception):
+    """A /factory upgrade refusal, raised inside the command's transaction.
+
+    Raised rather than returned because Database.transaction commits on any
+    exit that isn't an exception, an early `return` included. By the time most
+    refusals are reached the drill may already have been pulled out of the
+    ground and stripped of its container; until 1.5 every refusal returned, so
+    a player told they couldn't afford an upgrade found their drill stopped and
+    its haul banked anyway. Raising rolls all of that back, and the message is
+    sent after the transaction has closed rather than while it holds the write
+    lock (CLAUDE.md: no Discord calls inside a transaction)."""
 
 
 class FactoryCog(commands.Cog):
@@ -231,6 +246,7 @@ class FactoryCog(commands.Cog):
     async def factory_upgrade(self, interaction: discord.Interaction, drill: int):
         have: dict[str, int] = {}
         retracted: dict[str, int] | None = None
+        stripped: str | None = None
         try:
             async with self.db.transaction() as tx:
                 # The drill is re-read inside the transaction, so its level -
@@ -238,20 +254,16 @@ class FactoryCog(commands.Cog):
                 # being charged, and two upgrades can't both claim it.
                 row = await fetch_drill(tx, drill, interaction.user.id)
                 if row is None:
-                    await interaction.response.send_message("That isn't one of your drills.", ephemeral=True)
-                    return
+                    raise _UpgradeRefused("That isn't one of your drills.")
                 # The autocomplete's value is never trusted to have come from
                 # the list offered (see utils/drills.py's module docstring).
                 if not is_local_drill(row, interaction.guild_id):
-                    await interaction.response.send_message(
-                        f"**{drill_label(row)}** is placed in another server - run this there instead.",
-                        ephemeral=True,
+                    raise _UpgradeRefused(
+                        f"**{drill_label(row)}** is placed in another server - run this there instead."
                     )
-                    return
                 unavailable = drill_unavailable_message(row, "queue it for an upgrade")
                 if unavailable is not None:
-                    await interaction.response.send_message(unavailable, ephemeral=True)
-                    return
+                    raise _UpgradeRefused(unavailable)
 
                 # A placed drill is pulled out of the ground here rather than
                 # being refused, so a player doesn't have to run /mine remove,
@@ -262,17 +274,23 @@ class FactoryCog(commands.Cog):
                 # old refusal cheap to reason about.
                 #
                 # It happens after the ownership and lock checks and inside the
-                # same transaction as the job INSERT below, so an upgrade that
-                # turns out to be unaffordable never leaves the drill sitting
-                # in an inventory it didn't ask to be in.
+                # same transaction as the job INSERT below, and every refusal
+                # after it raises (_UpgradeRefused), so an upgrade that turns
+                # out to be unaffordable rolls the retraction back with it.
                 if row["guild_id"] is not None:
                     retracted = await retract_drill(tx, row)
                     if retracted is None:
-                        await interaction.response.send_message(
-                            "That drill changed while this was going through. Try again.",
-                            ephemeral=True,
-                        )
-                        return
+                        raise _UpgradeRefused("That drill changed while this was going through. Try again.")
+
+                # 1.5: the container comes off and goes back to the inventory,
+                # as /mine remove's does by default, so it isn't locked away on
+                # a drill that can't be used until the factory finishes. The
+                # owner asked for it. Rolled back with everything else if the
+                # upgrade is refused below.
+                if row["container_type"] is not None:
+                    if not await strip_container(tx, row):
+                        raise _UpgradeRefused("That drill changed while this was going through. Try again.")
+                    stripped = row["container_type"]
 
                 level = row["level"]
                 needs = drill_upgrade_cost(row["drill_type"], level)
@@ -282,12 +300,10 @@ class FactoryCog(commands.Cog):
                     if have[input_id] < needed:
                         info = get_material_info(input_id)
                         label = f"{info['emoji']} {info['name']}" if info else f"`{input_id}`"
-                        await interaction.response.send_message(
+                        raise _UpgradeRefused(
                             f"Upgrading **{drill_label(row)}** to level {level + 1} costs {describe_cost(needs)}. "
-                            f"You need {needed:,}x {label} but only have {have[input_id]:,}.",
-                            ephemeral=True,
+                            f"You need {needed:,}x {label} but only have {have[input_id]:,}."
                         )
-                        return
 
                 await ensure_server_row(tx, interaction.guild_id)
                 cfg = await tx.fetchone(
@@ -301,21 +317,17 @@ class FactoryCog(commands.Cog):
                 # the same per-user queue cap as any craft.
                 room = await queue_room(tx, interaction.guild_id, interaction.user.id, "factory", 1)
                 if not room.fits:
-                    await interaction.response.send_message(
-                        queue_full_message("factory", room), ephemeral=True
-                    )
-                    return
+                    raise _UpgradeRefused(queue_full_message("factory", room))
 
                 fee_total = fee_rate
                 balance_after = 0.0
                 if fee_total > 0:
                     balance = await get_currency_balance(tx, interaction.guild_id, interaction.user.id)
                     if balance < fee_total:
-                        await interaction.response.send_message(
-                            f"This would cost {format_currency(fee_total, currency_emoji, round_up=True)} up front, but you only have {format_currency(balance, currency_emoji)}.",
-                            ephemeral=True,
+                        raise _UpgradeRefused(
+                            f"This would cost {format_currency(fee_total, currency_emoji, round_up=True)} up front, "
+                            f"but you only have {format_currency(balance, currency_emoji)}."
                         )
-                        return
                     balance_after = balance - fee_total
 
                 for input_id, needed in needs.items():
@@ -339,6 +351,9 @@ class FactoryCog(commands.Cog):
                     (job_id, row["drill_id"]),
                 )
                 speed_level = await machine_speed_level(tx, interaction.guild_id, "factory")
+        except _UpgradeRefused as refusal:
+            await interaction.response.send_message(str(refusal), ephemeral=True)
+            return
         except InsufficientQuantity:
             await interaction.response.send_message(
                 "Your materials or balance changed while that was going through - "
@@ -383,9 +398,17 @@ class FactoryCog(commands.Cog):
             embed.add_field(
                 name="Pulled Out Of The Ground",
                 value=(
-                    f"This drill was mining in **{interaction.guild.name}** and has been returned "
-                    f"to your inventory for the upgrade, keeping its level and container.\n"
+                    f"This drill was mining in **{interaction.guild.name}** and came out for the upgrade.\n"
                     + ("\n".join(collected) if collected else "It was empty.")
+                ),
+                inline=False,
+            )
+        if stripped is not None:
+            embed.add_field(
+                name="Container Returned",
+                value=(
+                    f"{STORAGE_CONTAINERS[stripped]['emoji']} **{container_name(stripped)}** "
+                    f"is back in your inventory."
                 ),
                 inline=False,
             )

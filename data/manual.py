@@ -278,8 +278,8 @@ _add(ManualSection(
         ),
     ),
     tips=(
-        "To upgrade a drill, `/mine remove` it first. It stays in the factory until the job "
-        "finishes.",
+        "Upgrading takes a placed drill out of the ground and its container off. It stays in "
+        "the factory until the job finishes.",
         "Each level costs an Upgrade Pack plus the drill's own tier material, and the cost "
         "doubles every level.",
     ),

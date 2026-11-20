@@ -69,7 +69,7 @@ Scrapping a levelled gem drill gives back half the gems its levels cost, rounded
 
 Iron and Steel were left at a fifth. The argument above only works for drills whose bit is essentially their whole cost; on an Iron or Steel Drill the chassis and wiring are a large share of it too (compare raw_input_cost of the bit and of the drill's recipe in data/materials.py), so counting in bits says nothing about them.
 
-Upgrading is a factory job, queued with /factory upgrade <drill>, and the drill has to be in your inventory rather than placed. One level at a time. The drill is locked while the upgrade is queued - it can't be placed, removed, or have its container changed until the factory finishes it. The cost is one Drill Upgrade Pack plus the drill's tier material, and every part of it doubles with each level (x 2 ^ (current level - 1)):
+Upgrading is a factory job, queued with /factory upgrade <drill>. A placed drill is pulled out of the ground first, with whatever it had mined going to your inventory, and as of 1.5 its container comes off and goes back to your inventory too, so it isn't locked away on a drill that can't be used yet. A refused upgrade changes nothing. One level at a time. The drill is locked while the upgrade is queued - it can't be placed, removed, or have a container fitted until the factory finishes it. The cost is one Drill Upgrade Pack plus the drill's tier material, and every part of it doubles with each level (x 2 ^ (current level - 1)):
 
 Iron Drill - 10 Iron
 Steel Drill - 10 Steel
