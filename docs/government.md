@@ -21,15 +21,13 @@ Tests: `tests/test_government.py`.
   America/Phoenix clock, announced by a server notice when it opens. The count
   runs at the midnight that ends it: lazily from any government command, and
   from the hourly loop.
-- **Who votes:** anyone with a drill that has been placed in the server for at
-  least `VOTER_DRILL_DAYS` (7) when voting opens. A drill placed at all is not
-  enough, because a player who owns no drill gets a free one on their first
-  `/mine place` - an alt account would qualify with one command. That is what
-  `drills.placed_at` exists for. A drill that was already placed when the
-  update shipped has no `placed_at` and qualifies outright: nobody could have
-  placed one to win an election that did not exist yet, and counting those
-  drills from the migration instead would have left every existing player a
-  week short of the first election.
+- **Who votes:** any member of the server (1.5). From 1.4 until then a voter
+  needed a drill that had been placed in the server for 7 days when voting
+  opened, so that an alt account could not qualify with the free drill its
+  first `/mine place` hands out. It was removed because it was not necessary,
+  and because players kept being punished for pulling every drill and placing
+  them again, which restarted the clock. `drills.placed_at` was what it
+  measured; the column is still written but nothing reads it.
 - **Who can be elected:** a member who has played in the server (held its
   currency or placed a drill there), never a bot, never yourself. A winner who
   has left is skipped at the count.

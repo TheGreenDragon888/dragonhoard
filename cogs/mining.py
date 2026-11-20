@@ -514,9 +514,9 @@ class MiningCog(commands.Cog):
                     return
 
                 # Mining starts now, so its first tick pays for the time since
-                # and not a whole tick (drills.mined_until). placed_at is what
-                # voting eligibility is measured against (utils/government.py:
-                # can_vote).
+                # and not a whole tick (drills.mined_until). placed_at records
+                # the placement; nothing has read it since 1.5 removed the
+                # voting rule that did (database/schema.sql).
                 await tx.execute(
                     "UPDATE drills SET guild_id = ?, mined_until = datetime('now'), "
                     "placed_at = datetime('now') WHERE drill_id = ? AND guild_id IS NULL",

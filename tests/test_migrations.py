@@ -209,15 +209,11 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["mining_slot_credit"], 0.0)
 
     async def test_drills_already_placed_are_left_unstamped(self):
-        # NULL is what grandfathers a pre-update drill into the first election
-        # (utils/government.py: can_vote); stamping it with the migration time
-        # would leave its owner a week short.
+        # The 1.4 migration adds placed_at without backfilling it. Nothing has
+        # read the column since 1.5 removed the voting rule that did, but the
+        # migration still runs on any database older than 1.4.
         rows = await self.db.fetchall("SELECT drill_id, placed_at FROM drills ORDER BY drill_id")
         self.assertEqual({row["drill_id"]: row["placed_at"] for row in rows}, {7: None, 8: None})
-
-    async def test_its_owner_can_vote_in_the_very_first_election(self):
-        from utils.government import can_vote, next_voting_day
-        self.assertTrue(await can_vote(self.db, GUILD, USER, next_voting_day()))
 
     async def test_opening_it_again_changes_nothing(self):
         # Every 1.4 step is gated, so a second boot must neither fail on a

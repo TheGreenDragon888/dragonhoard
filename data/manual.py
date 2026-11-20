@@ -52,7 +52,7 @@ from data.materials import (
     MINING_SLOT_ENHANCEMENT_MULTIPLIER,
     drill_scrap_yield,
 )
-from utils.government import MAX_BOND_RATE_PERCENT, VOTER_DRILL_DAYS
+from utils.government import MAX_BOND_RATE_PERCENT
 from utils.market_book import MARKET_ENTRY_LIFETIME_DAYS, MAX_OPEN_LISTINGS, MAX_OPEN_ORDERS
 from utils.production_ledger import BALANCED_ORE_GAP
 
@@ -625,8 +625,7 @@ _add(ManualSection(
         ),
     ),
     tips=(
-        f"**Voting** is Thursdays, Arizona time. You need a drill placed here for at least "
-        f"{VOTER_DRILL_DAYS} days, and can't vote for yourself.",
+        "**Voting** is Thursdays, Arizona time. You can't vote for yourself.",
         "**Fee Share**: the part of each machine fee the government keeps - your fee is the "
         "same either way. **Market Tax**: a cut of player trades, paid by the seller.",
         "**Bonds** repay their price plus the premium fixed when you buy, hourly from the "

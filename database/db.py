@@ -465,16 +465,17 @@ class Database(_Executor):
             if version < 2:
                 self._migrate_drill_stacks_to_instances(conn)
 
-            # drills.placed_at (1.4), what voting eligibility is measured
-            # against. Read after the rebuild above rather than off the
-            # drill_columns taken at the top, because that rebuild writes a
-            # new table that already has it.
+            # drills.placed_at (1.4), what voting eligibility was measured
+            # against until 1.5 removed that rule (see schema.sql on the
+            # column; nothing reads it now). Read after the rebuild above rather
+            # than off the drill_columns taken at the top, because that rebuild
+            # writes a new table that already has it.
             #
-            # Deliberately NOT backfilled. A drill already placed when this
-            # runs keeps NULL, which can_vote reads as "placed before the
-            # update" and so as placed long enough - backfilling the migration
-            # time would have left every existing player a week short of the
-            # first election (see schema.sql on the column).
+            # Deliberately NOT backfilled. A drill already placed when this ran
+            # kept NULL, which the old rule read as "placed before the update"
+            # and so as placed long enough - backfilling the migration time
+            # would have left every existing player a week short of the first
+            # election.
             if "placed_at" not in {row[1] for row in conn.execute("PRAGMA table_info(drills)")}:
                 conn.execute("ALTER TABLE drills ADD COLUMN placed_at TEXT")
 

@@ -194,9 +194,9 @@ class DevToolsCog(commands.Cog):
         office: app_commands.Choice[str],
         member: discord.Member | None = None,
     ):
-        # Skips the election and its eligibility rules - no drill, no
-        # has-played check, and appointing yourself is the point - but not the
-        # rules a count itself keeps (utils/government.py: assign_office).
+        # Skips the election and its eligibility rules - no has-played check,
+        # and appointing yourself is the point - but not the rules a count
+        # itself keeps (utils/government.py: assign_office).
         async with self.db.transaction() as tx:
             notes = await assign_office(
                 tx, interaction.guild_id, office.value, member.id if member else None

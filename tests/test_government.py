@@ -53,7 +53,6 @@ from utils.government import (
     bond_owed_cents,
     buy_bond,
     buy_enhancement,
-    can_vote,
     cast_vote,
     charge_machine_fee,
     count_election,
@@ -754,15 +753,17 @@ class ElectionTests(_GovernmentTestCase):
         await self.refused(MAYOR, ALICE, ALICE)
         await self.refused(MAYOR, ALICE, BOB, candidate_is_bot=True)
 
-    async def test_a_voter_needs_a_drill_placed_for_a_week(self):
+    async def test_a_member_with_no_drill_can_vote(self):
+        # 1.5 removed the voter's drill requirement: players kept losing their
+        # vote by pulling every drill and placing them again.
         voter = 555
-        await adjust_currency_balance(self.db, GUILD, voter, 1.0)
-        await self.refused(MAYOR, voter, BOB)
-        # Six days before voting opened is not enough; seven is.
-        opened = datetime(2026, 9, 24, 7, 0, tzinfo=timezone.utc)
-        await self.place_drill(voter, opened - timedelta(days=6))
-        await self.refused(MAYOR, voter, BOB)
-        await self.place_drill(voter, opened - timedelta(days=7))
+        await self.vote(MAYOR, voter, BOB)
+        result = await self.count()
+        self.assertEqual(result.mayor, BOB)
+
+    async def test_a_drill_placed_moments_ago_does_not_stop_a_vote(self):
+        voter = 558
+        await self.place_drill(voter, THURSDAY - timedelta(minutes=5))
         await self.vote(MAYOR, voter, BOB)
 
     async def test_a_candidate_must_have_played_here(self):
@@ -1268,27 +1269,28 @@ class CogTests(_GovernmentTestCase):
             await GovernmentCog.vote_treasurer.callback(self.cog, i, member)
         self.assertEqual(i.refusal, "You can't vote for yourself.")
 
-    async def test_a_drill_placed_before_the_update_votes_in_the_first_election(self):
-        # A placed drill with no placed_at predates the update (schema.sql):
-        # its owner qualifies on the very first Thursday.
+    async def test_a_member_who_pulled_every_drill_can_still_vote_through_the_command(self):
+        # The case 1.5 removed the drill requirement for: a player who took all
+        # their drills out and put them back had to wait a week to vote again.
         voter = 556
-        await adjust_currency_balance(self.db, GUILD, voter, 1.0)
         await self.db.execute(
-            "INSERT INTO drills (guild_id, owner_id, drill_type, placed_at) VALUES (?, ?, 'iron_drill', NULL)",
-            (GUILD, voter),
+            "INSERT INTO drills (guild_id, owner_id, drill_type) VALUES (NULL, ?, 'iron_drill')",
+            (voter,),
         )
+        await self.place_drill(BOB, THURSDAY - timedelta(days=1))
         i = FakeInteraction(voter)
         member = SimpleNamespace(id=BOB, bot=False, mention=f"<@{BOB}>")
-        await self.place_drill(BOB, THURSDAY - timedelta(days=1))
         with patch("utils.government.clock_now", return_value=THURSDAY):
             await GovernmentCog.vote_mayor.callback(self.cog, i, member)
         self.assertIsNone(i.refusal)
 
-    async def test_an_unplaced_drill_does_not_qualify(self):
-        # NULL placed_at only means anything on a drill that is in the ground.
-        voter = 557
-        await self.db.execute(
-            "INSERT INTO drills (guild_id, owner_id, drill_type, placed_at) VALUES (NULL, ?, 'iron_drill', NULL)",
-            (voter,),
+    async def test_the_election_day_notice_sets_no_drill_requirement(self):
+        async with self.db.transaction() as tx:
+            self.assertTrue(await announce_voting(tx, GUILD, THURSDAY))
+        row = await self.db.fetchone(
+            "SELECT body FROM notifications WHERE scope = 'server' AND guild_id = ? "
+            "ORDER BY notification_id DESC LIMIT 1",
+            (GUILD,),
         )
-        self.assertFalse(await can_vote(self.db, GUILD, voter, "2026-09-24"))
+        self.assertIn("can't vote for yourself", row["body"])
+        self.assertNotIn("drill", row["body"])

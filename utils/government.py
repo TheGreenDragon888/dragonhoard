@@ -154,14 +154,6 @@ REVENUE_HISTORY_DAYS = 30
 # is counted at the midnight that ends it.
 VOTING_WEEKDAY = 3  # Thursday
 
-# To vote, an account must have had a drill placed in the server for this long
-# when voting opens. A drill placed at all is not enough: a player who owns no
-# drill gets a free one on their first /mine place, so an alt account could
-# qualify with one command (docs/government.md, Q31). A drill that was already
-# placed when the government shipped has no placed_at and qualifies outright,
-# so existing players can vote in the first election (see can_vote).
-VOTER_DRILL_DAYS = 7
-
 # Every query for bonds still owed spells this predicate literally, because it
 # is the only form idx_government_bonds_owed (schema.sql) applies to.
 OWED_BONDS_SQL = "remaining_cents > 0"
@@ -819,27 +811,6 @@ async def frozen_holders(db: _Executor) -> list[tuple[int, int]]:
 # Elections
 # ---------------------------------------------------------------------------
 
-def voter_drill_cutoff(voting_day: str) -> str:
-    """A drill placed at or before this instant (UTC, datetime('now') layout)
-    qualifies its owner to vote on `voting_day`."""
-    return sqlite_timestamp(game_midnight(voting_day) - timedelta(days=VOTER_DRILL_DAYS))
-
-
-async def can_vote(db: _Executor, guild_id: int, voter_id: int, voting_day: str) -> bool:
-    """Whether the voter has a drill here that was placed at least
-    VOTER_DRILL_DAYS before voting opened - or was placed before the update
-    that added elections, which is what a NULL placed_at on a placed drill
-    means. Those are grandfathered: nobody could have placed a drill to win an
-    election that did not exist, and without them the first election would
-    have had no voters."""
-    row = await db.fetchone(
-        "SELECT 1 FROM drills WHERE guild_id = ? AND owner_id = ? "
-        "AND (placed_at IS NULL OR placed_at <= ?) LIMIT 1",
-        (guild_id, voter_id, voter_drill_cutoff(voting_day)),
-    )
-    return row is not None
-
-
 async def has_played(db: _Executor, guild_id: int, user_id: int) -> bool:
     """Whether a member has ever taken part in this server's economy - held its
     currency or placed a drill here. What a candidate needs."""
@@ -856,7 +827,11 @@ async def cast_vote(
     candidate_is_bot: bool = False, now: datetime | None = None,
 ) -> str:
     """Records a vote, replacing the voter's earlier vote for the same office
-    this week. Returns the voting day it counts toward."""
+    this week. Returns the voting day it counts toward.
+
+    Any member may vote (1.5). Until then a voter needed a drill placed here
+    for a week, and players kept losing their vote by pulling every drill and
+    placing them again, which restarted that clock."""
     if office not in OFFICES:
         raise ValueError(f"unknown office {office!r}")
     if not voting_open(now):
@@ -867,11 +842,6 @@ async def cast_vote(
     if candidate_is_bot:
         raise GovernmentError("Bots can't hold office.")
     voting_day = current_voting_day(now)
-    if not await can_vote(tx, guild_id, voter_id, voting_day):
-        raise GovernmentError(
-            f"To vote, you need a drill placed in this server for at least "
-            f"{VOTER_DRILL_DAYS} days when voting opens."
-        )
     if not await has_played(tx, guild_id, candidate_id):
         raise GovernmentError(
             "That member has never played Dragonhoard in this server, so they can't hold office here."
@@ -1073,8 +1043,7 @@ async def announce_voting(tx: _Executor, guild_id: int, now: datetime | None = N
     await post_server_notification(
         tx, guild_id, "🗳️ Election Day",
         f"Voting for Mayor and Treasurer is open until <t:{closes}:t>: use `/vote mayor` and "
-        f"`/vote treasurer`. You can't vote for yourself, and you need a drill placed here "
-        f"for at least {VOTER_DRILL_DAYS} days.",
+        f"`/vote treasurer`. You can't vote for yourself.",
     )
     await tx.execute(
         "UPDATE server_config SET election_announced = ? WHERE guild_id = ?", (today, guild_id)

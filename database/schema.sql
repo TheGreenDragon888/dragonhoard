@@ -373,19 +373,14 @@ CREATE TABLE IF NOT EXISTS drills (
     -- /factory upgrade or a /scrapper drill - else NULL. A locked drill can't
     -- be placed, removed, attached to, or queued a second time.
     locked_job_id    INTEGER,
-    -- When this drill was last placed, as datetime('now') text. What voting
-    -- eligibility is measured against (utils/government.py: can_vote): the
-    -- free starter drill means any account can have A drill placed within one
-    -- command, so the rule is a drill that has been placed for a week.
-    -- Not cleared when the drill is pulled out - only read together with a
-    -- guild_id match, and rewritten by the next placement.
+    -- When this drill was last placed, as datetime('now') text, written by
+    -- /mine place and not cleared when the drill is pulled out. NULL on a
+    -- placed drill means it was placed before the column existed (1.4).
     --
-    -- NULL on a PLACED drill means it was placed before this column existed,
-    -- and counts as placed long enough. Nobody could have placed a drill to
-    -- win an election that did not exist yet, and backfilling "now" instead
-    -- would have shut every existing player out of the first election. So
-    -- anything that places a drill must write this, or it hands out that
-    -- same grandfathering (cogs/mining.py: /mine place is the one place).
+    -- Nothing reads it since 1.5. It was what voting eligibility was measured
+    -- against (a drill placed for a week), and that rule was removed because
+    -- players kept losing their vote by pulling every drill and placing them
+    -- again. The column was kept rather than dropped, at the owner's call.
     placed_at        TEXT,
     -- market_listings.listing_id of the listing offering this drill for sale,
     -- else NULL. A listed drill can't be placed, removed, attached to, or
