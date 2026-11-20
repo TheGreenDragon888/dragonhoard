@@ -16,6 +16,7 @@ from discord.ext import commands
 from utils.embeds import make_embed, add_multi_field, RECIPE_COLOR
 from utils.responses import respond
 from utils.db_helpers import build_recipe_lines
+from utils.formatting import format_rate
 
 from data.materials import (
     BLAST_FURNACE_BATCH_SIZE,
@@ -30,6 +31,7 @@ from data.materials import (
     PRESS_RECIPES,
     drill_scrap_yield,
     effective_capacity,
+    effective_rate,
     get_material_info,
     scrap_yield,
     upgrade_cost,
@@ -100,9 +102,19 @@ def _drill_lines() -> list[str]:
 def _drill_upgrade_lines() -> list[str]:
     """Each drill's level-1 upgrade cost - what /factory upgrade takes to
     raise it from level 1 to 2. Every part of the cost doubles per level
-    from there (see upgrade_cost)."""
+    from there (see upgrade_cost).
+
+    Each line also says what a level adds to that drill's mining (1.5, at
+    the owner's request for brief, specific text here). The gain is the same
+    at every level - effective_rate is linear in the level - so the level 1
+    to 2 difference stands for all of them, and it is computed rather than
+    written so a retune can't leave it stale."""
     upgrade_recipes = {drill_id: {"inputs": upgrade_cost(drill_id, 1)} for drill_id in DRILLS}
-    return build_recipe_lines(upgrade_recipes)
+    return [
+        f"{line} — [+{format_rate(effective_rate(drill_id, 2) - effective_rate(drill_id, 1))}"
+        f"/hour per level]"
+        for drill_id, line in zip(DRILLS, build_recipe_lines(upgrade_recipes))
+    ]
 
 
 class RecipeCog(commands.Cog):
