@@ -1649,21 +1649,20 @@ class EconomyCog(commands.Cog):
         # The player books. Aggregated per material rather than listed row by
         # row - see utils/market_book.py: listing_depth for why, and for why
         # that is also what bounds these fields.
+        #
+        # A book with nothing on it gets no field at all (1.5). Each used to
+        # show a placeholder line, and the owner found two of them made the
+        # page look bloated.
         listings = await listing_depth(self.db, interaction.guild_id)
         drills = await listed_drills(self.db, interaction.guild_id)
         orders = await order_depth(self.db, interaction.guild_id)
 
-        add_multi_field(
-            embed, f"Listings · {currency_emoji} each",
-            self._depth_lines(listings, "seller")
-            + self._drill_lines(drills),
-            empty_text="Nobody is selling anything. `/market list` to be the first.",
-        )
-        add_multi_field(
-            embed, f"Orders · {currency_emoji} each",
-            self._depth_lines(orders, "buyer"),
-            empty_text="No open bids. `/market order` to place one.",
-        )
+        listing_lines = self._depth_lines(listings, "seller") + self._drill_lines(drills)
+        if listing_lines:
+            add_multi_field(embed, f"Listings · {currency_emoji} each", listing_lines)
+        order_lines = self._depth_lines(orders, "buyer")
+        if order_lines:
+            add_multi_field(embed, f"Orders · {currency_emoji} each", order_lines)
 
         await respond(interaction, self.db, embed=embed)
 

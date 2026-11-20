@@ -1460,11 +1460,34 @@ class EmbedBudgetTests(MarketTestCase):
         names = [f.name for f in (await self.render()).fields]
         self.assertTrue(any(n.startswith("Server") for n in names))
         self.assertTrue(any(n.startswith("Listings") for n in names))
-        self.assertTrue(any(n.startswith("Orders") for n in names))
         self.assertFalse(
             any("Your" in n or "Entries" in n for n in names),
             f"status should carry no per-viewer field, got {names}",
         )
+
+    async def field_names(self):
+        return [f.name for f in (await self.render()).fields]
+
+    async def test_an_empty_market_shows_only_the_servers_prices(self):
+        """An empty book gets no field at all (1.5): a placeholder for each of
+        the two made the page look bloated."""
+        names = await self.field_names()
+        self.assertTrue(any(n.startswith("Server") for n in names))
+        self.assertFalse(any(n.startswith("Listings") for n in names), names)
+        self.assertFalse(any(n.startswith("Orders") for n in names), names)
+
+    async def test_only_the_book_with_something_on_it_is_shown(self):
+        await adjust_currency_balance(self.db, GUILD, BOB, 100.0)
+        await self.order_directly(BOB, "wiring", 10, 0.5)
+        names = await self.field_names()
+        self.assertTrue(any(n.startswith("Orders") for n in names), names)
+        self.assertFalse(any(n.startswith("Listings") for n in names), names)
+
+    async def test_a_listed_drill_alone_still_shows_the_listings(self):
+        await self.list_drill_directly(BOB, 50000.0)
+        names = await self.field_names()
+        self.assertTrue(any(n.startswith("Listings") for n in names), names)
+        self.assertFalse(any(n.startswith("Orders") for n in names), names)
 
 
 class MarketEntriesTests(MarketTestCase):
