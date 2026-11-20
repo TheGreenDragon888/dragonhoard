@@ -457,15 +457,18 @@ sell the same stack to the server, or bid with money they then spent. Escrowed
 currency has left a balance but **not** the economy, so it still counts as
 circulating — see section 4. `/market cancel` returns either in full.
 
-**Entries expire after a week** (1.4.1; `MARKET_ENTRY_LIFETIME_DAYS` in
-`utils/market_book.py`). Whatever is left of a listing or an order seven days
+**Entries expire after 30 days** (1.4.1, at a week; 30 since 1.5, because a
+week was way too short; `MARKET_ENTRY_LIFETIME_DAYS` in
+`utils/market_book.py`). Whatever is left of a listing or an order 30 days
 after it was placed goes back to its owner exactly as `/market cancel` would
 return it, with a personal notice saying what came back, so expiry mints and
 burns nothing either. An hourly sweep in `cogs/economy.py` does the returning;
 until it runs, every read of the books already treats the entry as gone
 (`LIVE_ENTRY_SQL`), so nothing can be bought from or sold into an expired entry.
 Entries already on the books when 1.4.1 shipped got their week from the
-upgrade, not from when they were placed.
+upgrade, not from when they were placed. Entries already on the books when 1.5
+shipped were extended to 30 days from when they were placed, never shortened
+(user_version 9).
 
 ---
 

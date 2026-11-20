@@ -379,9 +379,10 @@ class Pre11UpgradeTests(unittest.IsolatedAsyncioTestCase):
         with a full bag. 1.4.1 adds 6, which hands back player-book entries for
         the materials that became server-only, and 7 moves every Fee Share onto
         the rate steps. 8 takes gemstones out of the ledger's stored input
-        values."""
+        values. 1.5 adds 9, which gives entries already on the books the
+        longer lifetime."""
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 8)
+        self.assertEqual(row[0], 9)
 
     async def test_the_daily_top_ups_bookkeeping_is_gone(self):
         # There is no daily event left for it to record, and a column nothing
@@ -779,7 +780,7 @@ class ServerOnlyEntriesMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_lands_on_the_current_version_and_does_not_run_twice(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 8)
+        self.assertEqual(row[0], 9)
         await self.db.init_schema()
         balance = await self.db.fetchone(
             "SELECT balance FROM server_currency_balances WHERE user_id = ?", (self.BUYER,)
@@ -790,8 +791,9 @@ class ServerOnlyEntriesMigrationTests(unittest.IsolatedAsyncioTestCase):
 class EntryExpiryMigrationTests(unittest.IsolatedAsyncioTestCase):
     """1.4.1 gave listings and orders an expires_at. A database from before it
     has entries of every age and no such column; opening it adds the column and
-    gives every existing entry seven days from the upgrade - none of them may
-    vanish on the day the update ships, however old it already was.
+    gives every existing entry MARKET_ENTRY_LIFETIME_DAYS from the upgrade -
+    none of them may vanish on the day the update ships, however old it
+    already was.
 
     The old shape is made by opening a fresh database and dropping the column
     (and its index) back out, which is exactly the table 1.4 created.
@@ -835,7 +837,9 @@ class EntryExpiryMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.db.close()
         self._dir.cleanup()
 
-    async def test_every_entry_expires_a_week_after_the_upgrade(self):
+    async def test_every_entry_expires_a_full_lifetime_after_the_upgrade(self):
+        from utils.market_book import MARKET_ENTRY_LIFETIME_DAYS
+
         for table in ("market_listings", "market_orders"):
             rows = await self.db.fetchall(
                 f"SELECT (julianday(expires_at) - julianday('now')) AS days FROM {table}"
@@ -843,7 +847,7 @@ class EntryExpiryMigrationTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(table):
                 self.assertEqual(len(rows), 3, "nothing was dropped")
                 for row in rows:
-                    self.assertAlmostEqual(row["days"], 7, delta=0.01)
+                    self.assertAlmostEqual(row["days"], MARKET_ENTRY_LIFETIME_DAYS, delta=0.01)
 
     async def test_the_expiry_indexes_exist(self):
         rows = await self.db.fetchall(
@@ -966,7 +970,7 @@ class FeeShareStepMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_runs_once(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 8)
+        self.assertEqual(row[0], 9)
         await self.db.execute("UPDATE server_config SET tax_percent = 15 WHERE guild_id = 2")
         await self.db.init_schema()
         row = await self.db.fetchone("SELECT tax_percent FROM server_config WHERE guild_id = 2")
@@ -1176,7 +1180,7 @@ class LedgerGemInputMigrationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_it_runs_once(self):
         row = await self.db.fetchone("PRAGMA user_version")
-        self.assertEqual(row[0], 8)
+        self.assertEqual(row[0], 9)
         await self.db.execute(
             "UPDATE production_ledger SET input_value = 52500 WHERE material_id = 'drill_upgrade'"
         )
@@ -1185,6 +1189,85 @@ class LedgerGemInputMigrationTests(unittest.IsolatedAsyncioTestCase):
             "SELECT MIN(input_value) AS low FROM production_ledger WHERE material_id = 'drill_upgrade'"
         )
         self.assertEqual(row["low"], 52500, "a later open must not touch it again")
+
+
+class EntryLifetimeExtensionMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """1.5 raised MARKET_ENTRY_LIFETIME_DAYS from 7 to 30. expires_at is stored
+    per row, so entries already on the books keep the expiry they were placed
+    with unless user_version 9 extends them: each one runs to its placement
+    time plus the new lifetime, and none is ever shortened.
+
+    The old state is a current database with user_version wound back to 8 and
+    entries written the way 1.4.1 wrote them, seven days after placement.
+    """
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        conn.execute("INSERT INTO server_config (guild_id) VALUES (?)", (GUILD,))
+        # Placed two days ago under the seven-day rule.
+        conn.execute(
+            "INSERT INTO market_listings "
+            "(guild_id, seller_id, material_id, quantity, price_units, created_at, expires_at) "
+            "VALUES (?, ?, 'wiring', 1, 50000, datetime('now', '-2 days'), datetime('now', '+5 days'))",
+            (GUILD, USER),
+        )
+        conn.execute(
+            "INSERT INTO market_orders "
+            "(guild_id, buyer_id, material_id, quantity, price_units, created_at, expires_at) "
+            "VALUES (?, ?, 'ruby', 1, 500000, datetime('now', '-2 days'), datetime('now', '+5 days'))",
+            (GUILD, USER),
+        )
+        # Already set to expire later than the new rule would give it.
+        conn.execute(
+            "INSERT INTO market_listings "
+            "(guild_id, seller_id, material_id, quantity, price_units, created_at, expires_at) "
+            "VALUES (?, ?, 'wiring', 1, 50000, datetime('now'), datetime('now', '+40 days'))",
+            (GUILD, USER),
+        )
+        conn.execute("PRAGMA user_version = 8")
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def days_left(self, table, entry_column, entry_id):
+        row = await self.db.fetchone(
+            f"SELECT (julianday(expires_at) - julianday('now')) AS days FROM {table} "
+            f"WHERE {entry_column} = ?",
+            (entry_id,),
+        )
+        return row["days"]
+
+    async def test_entries_run_thirty_days_from_when_they_were_placed(self):
+        self.assertAlmostEqual(await self.days_left("market_listings", "listing_id", 1), 28, delta=0.01)
+        self.assertAlmostEqual(await self.days_left("market_orders", "order_id", 1), 28, delta=0.01)
+
+    async def test_no_entry_is_shortened(self):
+        self.assertAlmostEqual(await self.days_left("market_listings", "listing_id", 2), 40, delta=0.01)
+
+    async def test_it_runs_once(self):
+        row = await self.db.fetchone("PRAGMA user_version")
+        self.assertEqual(row[0], 9)
+        await self.db.execute(
+            "UPDATE market_listings SET expires_at = datetime('now', '+1 day') WHERE listing_id = 1"
+        )
+        await self.db.init_schema()
+        self.assertAlmostEqual(
+            await self.days_left("market_listings", "listing_id", 1), 1, delta=0.01,
+            msg="a later open must not touch it again",
+        )
 
 
 if __name__ == "__main__":

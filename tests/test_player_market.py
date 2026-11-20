@@ -697,10 +697,10 @@ class ExpiryTests(MarketTestCase):
             "SELECT notice_key, title, body FROM user_notifications WHERE user_id = ?", (user,)
         )
 
-    async def test_the_lifetime_is_a_week(self):
-        self.assertEqual(MARKET_ENTRY_LIFETIME_DAYS, 7)
+    async def test_the_lifetime_is_thirty_days(self):
+        self.assertEqual(MARKET_ENTRY_LIFETIME_DAYS, 30)
 
-    async def test_a_new_entry_expires_a_week_from_now(self):
+    async def test_a_new_entry_expires_thirty_days_from_now(self):
         await adjust_user_quantity(self.db, ALICE, "wiring", 1)
         await self.list_item(ALICE, "wiring", 5.0, 1)
         await adjust_currency_balance(self.db, GUILD, ALICE, 100.0)
@@ -710,7 +710,7 @@ class ExpiryTests(MarketTestCase):
                 row = await self.db.fetchone(
                     f"SELECT (julianday(expires_at) - julianday('now')) AS days FROM {table}"
                 )
-                self.assertAlmostEqual(row["days"], 7, delta=0.01)
+                self.assertAlmostEqual(row["days"], 30, delta=0.01)
 
     async def test_an_expired_listing_cannot_be_bought_before_the_sweep(self):
         await adjust_user_quantity(self.db, BOB, "wiring", 10)

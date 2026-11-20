@@ -350,7 +350,7 @@ class EconomyCog(commands.Cog):
 
     @tasks.loop(hours=1)
     async def expiry_loop(self):
-        """Hands back every listing and order past its seven days (1.4.1;
+        """Hands back every listing and order past its lifetime (1.4.1;
         utils/market_book.py: MARKET_ENTRY_LIFETIME_DAYS) and tells each owner.
 
         Only servers with something expired are visited, and each is its own

@@ -718,6 +718,12 @@ class Database(_Executor):
             if version < 8:
                 self._migrate_ledger_gem_inputs(conn)
 
+            # 1.5 lengthened MARKET_ENTRY_LIFETIME_DAYS, and expires_at is
+            # stored per row, so entries already on the books still carry the
+            # old lifetime. A value, not a shape: gated on user_version.
+            if version < 9:
+                self._migrate_extend_market_entries(conn)
+
             # server_mining_pool.carry banked the fraction of a gemstone a pool
             # had accrued from the daily top-up. The bag replaced that outright
             # - the gems are simply in it - so nothing has read or written this
@@ -1174,6 +1180,33 @@ class Database(_Executor):
                 )
 
             conn.execute("PRAGMA user_version = 6")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+    @staticmethod
+    def _migrate_extend_market_entries(conn: sqlite3.Connection):
+        """Gives every listing and order still on the books the current
+        lifetime, counted from when it was placed (1.5: 7 days -> 30).
+
+        MAX rather than a plain assignment, so no entry is ever shortened. A row
+        that expired within the last hour but has not been swept yet is
+        extended too if it is younger than the new lifetime: the sweep has not
+        handed anything back for it, and under the new lifetime it would not
+        have expired. Both columns are datetime('now') text, so MAX compares
+        them correctly as strings."""
+        from utils.market_book import ENTRY_LIFETIME_MODIFIER
+
+        conn.execute("BEGIN")
+        try:
+            for table in ("market_listings", "market_orders"):
+                conn.execute(
+                    f"UPDATE {table} SET expires_at = "
+                    f"MAX(expires_at, datetime(created_at, ?))",
+                    (ENTRY_LIFETIME_MODIFIER,),
+                )
+            conn.execute("PRAGMA user_version = 9")
             conn.execute("COMMIT")
         except Exception:
             conn.execute("ROLLBACK")

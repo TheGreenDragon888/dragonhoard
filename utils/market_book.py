@@ -235,7 +235,12 @@ def permanent_material_error(material_id: str) -> str | None:
 # in cogs/economy.py hands back whatever is left, exactly as /market cancel
 # would. Stored per row as an absolute expires_at, written with
 # ENTRY_LIFETIME_MODIFIER by the command that places the entry.
-MARKET_ENTRY_LIFETIME_DAYS = 7
+#
+# 30 days since 1.5, up from 7: the owner's call that a week was way too short.
+# Because expires_at is stored rather than derived, entries already on the
+# books when that shipped were extended by a migration (database/db.py:
+# _migrate_extend_market_entries).
+MARKET_ENTRY_LIFETIME_DAYS = 30
 ENTRY_LIFETIME_MODIFIER = f"+{MARKET_ENTRY_LIFETIME_DAYS} days"
 
 # The condition that makes a row part of the book. Every read of either book
