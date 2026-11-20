@@ -601,7 +601,7 @@ _add(ManualSection(
         ),
         ManualCommand(
             "/mayor enhance", "/mayor enhance <machine>",
-            "Double one machine's speed with an Infrastructure Enhancement.",
+            "Double one machine's speed and queue cap with an Infrastructure Enhancement.",
         ),
         ManualCommand(
             "/mayor slots", "/mayor slots <amount>",

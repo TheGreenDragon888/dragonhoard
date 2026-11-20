@@ -249,7 +249,8 @@ class BlastFurnaceCog(commands.Cog):
         await ensure_server_row(self.db, interaction.guild_id)
         cfg = await self.db.fetchone(
             "SELECT blast_furnace_level, blast_furnace_fee_multiplier, blast_furnace_fees_collected, "
-            "blast_furnace_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
+            "blast_furnace_max_queue, blast_furnace_enhancement_level, currency_emoji "
+            "FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
         level = cfg["blast_furnace_level"]
@@ -290,7 +291,9 @@ class BlastFurnaceCog(commands.Cog):
         )
         embed.add_field(
             name="Queue Limit",
-            value=queue_limit_field_value(max_queue, level, unit="batch"),
+            value=queue_limit_field_value(
+                max_queue, level, unit="batch", enhancement=cfg["blast_furnace_enhancement_level"]
+            ),
             inline=True,
         )
 

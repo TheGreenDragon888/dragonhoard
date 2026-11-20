@@ -399,7 +399,8 @@ class FactoryCog(commands.Cog):
     async def _factory_status_impl(self, interaction: discord.Interaction):
         await ensure_server_row(self.db, interaction.guild_id)
         cfg = await self.db.fetchone(
-            "SELECT factory_level, factory_fee_multiplier, factory_fees_collected, factory_max_queue, currency_emoji FROM server_config WHERE guild_id = ?",
+            "SELECT factory_level, factory_fee_multiplier, factory_fees_collected, factory_max_queue, "
+            "factory_enhancement_level, currency_emoji FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
         level = cfg["factory_level"]
@@ -438,7 +439,7 @@ class FactoryCog(commands.Cog):
             currency_emoji=currency_emoji,
         )
         embed.add_field(name="Fee", value=f"{format_exact_currency(fee_rate, currency_emoji)} per item", inline=True)
-        embed.add_field(name="Queue Limit", value=queue_limit_field_value(max_queue, level), inline=True)
+        embed.add_field(name="Queue Limit", value=queue_limit_field_value(max_queue, level, enhancement=cfg["factory_enhancement_level"]), inline=True)
 
         lines = []
         for job in jobs[:JOB_DISPLAY_LIMIT]:

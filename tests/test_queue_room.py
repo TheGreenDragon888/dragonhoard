@@ -20,6 +20,7 @@ from utils.db_helpers import (
     queue_full_message,
     queue_room,
 )
+from utils.embeds import queue_limit_field_value, word_count
 
 GUILD = 8484
 USER = 4242
@@ -42,6 +43,14 @@ class EffectiveMaxQueueTests(unittest.TestCase):
         # machine unusable rather than merely stingy.
         self.assertEqual(effective_max_queue(5, 0), 5)
 
+    def test_each_infrastructure_enhancement_doubles_the_cap(self):
+        # 1.5: the cap is multiplied by the machine's enhancement as well as
+        # its level, the same 2^n enhancement_speed gives its speed.
+        self.assertEqual(effective_max_queue(5, 2, 0), 10)
+        self.assertEqual(effective_max_queue(5, 2, 1), 20)
+        self.assertEqual(effective_max_queue(5, 3, 2), 60)
+        self.assertEqual(effective_max_queue(1, 1, 3), 8)
+
 
 class QueueRoomTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -54,10 +63,11 @@ class QueueRoomTestCase(unittest.IsolatedAsyncioTestCase):
         self.db.close()
         self._dir.cleanup()
 
-    async def set_machine(self, machine, base, level):
+    async def set_machine(self, machine, base, level, enhancement=0):
         await self.db.execute(
-            f"UPDATE server_config SET {machine}_max_queue = ?, {machine}_level = ? WHERE guild_id = ?",
-            (base, level, GUILD),
+            f"UPDATE server_config SET {machine}_max_queue = ?, {machine}_level = ?, "
+            f"{machine}_enhancement_level = ? WHERE guild_id = ?",
+            (base, level, enhancement, GUILD),
         )
 
     async def queue(self, machine, quantity, user_id=USER, status="queued"):
@@ -73,6 +83,14 @@ class QueueRoomTests(QueueRoomTestCase):
         await self.set_machine("furnace", 25, 3)
         room = await queue_room(self.db, GUILD, USER, "furnace", 1)
         self.assertEqual((room.base, room.level, room.effective), (25, 3, 75))
+
+    async def test_an_enhanced_machine_multiplies_the_cap(self):
+        await self.set_machine("press", 1, 3, enhancement=1)
+        await self.queue("press", 5)
+        room = await queue_room(self.db, GUILD, USER, "press", 1)
+        self.assertEqual((room.base, room.level, room.enhancement, room.effective), (1, 3, 1, 6))
+        self.assertTrue(room.fits)  # 5 + 1 <= 1 * 3 * 2
+        self.assertFalse((await queue_room(self.db, GUILD, USER, "press", 2)).fits)
 
     async def test_a_levelled_machine_allows_more_than_its_base(self):
         await self.set_machine("factory", 5, 2)
@@ -148,6 +166,38 @@ class QueueFullMessageTests(QueueRoomTestCase):
         self.assertIn("5", message)    # the base
         self.assertIn("3", message)    # the level
         self.assertIn("factory", message)
+        self.assertNotIn("enhance", message, "no enhancement, no mention of one")
+
+    async def test_the_rejection_names_the_enhancement_multiplier(self):
+        await self.set_machine("factory", 5, 3, enhancement=2)
+        await self.queue("factory", 60)
+        room = await queue_room(self.db, GUILD, USER, "factory", 1)
+        message = queue_full_message("factory", room)
+        self.assertIn("60", message)
+        self.assertIn("×4", message)
+        self.assertIn("enhance", message)
+        self.assertLessEqual(word_count(message), 40)
+
+
+class QueueLimitFieldTests(unittest.TestCase):
+    def test_a_level_one_unenhanced_machine_shows_just_the_cap(self):
+        self.assertEqual(queue_limit_field_value(5, 1), "**5** items per user")
+
+    def test_the_level_multiplier_is_spelled_out(self):
+        self.assertEqual(queue_limit_field_value(5, 3), "**15** items per user\n(5 × level 3)")
+
+    def test_the_enhancement_multiplier_is_spelled_out(self):
+        self.assertEqual(
+            queue_limit_field_value(5, 3, enhancement=1),
+            "**30** items per user\n(5 × level 3 × 2 enhanced)",
+        )
+        self.assertEqual(
+            queue_limit_field_value(5, 1, enhancement=2),
+            "**20** items per user\n(5 × 4 enhanced)",
+        )
+
+    def test_the_blast_furnace_counts_batches(self):
+        self.assertIn("batches", queue_limit_field_value(5, 2, unit="batch", enhancement=1))
 
 
 if __name__ == "__main__":

@@ -261,6 +261,7 @@ class PressCog(commands.Cog):
         await ensure_server_row(self.db, interaction.guild_id)
         cfg = await self.db.fetchone(
             "SELECT press_level, press_fee_multiplier, press_fees_collected, press_max_queue, "
+            "press_enhancement_level, "
             "press_progress, currency_emoji FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
@@ -301,7 +302,9 @@ class PressCog(commands.Cog):
             inline=True,
         )
         embed.add_field(
-            name="Queue Limit", value=queue_limit_field_value(cfg["press_max_queue"], level), inline=True
+            name="Queue Limit", value=queue_limit_field_value(
+                cfg["press_max_queue"], level, enhancement=cfg["press_enhancement_level"]
+            ), inline=True
         )
 
         # Kept where the other two machines have nothing equivalent: a press job

@@ -392,6 +392,7 @@ class ScrapperCog(commands.Cog):
         await ensure_server_row(self.db, interaction.guild_id)
         cfg = await self.db.fetchone(
             "SELECT scrapper_level, scrapper_fee_multiplier, scrapper_fees_collected, scrapper_max_queue, "
+            "scrapper_enhancement_level, "
             "currency_emoji FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
@@ -429,7 +430,7 @@ class ScrapperCog(commands.Cog):
             currency_emoji=currency_emoji,
         )
         embed.add_field(name="Fee", value=f"{format_exact_currency(fee_rate, currency_emoji)} per item", inline=True)
-        embed.add_field(name="Queue Limit", value=queue_limit_field_value(max_queue, level), inline=True)
+        embed.add_field(name="Queue Limit", value=queue_limit_field_value(max_queue, level, enhancement=cfg["scrapper_enhancement_level"]), inline=True)
 
         lines = []
         for job in jobs[:JOB_DISPLAY_LIMIT]:

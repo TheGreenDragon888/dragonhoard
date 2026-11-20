@@ -254,7 +254,9 @@ figures) the busiest server banked 85.3 of fees a week, so 1,000 is 11.7 weeks
 of its entire fee flow at 100% Fee Share. That was judged right for a feature meant
 to be a large, congested server's multi-week goal.
 
-Enhancements raise speed only, not the queue cap.
+Until 1.5 enhancements raised speed only. Since 1.5 they multiply each
+player's queue cap on that machine by the same `2^enhancement`, at the owner's
+request (`effective_max_queue`). A Server Bonanza still doubles speed alone.
 
 ### Mining Slot Enhancement
 

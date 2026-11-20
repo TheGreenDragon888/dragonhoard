@@ -454,7 +454,7 @@ class GovernmentCog(commands.Cog):
 
         await self._mayor_action(interaction, action)
 
-    @mayor_group.command(name="enhance", description="Buy a machine an Infrastructure Enhancement - double its speed")
+    @mayor_group.command(name="enhance", description="Buy a machine an Infrastructure Enhancement - double its speed and queue cap")
     @app_commands.describe(machine="Which machine")
     @app_commands.choices(machine=MACHINE_CHOICES)
     async def mayor_enhance(self, interaction: discord.Interaction, machine: app_commands.Choice[str]):
@@ -465,7 +465,7 @@ class GovernmentCog(commands.Cog):
             return (
                 "🏛️ Enhancement Bought",
                 f"{machine_display(machine.value)} is at enhancement **{level:,}**: "
-                f"**x{enhancement_speed(level):g}** the speed its own level gives it.",
+                f"**x{enhancement_speed(level):g}** the speed and queue cap its own level gives it.",
                 price,
                 [("Next enhancement", format_currency(enhancement_price(level), emoji))],
             )

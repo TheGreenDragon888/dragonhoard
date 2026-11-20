@@ -488,21 +488,25 @@ def effective_level(level: int, fees_collected: float) -> float:
     return level + min(1.0, max(0.0, (fees_collected - floor) / (ceiling - floor)))
 
 
-def effective_max_queue(base: int, level: int) -> int:
+def effective_max_queue(base: int, level: int, enhancement: int = 0) -> int:
     """The per-user queue cap a machine actually enforces: the base a server
-    manager sets with /setup max_queue, multiplied by the machine's level.
+    manager sets with /setup max_queue, multiplied by the machine's level and,
+    since 1.5, by its Infrastructure Enhancement multiplier (enhancement_speed:
+    x2 per enhancement).
 
     Every machine's throughput is linear in its level (furnace_rate and its
     siblings above), so its queue grows by the same factor. Without this a
     server that has taken its furnace from 5 items/hour to 50 is still hitting
     the same ceiling it had on day one, and the cap stops describing "how much
     work you may have outstanding" and starts describing "how long you must
-    wait between commands".
+    wait between commands". The enhancement multiplier was added in 1.5 at
+    the owner's request; it is the enhancement alone, so a Server Bonanza's
+    doubling of speed does not raise the cap.
 
     The level floor is defensive: server_config.<machine>_level is NOT NULL
     DEFAULT 1 and nothing decrements it, but a zero here would silently make
     the machine unusable rather than merely stingy."""
-    return base * max(1, level)
+    return base * max(1, level) * int(enhancement_speed(enhancement))
 
 FURNACE_COAL_COST_PER_UNIT = 1  # extra coal burned per item smelted, on top of the recipe's own inputs
 # The blast furnace's fuel, scaled like everything else it charges: a batch of
@@ -586,7 +590,8 @@ def mining_slots(level: int) -> int:
 # ---------------------------------------------------------------------------
 
 # Infrastructure Enhancement: each level doubles one machine's speed, on top of
-# the speed its own level gives it (enhancement_speed). The first level costs
+# the speed its own level gives it (enhancement_speed), and since 1.5 its
+# per-user queue cap too (effective_max_queue). The first level costs
 # ENHANCEMENT_PRICE_BASE and every level after it ENHANCEMENT_PRICE_STEP times
 # the last, the same step as every other ladder in this file.
 #

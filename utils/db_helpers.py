@@ -146,9 +146,10 @@ class QueueRoom(NamedTuple):
 
     fits: bool
     queued: int      # items this user already has outstanding on this machine
-    effective: int   # the cap actually enforced: base * level
+    effective: int   # the cap actually enforced: base * level * 2^enhancement
     base: int        # what /setup max_queue is set to
     level: int
+    enhancement: int = 0  # Infrastructure Enhancements bought for this machine
 
 
 async def queue_room(db: _Executor, guild_id: int, user_id: int, machine: str, adding: int) -> QueueRoom:
@@ -172,11 +173,14 @@ async def queue_room(db: _Executor, guild_id: int, user_id: int, machine: str, a
         raise ValueError(f"unknown machine {machine!r}")
 
     cfg = await db.fetchone(
-        f"SELECT {machine}_max_queue AS base, {machine}_level AS level "
+        f"SELECT {machine}_max_queue AS base, {machine}_level AS level, "
+        f"{machine}_enhancement_level AS enhancement "
         f"FROM server_config WHERE guild_id = ?",
         (guild_id,),
     )
-    base, level = (cfg["base"], cfg["level"]) if cfg else (0, 1)
+    base, level, enhancement = (
+        (cfg["base"], cfg["level"], cfg["enhancement"]) if cfg else (0, 1, 0)
+    )
 
     row = await db.fetchone(
         "SELECT COALESCE(SUM(quantity), 0) AS queued FROM production_jobs "
@@ -185,13 +189,14 @@ async def queue_room(db: _Executor, guild_id: int, user_id: int, machine: str, a
     )
     queued = row["queued"] if row else 0
 
-    effective = effective_max_queue(base, level)
+    effective = effective_max_queue(base, level, enhancement)
     return QueueRoom(
         fits=queued + adding <= effective,
         queued=queued,
         effective=effective,
         base=base,
         level=level,
+        enhancement=enhancement,
     )
 
 
@@ -204,10 +209,14 @@ def queue_full_message(machine: str, room: QueueRoom, unit: str = "item") -> str
     the blast furnace - quoting a bulk queue in items would understate it by a
     factor of BLAST_FURNACE_BATCH_SIZE and send the player looking for 500
     missing items."""
+    enhanced = (
+        f", ×{int(enhancement_speed(room.enhancement)):,} from enhancements"
+        if room.enhancement > 0 else ""
+    )
     return (
         f"You can queue up to {room.effective:,} {plural(unit)} on the "
-        f"{machine_label(machine)} ({room.base:,} per level, at level {room.level:,}), and "
-        f"you already have {room.queued:,}. Wait for a job to finish."
+        f"{machine_label(machine)} ({room.base:,} per level, at level {room.level:,}{enhanced}), "
+        f"and you already have {room.queued:,}. Wait for a job to finish."
     )
 
 

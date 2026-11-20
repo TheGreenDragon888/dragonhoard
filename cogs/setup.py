@@ -247,15 +247,19 @@ class SetupCog(commands.Cog):
         # number players will actually run into - a manager who set 5 and then
         # watched someone queue 15 would otherwise reasonably read it as broken.
         cfg = await self.db.fetchone(
-            f"SELECT {infrastructure.value}_level AS level FROM server_config WHERE guild_id = ?",
+            f"SELECT {infrastructure.value}_level AS level, "
+            f"{infrastructure.value}_enhancement_level AS enhancement "
+            f"FROM server_config WHERE guild_id = ?",
             (interaction.guild_id,),
         )
         level = cfg["level"] if cfg else 1
+        enhancement = cfg["enhancement"] if cfg else 0
         unit = self.QUEUE_UNITS.get(infrastructure.value, "item")
+        enhanced = f" and {enhancement:,} enhancement{'s' if enhancement != 1 else ''}" if enhancement else ""
         await interaction.response.send_message(
             f"✅ {machine_label(infrastructure.value).title()} max queue set to **{amount}** "
-            f"{unit}s per user, per level - **{effective_max_queue(amount, level):,}** at its "
-            f"current level {level:,}.",
+            f"{unit}s per user, per level - **{effective_max_queue(amount, level, enhancement):,}** "
+            f"at its current level {level:,}{enhanced}.",
             ephemeral=True,
         )
 
