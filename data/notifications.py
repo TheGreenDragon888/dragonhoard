@@ -64,9 +64,9 @@ GLOBAL_NOTICES: tuple[GlobalNotice, ...] = (
             "**MARKET ENTRIES LAST 30 DAYS** — Listings and orders now stay up for 30 days instead of 7.\n\n"
             "Plus a bunch of smaller stuff: `/inventory` and drill menus group identical drills, and `/factory upgrade` gives your container back. `/changelog` has the full list.\n\n"
 
-            "Thanks for playing my silly discord game. I'll probably find some way to end or shut it down all at once. ",
-            "When I first started making this, I wanted to make a fun passive economy game that everyone could participlate in and collaborate. ",
-            "But I think I ended up just making a really generic and habit demanding game, so I'll be spending some time eventually thinking about where I want to take the game from there. ",
+            "Thanks for playing my silly discord game. I'll probably find some way to end or shut it down all at once. "
+            "When I first started making this, I wanted to make a fun passive economy game that everyone could participlate in and collaborate. "
+            "But I think I ended up just making a really generic and habit demanding game, so I'll be spending some time eventually thinking about where I want to take the game from there. "
             "Or if I want to shut it down because it goes against my principles.\n"
             "— Isaac"
         ),

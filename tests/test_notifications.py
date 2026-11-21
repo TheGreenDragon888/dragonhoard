@@ -216,6 +216,12 @@ class SeedingTests(NotificationTestCase):
         row = await self.db.fetchone("SELECT title, body FROM notifications")
         self.assertEqual((row["title"], row["body"]), ("Original", "Body"))
 
+    async def test_the_shipped_notices_seed(self):
+        # What bot.py's setup_hook does on every boot. 1.5's announcement
+        # first shipped with a stray comma that made its body a tuple, and
+        # the bot exited here on startup.
+        self.assertEqual(await seed_global_notices(self.db, GLOBAL_NOTICES), len(GLOBAL_NOTICES))
+
 
 class ShippedNoticeTests(unittest.TestCase):
     """The notices this release actually ships, checked as data."""
@@ -231,6 +237,13 @@ class ShippedNoticeTests(unittest.TestCase):
             self.assertTrue(notice.key, notice)
             self.assertTrue(notice.title, notice.key)
             self.assertTrue(notice.body, notice.key)
+
+    def test_every_title_and_body_is_one_string(self):
+        # A comma between two of a body's adjacent string literals makes the
+        # body a tuple; Python accepts it and seeding then fails at boot.
+        for notice in GLOBAL_NOTICES:
+            self.assertIsInstance(notice.title, str, notice.key)
+            self.assertIsInstance(notice.body, str, notice.key)
 
     def test_bodies_fit_an_embed_description(self):
         # Discord truncates a description past 4096 characters, and a notice
