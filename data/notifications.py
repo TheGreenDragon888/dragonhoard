@@ -52,6 +52,26 @@ class GlobalNotice:
 
 GLOBAL_NOTICES: tuple[GlobalNotice, ...] = (
     GlobalNotice(
+        key="1.5-update",
+        title="Dragonhoard 1.5 — Late Game Improvements Update",
+        body=(
+            "**CONTAINERS ARE 4X BIGGER** — Every container now holds four times as much, so your drills keep mining way longer while you're away. Drills that were full with a container in them have started mining again!\n"
+            "**THE PRESS CAN FUSE GEMS** — `/press craft` can now turn 10 rubies into an obsidian, or 9 obsidian into a diamond.\n"
+            "**ULTRA DENSE MATTER NOW COSTS 100 DIAMONDS** — Up from 10. Press your first one in a server and you win the game. I'm doing this as it's the last grind to the home stretch, and the buffs to gemstone drill upgrading should even it out a bit.\n"
+            "**BONANZAS ARE 20X CHEAPER** — A Server Bonanza now costs 2.5% of your server's weekly GDP instead of half of it. No one ever did bonanzas because they were ridiculously expensive; the new cost should make them a substancial cost but not impossible to reach nor unreasonable to spend.\n"
+            "**EVERYONE CAN VOTE** — You no longer need a drill placed for 7 days to vote in Thursday's elections.\n"
+            "**ENHANCEMENTS DOUBLE THE QUEUE TOO** — Every Infrastructure Enhancement now doubles a machine's max queue as well as its speed.\n"
+            "**MARKET ENTRIES LAST 30 DAYS** — Listings and orders now stay up for 30 days instead of 7.\n\n"
+            "Plus a bunch of smaller stuff: `/inventory` and drill menus group identical drills, and `/factory upgrade` gives your container back. `/changelog` has the full list.\n\n"
+
+            "Thanks for playing my silly discord game. I'll probably find some way to end or shut it down all at once. ",
+            "When I first started making this, I wanted to make a fun passive economy game that everyone could participlate in and collaborate. ",
+            "But I think I ended up just making a really generic and habit demanding game, so I'll be spending some time eventually thinking about where I want to take the game from there. ",
+            "Or if I want to shut it down because it goes against my principles.\n"
+            "— Isaac"
+        ),
+    ),
+    GlobalNotice(
         key="1.4.3-update",
         title="Dragonhoard 1.4.3 — Gemstone Drill Update",
         body=(

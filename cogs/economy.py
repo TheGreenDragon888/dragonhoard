@@ -205,7 +205,7 @@ DRILL_DISPLAY_LIMIT = 20
 # How many drill cells /inventory fits on one line. Fewer than the six used for
 # the plain material grid because a drill cell carries a level and a container
 # emoji as well as its own, so it's roughly half again as wide.
-DRILL_GRID_COLUMNS = 4
+DRILL_GRID_COLUMNS = 3
 
 
 log = logging.getLogger("dragonhoard")
