@@ -33,6 +33,12 @@ small, so on modest hardware that overhead WAS the database cost.
 Two connections' worth of separation is kept on purpose: readers on the pool
 carry on while a transaction holds the write lock, which is what WAL mode buys
 and the reason it is enabled.
+
+WRITES WAIT IN ONE QUEUE. A standalone `execute` waits for its turn on the same
+asyncio lock a transaction holds, rather than in a thread on SQLite's busy
+timeout - see Database._standalone_write for the incident that changed it. So a
+standalone write from inside a `transaction()` block can never run; it raises
+instead. Use the Transaction the block yielded.
 """
 import asyncio
 import math
@@ -118,12 +124,22 @@ class Database(_Executor):
         # Make sure the parent folder (e.g. "data/") exists before sqlite3
         # tries to create the .db file inside it.
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        # Serialises transactions against each other. SQLite allows only one
-        # writer at a time anyway, so queueing them here means waiting on an
-        # asyncio lock instead of on SQLITE_BUSY, and it's what makes a
-        # transaction's reads and writes safe to interleave with the rest of
-        # the bot: another command can't slip a write in partway through.
+        # Serialises every write in the bot - each transaction, and each
+        # standalone execute/execute_changes. SQLite allows only one writer at
+        # a time anyway, so queueing them here means waiting on an asyncio lock
+        # instead of on SQLITE_BUSY, and it's what makes a transaction's reads
+        # and writes safe to interleave with the rest of the bot: another
+        # command can't slip a write in partway through.
+        #
+        # Standalone writes queue here too since the 2026-11-22 incident (see
+        # _standalone_write). Waiting on SQLITE_BUSY happens inside an
+        # executor thread, and enough writers doing it at once left the
+        # transaction they were waiting for no thread to finish on.
         self._write_lock = asyncio.Lock()
+        # The task currently inside transaction(), so a standalone write from
+        # that same task - which would wait forever on the lock it holds - can
+        # fail at once instead.
+        self._write_owner: asyncio.Task | None = None
         # Idle standalone connections, and the lock that guards the list: the
         # sync functions below run on executor threads, so this cannot be an
         # asyncio primitive.
@@ -214,26 +230,32 @@ class Database(_Executor):
         transaction.
         """
         async with self._write_lock:
-            if self._tx_conn is None:
-                self._tx_conn = await asyncio.to_thread(self._connect)
-            conn = self._tx_conn
+            self._write_owner = asyncio.current_task()
             try:
-                # IMMEDIATE takes the write lock up front rather than on the
-                # first write, so a transaction that reads and later writes
-                # can't have another writer commit underneath it in between.
-                await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE")
-                yield Transaction(conn)
-                await asyncio.to_thread(conn.commit)
-            except BaseException:
-                # The connection is kept after a rollback - it is clean again.
-                # Only a rollback that itself fails means the connection can't
-                # be trusted, and then the next transaction opens a new one.
+                if self._tx_conn is None:
+                    self._tx_conn = await asyncio.to_thread(self._connect)
+                conn = self._tx_conn
                 try:
-                    await asyncio.to_thread(conn.rollback)
-                except sqlite3.Error:
-                    conn.close()
-                    self._tx_conn = None
-                raise
+                    # IMMEDIATE takes the write lock up front rather than on
+                    # the first write, so a transaction that reads and later
+                    # writes can't have another writer commit underneath it in
+                    # between.
+                    await asyncio.to_thread(conn.execute, "BEGIN IMMEDIATE")
+                    yield Transaction(conn)
+                    await asyncio.to_thread(conn.commit)
+                except BaseException:
+                    # The connection is kept after a rollback - it is clean
+                    # again. Only a rollback that itself fails means the
+                    # connection can't be trusted, and then the next
+                    # transaction opens a new one.
+                    try:
+                        await asyncio.to_thread(conn.rollback)
+                    except sqlite3.Error:
+                        conn.close()
+                        self._tx_conn = None
+                    raise
+            finally:
+                self._write_owner = None
 
     # The drills table as schema.sql declares it, for the rebuild below.
     # SQLite can add a nullable column in place but cannot relax a NOT NULL,
@@ -1268,18 +1290,40 @@ class Database(_Executor):
         self._release(conn)
         return result
 
+    async def _standalone_write(self, query: str, params: tuple):
+        """Runs one standalone write once no transaction holds the write lock.
+
+        Waiting happens HERE, on the asyncio lock, and not in SQLite's busy
+        handler. The busy handler waits inside an executor thread, and until
+        2026-11-22 every standalone write did: a command's ensure_server_row
+        before its reply, or respond() marking a notice seen after it. Each
+        one parked a thread while the harvest loop held the lock, and once
+        they filled the default executor the harvest's next statement had no
+        thread to run on, so it could never commit and release them. Nothing
+        moved until the busy timeout failed the parked writes with "database
+        is locked", and commands that only read stalled too - their reads
+        queued for the same threads. tests/test_database_pool.py
+        (StandaloneWriteQueueTests) pins both halves of this."""
+        if self._write_owner is not None and self._write_owner is asyncio.current_task():
+            raise RuntimeError(
+                "Database.execute inside this task's own transaction would wait forever "
+                "on the lock it holds - use the Transaction the block yielded"
+            )
+        async with self._write_lock:
+            return await asyncio.to_thread(self._execute_sync, query, params)
+
     async def execute(self, query: str, params: tuple = ()) -> int:
         """Run a single standalone INSERT/UPDATE/DELETE, committing it on its
         own. Returns the last inserted row id.
 
         If this statement is one of several that have to succeed or fail
         together, use `async with db.transaction()` instead."""
-        lastrowid, _ = await asyncio.to_thread(self._execute_sync, query, params)
+        lastrowid, _ = await self._standalone_write(query, params)
         return lastrowid
 
     async def execute_changes(self, query: str, params: tuple = ()) -> int:
         """As `execute`, but returns how many rows the statement changed."""
-        _, rowcount = await asyncio.to_thread(self._execute_sync, query, params)
+        _, rowcount = await self._standalone_write(query, params)
         return rowcount
 
     def _fetchone_sync(self, query: str, params: tuple):

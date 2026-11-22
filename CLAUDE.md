@@ -71,7 +71,10 @@ statement. **Any operation that reads a value and then writes based on it
 must use `async with db.transaction()` instead** (see the docstring on
 `Database.transaction` for the torn-write and read-then-write races this
 prevents). Never await Discord/network calls inside a transaction block — it
-holds the write lock for the whole bot. Connections are reused, not opened
+holds the write lock for the whole bot. A standalone `execute` waits on that
+same asyncio lock (since the 2026-11-22 incident, `Database._standalone_write`
+says why), so calling `db.execute` from inside your own transaction block
+raises rather than deadlocking — use the block's `tx`. Connections are reused, not opened
 per statement: standalone statements borrow from a small pool and every
 transaction runs on one long-lived connection (1.4; the module docstring
 says why — per-statement opening was the dominant cost of a command on
