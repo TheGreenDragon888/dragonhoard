@@ -20,6 +20,9 @@ a burn or as a bond repayment.
 
   The Market Tax is the same arrangement on player-to-player trades: a share
   of what the seller would have received is held instead (pay_market_seller).
+  So is the Exchange Tax (1.5.1) on DragonCoin bought from or sold to the
+  server (utils/exchange.py), which is added to the price or taken from the
+  proceeds and held the same way.
 
   Money leaves the treasury through spend_treasury and nothing else, and every
   caller of that is a project, so every such payment is a burn. Money leaves
@@ -83,8 +86,8 @@ OFFICE_LABELS = {MAYOR: "Mayor", TREASURER: "Treasurer"}
 # utils/formatting.py: format_exact_price shows in full.
 FEE_MULTIPLIERS = (0.25, 0.5, 0.625, 0.8, 1.0, 1.25, 1.6, 2.0, 4.0)
 
-# The government's two rates - its revenue. Neither is a charge on top of
-# anything:
+# The government's three rates - its revenue. The first two are never a
+# charge on top of anything:
 #
 #   FEE SHARE - the government's share of every machine fee, held instead of
 #   burned. The player pays the same fee at any rate; the rate only decides how
@@ -98,19 +101,25 @@ FEE_MULTIPLIERS = (0.25, 0.5, 0.625, 0.8, 1.0, 1.25, 1.6, 2.0, 4.0)
 #   purchase from the server is untouched. Charged at whatever rate is in force
 #   when the trade happens - a listing does not lock in the rate it was posted
 #   under.
+#
+#   EXCHANGE TAX (1.5.1) - on DragonCoin bought from or sold to the server
+#   (utils/exchange.py). The one rate that IS added on top: buying DragonCoin
+#   costs its price plus the tax, and selling it pays its price less the tax.
 FEE_SHARE = "fee-share"
 MARKET_TAX = "market-tax"
-RATE_KINDS = (FEE_SHARE, MARKET_TAX)
-RATE_LABELS = {FEE_SHARE: "Fee Share", MARKET_TAX: "Market Tax"}
+EXCHANGE_TAX = "exchange-tax"
+RATE_KINDS = (FEE_SHARE, MARKET_TAX, EXCHANGE_TAX)
+RATE_LABELS = {FEE_SHARE: "Fee Share", MARKET_TAX: "Market Tax", EXCHANGE_TAX: "Exchange Tax"}
 # Each kind's server_config rate column and the column that stamps the day it
 # last changed.
 _RATE_COLUMNS = {
     FEE_SHARE: ("tax_percent", "tax_changed"),
     MARKET_TAX: ("market_tax_percent", "market_tax_changed"),
+    EXCHANGE_TAX: ("exchange_tax_percent", "exchange_tax_changed"),
 }
 
-# The steps either rate may be set to - one list for both, so /treasurer rate
-# offers one dropdown whichever it sets. Fixed steps chosen the way
+# The steps every rate may be set to - one list for all three, so /treasurer
+# rate offers one dropdown whichever it sets. Fixed steps chosen the way
 # FEE_MULTIPLIERS are, and in fact built from them: the fee ladder times ten,
 # so 10% sits where x1 does, 5% to 20% splits each doubling in three with an
 # exact inverse for every raise, and 2.5% and 40% are whole doublings outside
@@ -221,7 +230,7 @@ def next_game_midnight(now: datetime | None = None) -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# Revenue: the Fee Share and the Market Tax
+# Revenue: the Fee Share, the Market Tax and the Exchange Tax
 # ---------------------------------------------------------------------------
 
 async def has_active_debt(db: _Executor, guild_id: int) -> bool:
@@ -236,7 +245,7 @@ async def has_active_debt(db: _Executor, guild_id: int) -> bool:
 
 
 async def collect_revenue(db: _Executor, guild_id: int, amount: float, now: datetime | None = None):
-    """Takes `amount` of revenue - either rate's - into the government: into
+    """Takes `amount` of revenue - any rate's - into the government: into
     the repayment pool while the server owes active creditors, the treasury
     otherwise. Also adds it to today's revenue total, which the debt cap is
     measured against."""
@@ -299,17 +308,27 @@ def format_percent(percent: float) -> str:
     return f"{percent:g}%"
 
 
-def market_tax_units(gross_units: int, percent: float) -> int:
-    """The Market Tax on a trade worth `gross_units` (PLAYER_PRICE_SCALE units).
+def rate_cut(amount: int, percent: float) -> int:
+    """`percent` of a whole-number `amount` (in whatever unit the caller
+    counts in), as a whole number of that unit.
 
-    Integer throughout, in basis points, so the seller's share and the tax are
-    both whole units and add back up to exactly what the buyer paid. Rounded
-    down, so a fraction of a unit stays with the seller. 100% is special-cased
-    for the reason charge_machine_fee's is.
+    Integer throughout, in basis points, so the cut and what is left are both
+    whole units and add back up to exactly `amount`. Rounded down, so a
+    fraction of a unit stays with the player. 100% is special-cased for the
+    reason charge_machine_fee's is. One function so that every rate the
+    Treasurer sets on a payment rounds the same way: the Market Tax
+    (market_tax_units) and the Exchange Tax (utils/exchange.py).
     """
     if percent >= MAX_RATE_PERCENT:
-        return gross_units
-    return gross_units * round(percent * 100) // 10_000
+        return amount
+    return amount * round(percent * 100) // 10_000
+
+
+def market_tax_units(gross_units: int, percent: float) -> int:
+    """The Market Tax on a trade worth `gross_units` (PLAYER_PRICE_SCALE
+    units), rounded down so the seller's share and the tax add back up to
+    exactly what the buyer paid (rate_cut)."""
+    return rate_cut(gross_units, percent)
 
 
 async def market_tax_rate(db: _Executor, guild_id: int) -> float:
@@ -428,9 +447,9 @@ async def set_rate(
     tx: _Executor, guild_id: int, actor_id: int, kind: str, percent: float,
     now: datetime | None = None,
 ) -> None:
-    """Sets the Fee Share or the Market Tax. Bonds owed put no floor under
-    either: a bond fixes what it repays when it is bought (docs/government.md
-    section 2)."""
+    """Sets the Fee Share, the Market Tax or the Exchange Tax. Bonds owed put
+    no floor under any of them: a bond fixes what it repays when it is bought
+    (docs/government.md section 2)."""
     if kind not in RATE_KINDS:
         raise ValueError(f"unknown rate {kind!r}")
     label = RATE_LABELS[kind]
@@ -1200,6 +1219,7 @@ class GovernmentStatus(NamedTuple):
     treasurer: int | None
     fee_share_percent: float
     market_tax_percent: float
+    exchange_tax_percent: float
     bond_rate_percent: int
     multipliers: dict[str, float]
     enhancements: dict[str, int]
@@ -1220,6 +1240,7 @@ async def government_status(db: _Executor, guild_id: int, now: datetime | None =
         treasurer=cfg["treasurer_id"],
         fee_share_percent=cfg["tax_percent"],
         market_tax_percent=cfg["market_tax_percent"],
+        exchange_tax_percent=cfg["exchange_tax_percent"],
         bond_rate_percent=cfg["bond_rate_percent"],
         multipliers={m: cfg[f"{m}_fee_multiplier"] for m in MACHINES},
         enhancements={m: cfg[f"{m}_enhancement_level"] for m in MACHINES},

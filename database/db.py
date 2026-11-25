@@ -565,6 +565,10 @@ class Database(_Executor):
                 ("bond_rate_changed", "TEXT"),
                 ("market_tax_percent", "REAL NOT NULL DEFAULT 0.0"),
                 ("market_tax_changed", "TEXT"),
+                # The Exchange Tax (1.5.1, utils/exchange.py). 0% is the
+                # ungoverned server, as for both rates above.
+                ("exchange_tax_percent", "REAL NOT NULL DEFAULT 0.0"),
+                ("exchange_tax_changed", "TEXT"),
                 ("treasury", "REAL NOT NULL DEFAULT 0.0"),
                 ("repayment_pool", "REAL NOT NULL DEFAULT 0.0"),
                 ("mayor_id", "INTEGER"),
@@ -641,6 +645,33 @@ class Database(_Executor):
                 conn.execute(
                     "ALTER TABLE server_config ADD COLUMN bot_present INTEGER NOT NULL DEFAULT 1"
                 )
+
+            # DragonCoin moved from users.dragoncoin (REAL, never written by
+            # anything before 1.5.1) to users.dragoncoin_cents (INTEGER) when
+            # the exchange made it spendable - see the column's comment in
+            # schema.sql for why it is cents. Whatever the old column held is
+            # carried across rounded to the cent, then the old column is
+            # dropped, for the reason the per-server fee columns above were: a
+            # column nothing reads would only invite somebody to read it.
+            # Gated on introspection, since both steps are visible in the
+            # schema. The copy is not additive, so a run interrupted between it
+            # and the drop is safe to repeat; one transaction makes that moot.
+            user_columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+            if "dragoncoin_cents" not in user_columns:
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN dragoncoin_cents INTEGER NOT NULL DEFAULT 0"
+                )
+            if "dragoncoin" in user_columns:
+                conn.execute("BEGIN")
+                try:
+                    conn.execute(
+                        "UPDATE users SET dragoncoin_cents = CAST(ROUND(dragoncoin * 100) AS INTEGER)"
+                    )
+                    conn.execute("ALTER TABLE users DROP COLUMN dragoncoin")
+                    conn.execute("COMMIT")
+                except Exception:
+                    conn.execute("ROLLBACK")
+                    raise
 
             # Every machine shares production_jobs, but its job_type CHECK
             # constraint names them explicitly and SQLite can only widen a CHECK

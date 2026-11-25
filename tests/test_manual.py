@@ -15,6 +15,7 @@ import discord
 
 from cogs.setup import SetupCog
 from cogs.economy import EconomyCog
+from cogs.exchange import ExchangeCog
 from cogs.mining import MiningCog
 from cogs.furnace import FurnaceCog
 from cogs.blastfurnace import BlastFurnaceCog
@@ -38,6 +39,7 @@ from utils.embeds import embed_word_count
 COGS = (
     SetupCog,
     EconomyCog,
+    ExchangeCog,
     MiningCog,
     FurnaceCog,
     BlastFurnaceCog,

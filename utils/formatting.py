@@ -9,6 +9,11 @@ from datetime import datetime, timedelta, timezone
 
 DEFAULT_CURRENCY_EMOJI = "💰"
 
+# DragonCoin's symbol (1.5.1, utils/exchange.py). Unicode until a custom icon is
+# uploaded to both applications, at which point this becomes a custom_emoji()
+# call (data/emoji.py) and every DragonCoin figure follows it.
+DRAGONCOIN_EMOJI = "🪙"
+
 # (threshold, suffix) pairs for format_compact_price, ascending order.
 _COMPACT_TIERS = [
     (1, ""),
@@ -69,6 +74,20 @@ def format_price(amount: float, round_up: bool = False) -> str:
 def format_currency(amount: float, emoji: str | None = None, round_up: bool = False) -> str:
     """The server's currency emoji preceding format_price's value."""
     return f"{emoji or DEFAULT_CURRENCY_EMOJI} {format_price(amount, round_up)}"
+
+
+def format_dragoncoin_amount(cents: int) -> str:
+    """A DragonCoin figure without its symbol: 1,234.50. DragonCoin is held in
+    whole hundredths (users.dragoncoin_cents), so this is exact - no rounding
+    direction to choose, unlike format_price."""
+    sign = "-" if cents < 0 else ""
+    whole, part = divmod(abs(cents), 100)
+    return f"{sign}{whole:,}.{part:02d}"
+
+
+def format_dragoncoin(cents: int) -> str:
+    """DragonCoin's symbol preceding format_dragoncoin_amount's value."""
+    return f"{DRAGONCOIN_EMOJI} {format_dragoncoin_amount(cents)}"
 
 
 # The most decimals a machine's per-unit fee can have: its default is whole

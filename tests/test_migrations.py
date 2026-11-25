@@ -1349,5 +1349,94 @@ class ContainerCapacityMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.drill(1))["is_full"], 1, "a later open must not touch it again")
 
 
+
+class DragonCoinMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """1.5.1 moved DragonCoin from users.dragoncoin (REAL, never written) to
+    users.dragoncoin_cents (INTEGER) and added the Exchange Tax's two
+    server_config columns. A 1.5 database has the old column and neither tax
+    column; opening it carries any DragonCoin across to the cent, drops the old
+    column, and starts every server with no Exchange Tax.
+
+    The old shape is made the way MarketTaxMigrationTests makes its own: open
+    a fresh database and put the columns back the way they were.
+    """
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        conn.execute("ALTER TABLE users DROP COLUMN dragoncoin_cents")
+        conn.execute("ALTER TABLE users ADD COLUMN dragoncoin REAL NOT NULL DEFAULT 0.0")
+        conn.execute("ALTER TABLE server_config DROP COLUMN exchange_tax_percent")
+        conn.execute("ALTER TABLE server_config DROP COLUMN exchange_tax_changed")
+        conn.execute("INSERT INTO users (user_id, dragoncoin) VALUES (?, 1.23)", (USER,))
+        conn.execute("INSERT INTO users (user_id) VALUES (?)", (USER + 1,))
+        conn.execute("INSERT INTO server_config (guild_id, market_tax_percent) VALUES (?, 10.0)", (GUILD,))
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_dragoncoin_is_carried_across_to_the_cent(self):
+        rows = await self.db.fetchall("SELECT user_id, dragoncoin_cents FROM users ORDER BY user_id")
+        self.assertEqual([(r["user_id"], r["dragoncoin_cents"]) for r in rows], [(USER, 123), (USER + 1, 0)])
+
+    async def test_the_old_column_is_gone(self):
+        columns = {row[1] for row in await self.db.fetchall("PRAGMA table_info(users)")}
+        self.assertNotIn("dragoncoin", columns)
+        self.assertIn("dragoncoin_cents", columns)
+
+    async def test_every_server_starts_with_no_exchange_tax(self):
+        row = await self.db.fetchone("SELECT * FROM server_config WHERE guild_id = ?", (GUILD,))
+        self.assertEqual(row["exchange_tax_percent"], 0.0)
+        self.assertIsNone(row["exchange_tax_changed"])
+        self.assertEqual(row["market_tax_percent"], 10.0, "the Market Tax is untouched")
+
+    async def test_opening_it_again_changes_nothing(self):
+        await self.db.init_schema()
+        row = await self.db.fetchone("SELECT dragoncoin_cents FROM users WHERE user_id = ?", (USER,))
+        self.assertEqual(row["dragoncoin_cents"], 123)
+
+
+class UsersWithoutDragonCoinMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """A users table with no DragonCoin column at all still opens, and gains
+    the new one at 0 - the shape some of the hand-built databases above use."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        conn.execute("ALTER TABLE users DROP COLUMN dragoncoin_cents")
+        conn.execute("INSERT INTO users (user_id) VALUES (?)", (USER,))
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_it_gains_the_column_at_zero(self):
+        row = await self.db.fetchone("SELECT dragoncoin_cents FROM users WHERE user_id = ?", (USER,))
+        self.assertEqual(row["dragoncoin_cents"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

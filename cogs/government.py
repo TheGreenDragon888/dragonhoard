@@ -7,7 +7,7 @@ Implements the server government (1.4):
                                                      settings, the treasury,
                                                      the debt and the projects
   - /treasurer fee <machine> <multiplier>          - Treasurer only
-  - /treasurer rate <fee-share|market-tax> <percent>
+  - /treasurer rate <fee-share|market-tax|exchange-tax> <percent>
   - /treasurer bondrate <percent>
   - /mayor fund <machine> <amount>                 - Mayor only
   - /mayor enhance <machine>
@@ -74,7 +74,9 @@ from utils.government import (
     BOND_DENOMINATIONS_CENTS,
     FEE_MULTIPLIERS,
     MAX_BOND_RATE_PERCENT,
+    EXCHANGE_TAX,
     FEE_SHARE,
+    MARKET_TAX,
     MAYOR,
     OFFICE_LABELS,
     TREASURER,
@@ -127,8 +129,15 @@ MULTIPLIER_CHOICES = [
 RATE_CHOICES = [
     app_commands.Choice(name=format_percent(percent), value=str(percent)) for percent in RATE_PERCENTS
 ]
-# Named by the value itself, so the dropdown reads fee-share and market-tax.
+# Named by the value itself, so the dropdown reads fee-share, market-tax and
+# exchange-tax.
 RATE_KIND_CHOICES = [app_commands.Choice(name=kind, value=kind) for kind in RATE_KINDS]
+# What each rate is charged on, for the receipt when the Treasurer sets it.
+RATE_APPLIES_TO = {
+    FEE_SHARE: "every machine fee",
+    MARKET_TAX: "every trade between players",
+    EXCHANGE_TAX: "every DragonCoin exchange",
+}
 DENOMINATION_CHOICES = [
     app_commands.Choice(name=format_currency(cents / 100), value=cents)
     for cents in BOND_DENOMINATIONS_CENTS
@@ -260,13 +269,13 @@ class GovernmentCog(commands.Cog):
         emoji = status.currency_emoji or DEFAULT_CURRENCY_EMOJI
 
         # Laid out the way a machine status page is (docs/stylization.md): the
-        # header says whose government, the title carries the Treasurer's two
+        # header says whose government, the title carries the Treasurer's
         # headline settings, the description says who holds office, and the
         # fields are figures. Until 1.4.1 the title repeated the header and the
         # fees and projects were two five-line lists naming every machine twice.
         embed = make_embed(
             f"Fee Share {format_percent(status.fee_share_percent)} · Market Tax {format_percent(status.market_tax_percent)} · "
-            f"Bond rate {status.bond_rate_percent}%",
+            f"Exchange Tax {format_percent(status.exchange_tax_percent)} · Bond rate {status.bond_rate_percent}%",
             GOVERNMENT_COLOR,
         )
         if interaction.guild is not None:
@@ -375,10 +384,12 @@ class GovernmentCog(commands.Cog):
             f"{FEE_UNITS.get(machine.value, 'item')} (x{value:g}).",
         )
 
-    @treasurer_group.command(name="rate", description="Set the Fee Share or the Market Tax (each once a day)")
+    @treasurer_group.command(
+        name="rate", description="Set the Fee Share, Market Tax or Exchange Tax (each once a day)"
+    )
     @app_commands.describe(
-        kind="fee-share: of every machine fee. market-tax: of every trade between players",
-        percent="Never added on top: a share of the fee, or a cut of the seller's proceeds",
+        kind="fee-share: machine fees. market-tax: player trades. exchange-tax: DragonCoin exchanges",
+        percent="Exchange Tax is added when buying DragonCoin; the rest come out of what is paid",
     )
     @app_commands.choices(kind=RATE_KIND_CHOICES, percent=RATE_CHOICES)
     async def treasurer_rate(
@@ -386,7 +397,7 @@ class GovernmentCog(commands.Cog):
         kind: app_commands.Choice[str], percent: app_commands.Choice[str],
     ):
         value = float(percent.value)
-        what = "every machine fee" if kind.value == FEE_SHARE else "every trade between players"
+        what = RATE_APPLIES_TO[kind.value]
         await self._treasurer_action(
             interaction,
             lambda tx: set_rate(tx, interaction.guild_id, interaction.user.id, kind.value, value),

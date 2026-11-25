@@ -17,6 +17,8 @@ import discord
 from data.materials import get_material_info, material_name
 from utils.embeds import make_embed, add_multi_field, footer_with
 from utils.formatting import (
+    DRAGONCOIN_EMOJI,
+    format_dragoncoin_amount,
     format_currency,
     format_relative_timestamp,
     format_price,
@@ -70,6 +72,16 @@ def currency_line(
         f"{currency_emoji or DEFAULT_CURRENCY_EMOJI} "
         f"**{format_receipt_price(amount, round_up=not gained)}** "
         f"({format_price(balance_after)} {word})"
+    )
+
+
+def dragoncoin_line(cents: int, cents_after: int, *, gained: bool) -> str:
+    """A receipt's DragonCoin row, in currency_line's shape. DragonCoin is
+    whole hundredths, so neither figure needs a rounding direction."""
+    word = GAINED if gained else SPENT
+    return (
+        f"{DRAGONCOIN_EMOJI} **{format_dragoncoin_amount(cents)}** "
+        f"({format_dragoncoin_amount(cents_after)} {word})"
     )
 
 

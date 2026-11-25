@@ -612,7 +612,9 @@ def build_payload(
     placed_total = sum(1 for d in all_drills if d["guild_id"] is not None)
     unplaced_total = len(all_drills) - placed_total
     gem_drills = sum(1 for d in all_drills if d["drill_type"] in GEM_DRILL_TYPES)
-    dragoncoin_total = sum(u["dragoncoin"] for u in all_users)
+    # users.dragoncoin_cents holds hundredths (schema.sql); summed as an
+    # integer and divided once, so the total is exact.
+    dragoncoin_total = sum(u["dragoncoin_cents"] for u in all_users) / 100
 
     overview = {
         "kServers": len(active_ids),
@@ -640,7 +642,7 @@ def build_payload(
         ],
         "medianBurn": _pct(median(ratios)),
         "inflatingCount": sum(1 for gid in active_ids if servers[gid]["burn_ratio"] * 100 < burn_floor),
-        "inflatingSub": f"Servers burning less than {burn_floor:.0f}% of what they mint. Fees and market resales are the only sinks.",
+        "inflatingSub": f"Servers burning less than {burn_floor:.0f}% of what they mint. Fees, market resales and DragonCoin purchases are the sinks.",
         "dragoncoin": _m(dragoncoin_total),
         "machineRows": machine_rows,
         "uncollected": _n(uncollected_total), "fullDrills": full_total,
@@ -720,7 +722,7 @@ def build_payload(
             "drillSub": f"{len(drills_placed)} placed, {len(my_drills) - len(drills_placed)} in inventory",
             "stored": _n(sum(d["stored_amount"] for d in my_drills)),
             "storedSub": f"{sum(1 for d in my_drills if d['is_full'])} drills full and stopped",
-            "dragoncoin": _m(u["dragoncoin"]),
+            "dragoncoin": _m(u["dragoncoin_cents"] / 100),
             "balances": my_balances,
             "inventory": inventory,
             "drills": [

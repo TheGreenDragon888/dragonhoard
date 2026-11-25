@@ -10,7 +10,7 @@ Dragonhoard is a personal project in active development. The code is public to r
 
 ## The game
 
-Every server the bot joins gets its **own currency and its own economy** — nothing carries over between servers.
+Every server the bot joins gets its **own currency and its own economy**. The one thing that carries over is **DragonCoin**: `/exchange` buys it with any server's currency and sells it back in any server, at 1,000 to 1.
 
 The core loop:
 
@@ -37,6 +37,7 @@ And `/honk` plays a honk. No further questions.
 | `/market entries` | Your own open listings and orders |
 | `/economy status` | This server's economy at a glance: wealth, mining slot progress, GDP and queues |
 | `/economy gdp` | What this server produced: value added by stage, over 24h and 7d |
+| `/exchange [amount] [buy\|sell]` | Trade this server's currency for DragonCoin, which works in every server |
 | `/furnace smelt\|status\|queue` | Smelt ore (consumes coal) |
 | `/blast smelt\|status\|queue` | The blast furnace: the same recipes, in batches of 100 |
 | `/factory craft\|upgrade\|status\|queue` | Craft gear and drill upgrades |
@@ -73,6 +74,7 @@ dragonhoard/
 │   └── manual.py             # Text of the in-Discord manual served by /help
 ├── utils/                    # Helpers shared by all cogs
 │   ├── db_helpers.py         # Common inventory/balance/stock queries
+│   ├── exchange.py           # DragonCoin exchange rules and currency movement
 │   ├── drills.py             # Drill instance helpers
 │   ├── embeds.py             # Embed colors, footer, field helpers
 │   ├── formatting.py         # Currency/number display, job durations and ETAs
@@ -88,6 +90,7 @@ dragonhoard/
 └── cogs/                     # One file per command group ("cog" = discord.py's plugin unit)
     ├── setup.py              # /setup currency, /setup channel, /setup max_queue, /setup messages
     ├── economy.py            # /balance, /inventory, /market sell|buy|status|list|order|cancel, /economy status|gdp
+    ├── exchange.py           # /exchange (buy and sell DragonCoin)
     ├── mining.py             # /mine place|status|remove|attach|detach, /collect
     ├── furnace.py            # /furnace smelt|status|queue
     ├── blastfurnace.py       # /blast smelt|status|queue (bulk smelting, 100x)

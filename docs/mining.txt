@@ -225,7 +225,7 @@ Any server member with "Manage Server" permission can set up the currency - it j
 
 Server currencies are earned by selling ores and smelted materials to the server through its market (/market sell) - gemstones are not tradeable - see docs/market.md for the full design. There is no passive chat-based payout; currency only enters circulation through genuine economic activity.
 
-Each server's currency is currently the only spendable currency in the game - a previously-planned universal "DragonCoin" currency remains a non-spendable, non-earnable unit reserved for a future cross-server exchange rate (docs/market.md).
+Each server's currency is spent only in that server. Since 1.5.1 a player can turn it into DragonCoin with /exchange - global, and sold back in any server at the same fixed rate - which is the one way value leaves one server's economy for another's (docs/market.md section 2).
 
 Using a server's infrastructure costs a fee in that server's own currency. The default fee is 0.01 for the furnace, 1.00 per batch for the blast furnace (the same 0.01 an item), 0.25 for the factory, 5.00 per press-day for the press and 0.10 for the scrapper. The fee is charged up front when a job is queued, not when it completes.
 

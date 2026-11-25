@@ -42,6 +42,7 @@ from utils.db_helpers import (
 )
 from utils.government import (
     FEE_MULTIPLIERS,
+    EXCHANGE_TAX,
     FEE_SHARE,
     MARKET_TAX,
     MAYOR,
@@ -304,6 +305,41 @@ class MarketTaxRateTests(_GovernmentTestCase):
         self.assertAlmostEqual(
             await revenue_collected(self.db, GUILD, 1, THURSDAY + timedelta(days=1)), 0.5
         )
+
+
+
+class ExchangeTaxRateTests(_GovernmentTestCase):
+    """The Exchange Tax (1.5.1) is set the way the other two rates are; what
+    it does to an exchange is tests/test_exchange.py's business."""
+
+    async def set_rate(self, percent, actor=TREASURER_ID, now=THURSDAY):
+        async with self.db.transaction() as tx:
+            await set_rate(tx, GUILD, actor, EXCHANGE_TAX, percent, now)
+
+    async def test_only_the_treasurer_may_set_it(self):
+        with self.assertRaises(GovernmentError):
+            await self.set_rate(10.0, actor=ALICE)
+        await self.set_rate(10.0)
+        self.assertEqual((await self.cfg())["exchange_tax_percent"], 10.0)
+
+    async def test_it_starts_at_zero_and_takes_every_step(self):
+        self.assertEqual((await self.cfg())["exchange_tax_percent"], 0.0)
+        with self.assertRaises(GovernmentError):
+            await self.set_rate(7.0)
+        for step, day in zip(RATE_PERCENTS, range(len(RATE_PERCENTS))):
+            with self.subTest(step=step):
+                await self.set_rate(step, now=THURSDAY + timedelta(days=day))
+                self.assertEqual((await self.cfg())["exchange_tax_percent"], step)
+
+    async def test_it_changes_once_per_game_day_on_its_own(self):
+        await self.set_rate(10.0)
+        with self.assertRaises(GovernmentError):
+            await self.set_rate(12.5, now=THURSDAY + timedelta(hours=1))
+        # The other rates keep their own once-a-day limit.
+        async with self.db.transaction() as tx:
+            await set_rate(tx, GUILD, TREASURER_ID, MARKET_TAX, 5.0, THURSDAY)
+        await self.set_rate(12.5, now=FRIDAY)
+        self.assertEqual((await self.cfg())["exchange_tax_percent"], 12.5)
 
 
 class SupplyTests(_GovernmentTestCase):
@@ -1040,6 +1076,23 @@ class CogTests(_GovernmentTestCase):
         text = i.embed.description + "".join(field.value for field in i.embed.fields)
         self.assertIn(f"<@{MAYOR_ID}>", text)
         self.assertIn("12.50", text)
+
+    async def test_the_status_page_shows_the_exchange_tax(self):
+        await self.set(exchange_tax_percent=6.25)
+        i = FakeInteraction(ALICE)
+        await GovernmentCog.government_status_command.callback(self.cog, i)
+        self.assertIn("Exchange Tax 6.25%", i.embed.title)
+
+    async def test_the_treasurer_sets_the_exchange_tax(self):
+        i = FakeInteraction(TREASURER_ID)
+        await GovernmentCog.treasurer_rate.callback(
+            self.cog, i,
+            app_commands.Choice(name=EXCHANGE_TAX, value=EXCHANGE_TAX),
+            app_commands.Choice(name="10%", value="10.0"),
+        )
+        self.assertIsNone(i.refusal)
+        self.assertEqual((await self.cfg())["exchange_tax_percent"], 10.0)
+        self.assertIn("every DragonCoin exchange", i.embed.description)
 
     async def test_a_player_who_is_not_treasurer_is_refused_privately(self):
         i = FakeInteraction(ALICE)

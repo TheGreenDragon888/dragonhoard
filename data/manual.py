@@ -52,6 +52,7 @@ from data.materials import (
     MINING_SLOT_ENHANCEMENT_MULTIPLIER,
     drill_scrap_yield,
 )
+from utils.exchange import DRAGONCOIN_RATE
 from utils.government import MAX_BOND_RATE_PERCENT
 from utils.market_book import MARKET_ENTRY_LIFETIME_DAYS, MAX_OPEN_LISTINGS, MAX_OPEN_ORDERS
 from utils.production_ledger import BALANCED_ORE_GAP
@@ -411,6 +412,32 @@ _add(ManualSection(
 
 
 _add(ManualSection(
+    key="exchange",
+    label="DragonCoin Exchange",
+    emoji="🪙",
+    # The market's yellow: the exchange is the server trading (docs/stylization.md).
+    color=MARKET_COLOR,
+    summary="Trade this server's currency for DragonCoin, the one that works everywhere",
+    body=(
+        "**DragonCoin** is yours in every server. Every server sells it for "
+        f"{DRAGONCOIN_RATE:,} of its currency and buys it back at the same price."
+    ),
+    commands=(
+        ManualCommand(
+            "/exchange", "/exchange [amount] [buy|sell]",
+            "Buy or sell that much DragonCoin. With no amount, see the rate and your balances.",
+        ),
+    ),
+    tips=(
+        "Amounts round to the nearest 0.01 DragonCoin.",
+        "Buy in one server and sell in another to move your money between them.",
+        "The **Exchange Tax** is added when you buy and taken from what you get when you sell. "
+        "The Treasurer sets it (`/help government`).",
+    ),
+))
+
+
+_add(ManualSection(
     key="jobboard",
     label="Job Board",
     emoji="📋",
@@ -442,7 +469,9 @@ _add(ManualSection(
     emoji="🎒",
     color=INVENTORY_COLOR,
     summary="See what you own and what you're worth",
-    body="Your materials are yours in every server; your balance is separate in each.",
+    body=(
+        "Your materials and DragonCoin are yours in every server; your balance is separate in each."
+    ),
     commands=(
         ManualCommand(
             "/inventory", "/inventory",
@@ -450,7 +479,7 @@ _add(ManualSection(
         ),
         ManualCommand(
             "/balance", "/balance",
-            "Your balance in every server you play in.",
+            "Your balance in every server you play in, and your DragonCoin.",
         ),
     ),
 ))
@@ -588,8 +617,8 @@ _add(ManualSection(
             "Set a machine's fee as a multiple of its default.",
         ),
         ManualCommand(
-            "/treasurer rate", "/treasurer rate <fee-share|market-tax> <percent>",
-            "Set the Fee Share or the Market Tax.",
+            "/treasurer rate", "/treasurer rate <fee-share|market-tax|exchange-tax> <percent>",
+            "Set the Fee Share, Market Tax or Exchange Tax.",
         ),
         ManualCommand(
             "/treasurer bondrate", "/treasurer bondrate <percent>",
@@ -627,7 +656,8 @@ _add(ManualSection(
     tips=(
         "**Voting** is Thursdays, Arizona time. You can't vote for yourself.",
         "**Fee Share**: the part of each machine fee the government keeps - your fee is the "
-        "same either way. **Market Tax**: a cut of player trades, paid by the seller.",
+        "same either way. **Market Tax**: a cut of player trades, paid by the seller. "
+        "**Exchange Tax**: on DragonCoin (`/help exchange`).",
         "**Bonds** repay their price plus the premium fixed when you buy, hourly from the "
         "government's revenue. If you leave, they freeze until you return.",
     ),

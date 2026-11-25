@@ -3,7 +3,7 @@
 This document describes the design principles behind Dragonhoard's
 per-server economy: how currency enters and leaves circulation, how the
 server's market functions as an independent economic actor, and how this
-groundwork supports a future cross-server exchange. This is a conceptual
+groundwork supports the cross-server exchange (section 2). This is a conceptual
 design reference, not an implementation spec — treat the mechanics
 described here as the intended behavior to evaluate the current codebase
 against.
@@ -75,6 +75,11 @@ Trades with the server never carry it, so the faucet - selling to the server -
 pays exactly what it did, and nothing in section 1's job board argument moves.
 What the Mayor spends of it burns currency that would otherwise have stayed
 with a player. See docs/government.md section 2.
+
+**The DragonCoin exchange (1.5.1) is both.** Buying DragonCoin burns the
+price out of the server's currency; selling it mints the price back in, in
+whichever server it is sold. Within one server the two cancel; between servers
+it moves currency from one economy to another at par. See section 2.
 
 Faucets, meanwhile, should always be tied to genuine economic activity —
 mining, smelting, crafting, or trading — rather than passive presence.
@@ -175,32 +180,56 @@ because it creates and destroys nothing.
 
 ---
 
-## 2. Relevance to the Future Exchange
+## 2. DragonCoin and the Exchange (1.5.1)
 
-DragonCoin exists solely as a **unit of measurement** — a stable, common
-denominator used to quote and compare the value of different servers'
-currencies against one another. It is not currently spendable, earnable,
-or exposed through any menu or feature. Its entire purpose, for now, is
-conceptual: it is the "USD of forex" that lets a future exchange say
-"1 unit of Server A's currency is worth X units of DragonCoin, and 1 unit
-of Server B's currency is worth Y" — enabling a meaningful ratio between
-the two.
+DragonCoin was planned from the start as a **unit of measurement**: a common
+denominator to quote different servers' currencies against, the "USD of forex"
+that would let an exchange say "1 unit of Server A's currency is worth X
+DragonCoin, and 1 unit of Server B's is worth Y". Until 1.5.1 it had a column
+(`users.dragoncoin`) and nothing else - nothing earned it, spent it or showed it.
 
-This means the real work of preparing for an exchange isn't building
-DragonCoin — it's making sure each server's currency has a value that can
-be **honestly and consistently calculated**. That value needs to emerge
-from something real: the materials the server has acquired, the currency
-it has issued, and the ongoing balance between its faucets and sinks. If a
-server's currency isn't backed by anything measurable, there is nothing
-for DragonCoin to quote it against.
+1.5.1 made it real, with a **fixed rate rather than a floating one**: every
+server buys and sells DragonCoin at `DRAGONCOIN_RATE` (1,000) of its own
+currency, the same on every server. That was the owner's specification. It
+means 1.5.1 does not quote servers against each other at all - every server's
+currency trades at par - so the work this section used to describe as the
+precondition for an exchange (each server's currency having a value that can be
+calculated honestly, sections 3 to 5) is still what a floating rate would be
+built from, if one ever replaces the fixed one.
 
-This is also why the server's market (below) is designed to hold and
-value real inventory rather than simply generating currency from nothing.
-A server's accumulated stockpile of raw and smelted materials, weighed
-against how much currency it has issued to acquire that stockpile, is the
-foundation an exchange rate will eventually be built on. Getting this
-foundation right now — well before any exchange menu exists — is what
-will make that later feature meaningful rather than arbitrary.
+The rules, all in `utils/exchange.py` (`/exchange` is `cogs/exchange.py`):
+
+- **DragonCoin is global**, one balance per player (`users.dragoncoin_cents`),
+  so it is the only thing that carries between servers. It is held in integer
+  hundredths, for the reason bet stakes are held in cents: as a float,
+  0.70 + 0.10 is 0.7999999999999999, and a guarded deduction of 0.80 would refuse
+  a player who held exactly that (`tests/test_exchange.py` pins it).
+- **Amounts are DragonCoin, rounded to the nearest hundredth** (half up, on the
+  number as typed), and the cost is worked out from the rounded amount.
+- **Buying burns** the price (`record_burned`): this server's currency leaves
+  its economy and the DragonCoin is what it became. It is not a fee, so it
+  levels no machine and counts toward no mining slot.
+- **Selling mints** the price (`record_minted`) into the server where it is
+  sold.
+- **The Exchange Tax**, set by the elected Treasurer, is added to the price
+  when buying and taken out of it when selling, and is held as government
+  revenue exactly as the Market Tax is (docs/government.md section 2). It is
+  counted in the server's currency on both sides, rounded down to the cent; a
+  cut counted in DragonCoin hundredths would round away on small sales (10% of
+  0.09 is 0.009), and selling in small pieces would dodge it.
+
+So a round trip in one server creates no currency: at 0% the price burned on
+the way in is the price minted on the way out, and at any other rate the player
+pays the tax twice and the government holds it. Across servers, **currency moves
+at par**: what one server burns, another mints.
+
+That is the cost of a fixed rate, and it is accepted rather than solved. A
+player can move wealth from a rich server to a poor one, and currency farmed
+in a private server can be carried into a public one at full value - the
+"devaluation" a floating rate would have applied to a server that mints
+recklessly does not happen. **A server's one lever is its Exchange Tax**,
+which makes importing currency (and exporting it) cost whatever its Treasurer
+decides.
 
 ---
 
@@ -488,11 +517,13 @@ figures are worth tracking on an ongoing basis:
   the Ops dashboard for the same reason `slot_progress` is.
 - **Total currency minted (all-time and recent)** — cumulative currency
   created through all faucets (market purchases from users, daily job board
-  rewards, and any future faucets), both as a running lifetime total and as
+  rewards, DragonCoin sold to the server since 1.5.1, and any future faucets),
+  both as a running lifetime total and as
   a recent-window figure to spot acceleration.
 - **Total currency burned (all-time and recent)** — cumulative currency
   removed through all sinks (furnace, blast furnace, factory, press and
-  scrapper fees, and market resale to users), tracked the same way.
+  scrapper fees, market resale to users, and DragonCoin bought from the server
+  since 1.5.1), tracked the same way.
 - **Net mint/burn delta** — minted minus burned, ideally tracked over a
   rolling recent window rather than only all-time, since an all-time
   number can mask a recently-worsening trend.

@@ -40,10 +40,9 @@ that a player checking a queue length did not ask for. Discord will not let a
 command with subcommands be invoked on its own, which is why the overview is
 named at all.
 
-DragonCoin (users.dragoncoin) is intentionally NOT surfaced here or anywhere
-else - per docs/market.md section 2, it exists solely as a future conceptual
-unit for cross-server exchange rates and isn't spendable, earnable, or shown
-in any menu.
+DragonCoin (users.dragoncoin_cents) is bought and sold with /exchange
+(cogs/exchange.py, 1.5.1). It is global, so /balance shows it once, beside
+every server's currency, and /inventory shows it when there is any.
 """
 import logging
 
@@ -63,6 +62,7 @@ from utils.embeds import (
 )
 from utils.formatting import (
     format_currency,
+    format_dragoncoin,
     format_duration,
     format_compact_price,
     format_exact_currency,
@@ -79,6 +79,7 @@ from utils.receipts import (
     material_line,
 )
 from utils.guild_helpers import human_member_count
+from utils.exchange import get_dragoncoin_cents
 from utils.government import format_percent, market_tax_rate, market_tax_units, pay_market_seller
 from utils.market_book import (
     SERVER,
@@ -516,6 +517,11 @@ class EconomyCog(commands.Cog):
         embed = make_embed(f"{interaction.user.display_name}'s Balance", INVENTORY_COLOR)
         lines = await self._currency_lines(interaction)
         add_multi_field(embed, "Currencies", lines)
+        # Always shown, even at 0: this is the page a player checks to see
+        # what they have, and DragonCoin is the one balance that is the same
+        # in every server (cogs/exchange.py).
+        held = await get_dragoncoin_cents(self.db, interaction.user.id)
+        embed.add_field(name="DragonCoin", value=format_dragoncoin(held), inline=False)
         await respond(interaction, self.db, embed=embed)
 
     @app_commands.command(name="inventory", description="Show your inventory alongside your balance")
@@ -526,7 +532,11 @@ class EconomyCog(commands.Cog):
         # balance descending - so the first three are this server plus the
         # user's two largest balances elsewhere.
         currency_lines = await self._currency_lines(interaction)
-        embed.description = "\n".join(currency_lines[:3])
+        description_lines = currency_lines[:3]
+        held = await get_dragoncoin_cents(self.db, interaction.user.id)
+        if held > 0:
+            description_lines.append(f"{format_dragoncoin(held)} DragonCoin")
+        embed.description = "\n".join(description_lines)
 
         inventory_rows = await self.db.fetchall(
             "SELECT material_id, quantity FROM user_materials WHERE user_id = ? AND quantity > 0",

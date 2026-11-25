@@ -63,6 +63,7 @@ def build_initial_extensions(is_beta: bool) -> list[str]:
     extensions = [
         "cogs.setup",
         "cogs.economy",
+        "cogs.exchange",
         "cogs.mining",
         "cogs.furnace",
         "cogs.blastfurnace",

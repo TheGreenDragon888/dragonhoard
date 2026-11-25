@@ -203,7 +203,7 @@ feature's own design doc where one exists.
 | Bot settings (`/setup`) and manual (`/help`, `/manual`, `/man`) | green (default) | `#00FF3C` | `DEFAULT_COLOR` |
 | Mining menus (`/mine`, `/collect`)  | purple      | `#8C00FF` | `MINING_COLOR`   |
 | Inventory and balance (`/inventory`, `/balance`) | orange | `#FF8C00` | `INVENTORY_COLOR` |
-| Market menus and reporting (`/market`, `/economy`) | yellow | `#FFE600` | `MARKET_COLOR`   |
+| Market menus and reporting (`/market`, `/economy`, `/exchange`) | yellow | `#FFE600` | `MARKET_COLOR`   |
 | Furnace menus (`/furnace`)          | purple-red  | `#FF0059` | `FURNACE_COLOR`  |
 | Blast furnace menus (`/blast`)      | pure red    | `#FF0000` | `BLAST_FURNACE_COLOR` |
 | Factory menus (`/factory`)          | red-orange  | `#FF4000` | `FACTORY_COLOR`  |

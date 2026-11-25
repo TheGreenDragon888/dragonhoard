@@ -8,7 +8,14 @@
 -- not per-server.
 CREATE TABLE IF NOT EXISTS users (
     user_id         INTEGER PRIMARY KEY,   -- Discord snowflake ID
-    dragoncoin      REAL NOT NULL DEFAULT 0.0,
+    -- The player's DragonCoin, in hundredths (1.5.1, utils/exchange.py). Global,
+    -- so it is the one thing that carries between servers: any server buys it
+    -- and sells it back at the same fixed rate. An INTEGER for the reason
+    -- prediction_wagers.stake_cents is - a balance added up out of exchanges
+    -- has to be exactly the sum of them, and as a float 0.70 + 0.10 is stored
+    -- as 0.7999..., which would refuse a sale of 0.80. It replaced a REAL
+    -- `dragoncoin` column that nothing had ever written (database/db.py).
+    dragoncoin_cents INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -138,6 +145,11 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- utils/government.py: RATE_PERCENTS, which are not all whole.
     market_tax_percent   REAL NOT NULL DEFAULT 0.0,
     market_tax_changed   TEXT,
+    -- The Exchange Tax (1.5.1): added to what DragonCoin costs when a player
+    -- buys it from this server, and taken out of what selling it pays. One of
+    -- utils/government.py: RATE_PERCENTS, held like the Market Tax.
+    exchange_tax_percent REAL NOT NULL DEFAULT 0.0,
+    exchange_tax_changed TEXT,
     -- Currency the government holds. NOT burned: utils/db_helpers.py:
     -- circulating_currency adds both back, as it does order and bet escrow.
     -- The treasury is what the Mayor spends; the repayment pool is revenue
@@ -165,7 +177,7 @@ CREATE TABLE IF NOT EXISTS server_config (
 );
 
 -- A user's balance of ONE specific server's custom currency. Unlike
--- DragonCoin (global), this is scoped per (guild, user).
+-- DragonCoin (users.dragoncoin_cents, global), this is scoped per (guild, user).
 CREATE TABLE IF NOT EXISTS server_currency_balances (
     guild_id        INTEGER NOT NULL,
     user_id         INTEGER NOT NULL,

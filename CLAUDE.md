@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Dragonhoard: a Discord economy game played via slash commands, built with
 `discord.py` and SQLite. Every server the bot joins gets its own currency and
-economy — nothing carries over between servers. The core loop: mine raw
+economy; the one thing that carries over between servers is DragonCoin (1.5.1,
+see `utils/exchange.py` below). The core loop: mine raw
 materials with drills → collect them → sell to the server market → reinvest
 in the furnace/blast furnace/factory/press/scrapper to produce better
 materials and upgrade drills, with production fees burning currency back out.
@@ -173,7 +174,7 @@ an elected Mayor and Treasurer. Admins have no say in it - that is why
 clock, counted at the midnight that ends it, both lazily by any government
 command and by an hourly loop that also pays bondholders. The rule the module
 keeps: **currency leaves the government only as a burn or a bond repayment.**
-Its revenue (the Fee Share and the Market Tax) is held, not burned, in
+Its revenue (the Fee Share, the Market Tax and the Exchange Tax) is held, not burned, in
 `treasury` or `repayment_pool`, so
 `circulating_currency` counts both (the same argument as order escrow);
 `spend_treasury` is the one way money leaves the treasury, and every caller is
@@ -220,6 +221,18 @@ escrowed on the wager row exactly as an order's currency is, so
 `idx_production_jobs_live` has. There is no background loop: `refresh_status`
 closes an expired bet lazily, the way the job board posts its task. See
 docs/betting.md.
+
+**`utils/exchange.py` + `cogs/exchange.py`**: `/exchange [amount] [buy|sell]`
+(1.5.1), every server buying and selling DragonCoin at a fixed
+`DRAGONCOIN_RATE` (1,000) of its own currency. DragonCoin is global and held
+in integer hundredths (`users.dragoncoin_cents`), for the reason bet stakes are
+cents. Buying burns the price (`record_burned` only - it is not a fee, so it
+levels nothing and counts toward no slot); selling mints it in whichever server
+it is sold. The Treasurer's Exchange Tax is the third `RATE_KINDS` entry: added
+to the price on a purchase, taken from it on a sale, counted in currency cents
+through `rate_cut` and held through `collect_revenue` like the Market Tax. A
+round trip in one server creates nothing; between servers currency moves at
+par, and the tax is a server's only lever on that. See docs/market.md section 2.
 
 **Notice actions** (`notifications.action_key`, the registry in
 `utils/responses.py`): a notice can carry buttons, which is how a new bet

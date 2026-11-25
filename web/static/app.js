@@ -178,7 +178,7 @@
           <div class="grid-3" style="margin-top:28px">
             ${statCard('Median burn ratio', o.medianBurn, 'Of everything ever minted, the share that has been burned back out. Ratios compare across servers; the amounts don’t.', 'md')}
             ${statCard('Inflating servers', o.inflatingCount, o.inflatingSub, 'md')}
-            ${statCard('DragonCoin in existence', o.dragoncoin, 'The global currency has a column and no faucet.', 'md')}
+            ${statCard('DragonCoin in existence', o.dragoncoin, 'Bought with server currency through /exchange.', 'md')}
           </div>
           ${machineTable}
         </section>
@@ -391,7 +391,7 @@
             <div class="card"><div class="stat-label">Servers</div><div class="stat-value sm">${esc(p.serverCount)}</div></div>
             <div class="card"><div class="stat-label">Drills owned</div><div class="stat-value sm">${esc(p.drillCount)}</div><div class="stat-sub" style="font-size:12px">${esc(p.drillSub)}</div></div>
             <div class="card"><div class="stat-label">Uncollected</div><div class="stat-value sm">${esc(p.stored)}</div><div class="stat-sub" style="font-size:12px">${esc(p.storedSub)}</div></div>
-            <div class="card"><div class="stat-label">DragonCoin</div><div class="stat-value sm">${esc(p.dragoncoin)}</div><div class="stat-sub" style="font-size:12px">Global, no faucet yet</div></div>
+            <div class="card"><div class="stat-label">DragonCoin</div><div class="stat-value sm">${esc(p.dragoncoin)}</div><div class="stat-sub" style="font-size:12px">Global, from /exchange</div></div>
           </div>
 
           <div class="split-11">

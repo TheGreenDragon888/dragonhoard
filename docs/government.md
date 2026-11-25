@@ -2,8 +2,9 @@
 
 Every server elects a **Mayor** and a **Treasurer** each week. The Treasurer
 sets what the machines charge and how much of it the government keeps (the
-Fee Share), and how much of every trade between players it keeps (the Market
-Tax); the Mayor spends that revenue, and money borrowed against it, on
+Fee Share), how much of every trade between players it keeps (the Market
+Tax), and what it takes on DragonCoin bought and sold (the Exchange Tax, 1.5.1);
+the Mayor spends that revenue, and money borrowed against it, on
 projects. The purpose is community engagement - a server has something to
 argue about and organise around - and, for large servers, a way past the
 machine-level cost wall.
@@ -50,7 +51,7 @@ Tests: `tests/test_government.py`.
 | Setting | Values | Default |
 | --- | --- | --- |
 | Fee multiplier, per machine | x0.25, x0.5, x0.625, x0.8, x1, x1.25, x1.6, x2, x4 | x1 |
-| Fee Share and Market Tax, each | 0%, 2.5%, 5%, 6.25%, 8%, 10%, 12.5%, 16%, 20%, 40%, 100% | 0% |
+| Fee Share, Market Tax and Exchange Tax, each | 0%, 2.5%, 5%, 6.25%, 8%, 10%, 12.5%, 16%, 20%, 40%, 100% | 0% |
 | Bond rate (a one-time premium) | 0-5% | 0% |
 
 A machine's fee is its `config.py` default times its multiplier
@@ -71,9 +72,10 @@ are charged at queue time - and set x4 again.
 
 **Bonds owed hold no rate in place.** A bond fixes what it repays when it is
 bought - its price plus the premium in force then - so the Treasurer may set
-either rate, and the bond rate, while the server owes. The Fee Share and
-Market Tax decide how fast bondholders are repaid, never how much; the bond
-rate applies only to bonds sold after it changes. Cutting both rates to 0% stops
+any of the three rates, and the bond rate, while the server owes. The Fee
+Share, Market Tax and Exchange Tax decide how fast bondholders are repaid, never
+how much; the bond rate applies only to bonds sold after it changes. Cutting all
+three to 0% stops
 repayment until revenue resumes; the debt is still owed, and as the revenue
 behind the debt cap ages out of its `DEBT_CAP_DAYS` the server cannot sell new
 bonds either.
@@ -86,12 +88,13 @@ Treasurer's rates should not be frozen because bonds are owed. Each bond still
 records both rates at its sale (`tax_percent_at_sale`,
 `market_tax_percent_at_sale`); no rule reads them.
 
-**One command, one ladder.** Both rates are set with `/treasurer rate
-<fee-share|market-tax> <percent>` from the same steps (`RATE_PERCENTS`), picked the way the fee
+**One command, one ladder.** All three rates are set with `/treasurer rate
+<fee-share|market-tax|exchange-tax> <percent>` from the same steps (`RATE_PERCENTS`), picked the way the fee
 multipliers are and built from them: the fee ladder times ten. 10% sits where
 x1 does, 5% to 20% splits each doubling in three with an exact inverse for
 every raise, 2.5% and 40% are whole doublings beyond that, and 0% (off) and
-100% bound the range. Each rate still changes once a day on its own.
+100% bound the range. Each rate still changes once a day on its own. The
+Exchange Tax joined the same ladder when it shipped in 1.5.1.
 
 Until then Fee Share was any whole percent, set with its own command. When it
 moved onto the steps, every rate between two of them was rounded **down** to
@@ -138,6 +141,25 @@ listing or the bid whatever the rate.
 - **It repays bonds and counts toward the debt cap** like the Fee Share,
   through the same `collect_revenue`.
 
+### The Exchange Tax (1.5.1)
+
+A tax on DragonCoin bought from or sold to the server (`/exchange`,
+`utils/exchange.py`, docs/market.md section 2), held exactly as the Market Tax
+is.
+
+- **The one rate added on top.** Buying DragonCoin costs its price plus the
+  tax; selling it pays its price less the tax. Neither of the other two rates
+  ever changes what a player pays.
+- **Counted in the server's currency** on both sides, rounded down to the cent
+  through the same `rate_cut` the Market Tax uses, so the tax cannot be dodged by
+  exchanging in small pieces.
+- **Why a server has it.** DragonCoin moves currency between servers at a fixed
+  rate (docs/market.md section 2), so this is the one say a server has over
+  wealth arriving from or leaving for other servers.
+- **No lock-in**, like the Market Tax: an exchange is charged the rate in force
+  when it happens, read inside its transaction.
+- **It repays bonds and counts toward the debt cap**, through `collect_revenue`.
+
 Removing `/setup fee` discarded every server's custom fee. In the production
 backup of 2026-08-30 (`/opt/dragonhoard/data/backup-2026-08-30-022248.db`, a
 live figure not reproducible from this repo) that changed 7 of 24 servers,
@@ -154,7 +176,9 @@ including one that had switched the press off with a fee of 999.
   server owes active creditors, in the treasury otherwise. It levels no
   machine and counts toward nothing until the Mayor spends it. The same goes
   for the Market Tax, which mints and burns nothing when it is taken: the buyer's
-  currency is split between the seller and the government.
+  currency is split between the seller and the government. And for the Exchange
+  Tax, which is paid on top of the price a purchase burns, or split off the
+  price a sale mints.
 - `spend_treasury` is the only way money leaves the treasury, and every caller
   is a project, so every such payment is a burn (and counts toward mining
   slots). `pay_bondholders` is the only way money leaves the repayment pool.

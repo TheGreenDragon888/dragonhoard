@@ -70,6 +70,37 @@ def _add(version: ChangelogVersion):
 
 
 _add(ChangelogVersion(
+    version="1.5.1",
+    released="2026-11-25",
+    emoji="🪙",
+    color=MARKET_COLOR,
+    summary="DragonCoin arrives: /exchange buys and sells it, and Treasurers set an Exchange Tax",
+    headline=(
+        "DragonCoin arrives: buy it with any server's currency using `/exchange`, and sell it "
+        "back in any server."
+    ),
+    entries=(
+        ChangelogEntry(
+            "🪙 The DragonCoin Exchange",
+            "`/exchange <amount>` buys DragonCoin for 1,000 of this server's currency each, and "
+            "`/exchange <amount> sell` sells it back for the same. DragonCoin is yours in every "
+            "server. Amounts round to the nearest 0.01; `/exchange` alone shows the rate.",
+        ),
+        ChangelogEntry(
+            "🏛️ The Exchange Tax",
+            "Treasurers can set an Exchange Tax with `/treasurer rate exchange-tax`, from 0% to "
+            "100%. It is added to what DragonCoin costs and taken from what selling it pays, and "
+            "goes to the government. It starts at 0%.",
+        ),
+        ChangelogEntry(
+            "🔧 Smaller Changes",
+            "- `/balance` shows your DragonCoin, and `/inventory` does once you have some.",
+        ),
+    ),
+))
+
+
+_add(ChangelogVersion(
     version="1.5",
     released="2026-11-20",
     emoji="🏆",
