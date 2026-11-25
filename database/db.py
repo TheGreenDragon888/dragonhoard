@@ -569,6 +569,14 @@ class Database(_Executor):
                 # ungoverned server, as for both rates above.
                 ("exchange_tax_percent", "REAL NOT NULL DEFAULT 0.0"),
                 ("exchange_tax_changed", "TEXT"),
+                # Server shares (1.6, utils/shares.py). No ceiling, no sale and
+                # nothing set aside: a server with no shares, as every server
+                # is until its Treasurer allows some.
+                ("share_ceiling", "INTEGER NOT NULL DEFAULT 0"),
+                ("share_ceiling_changed", "TEXT"),
+                ("share_sale_quantity", "INTEGER NOT NULL DEFAULT 0"),
+                ("share_sale_price_cents", "INTEGER NOT NULL DEFAULT 0"),
+                ("dividend_pool", "REAL NOT NULL DEFAULT 0.0"),
                 ("treasury", "REAL NOT NULL DEFAULT 0.0"),
                 ("repayment_pool", "REAL NOT NULL DEFAULT 0.0"),
                 ("mayor_id", "INTEGER"),
@@ -619,6 +627,17 @@ class Database(_Executor):
             # shown in any server, as every notice was until now.
             if "repaid_notice_key" not in bond_columns:
                 conn.execute("ALTER TABLE government_bonds ADD COLUMN repaid_notice_key TEXT")
+
+            # The shareholders' slice of each day's revenue (1.6). A plain add
+            # with a default, introspection-gated. 0 is right for every day
+            # already recorded: no server had shares before this shipped.
+            revenue_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(government_tax_daily)")
+            }
+            if "dividends" not in revenue_columns:
+                conn.execute(
+                    "ALTER TABLE government_tax_daily ADD COLUMN dividends REAL NOT NULL DEFAULT 0.0"
+                )
             personal_columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(user_notifications)")
             }

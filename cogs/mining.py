@@ -70,6 +70,7 @@ from utils.db_helpers import (
     mining_slots_full_message,
 )
 from utils.market_book import refund_order, return_listing
+from utils.shares import withdraw_share_books
 from utils.drills import (
     DrillScope,
     DRILL_AVAILABLE_SQL,
@@ -266,6 +267,10 @@ class MiningCog(commands.Cog):
             for row in orders:
                 await refund_order(tx, row)
                 withdrawn += 1
+
+            # The share books (1.6) too: bids hold DragonCoin. The shares
+            # themselves stay with their holders.
+            withdrawn += await withdraw_share_books(tx, guild_id)
         return withdrawn
 
     async def _set_guild_presence(self, guild_id: int, present: bool):

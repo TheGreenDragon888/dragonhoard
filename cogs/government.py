@@ -9,11 +9,14 @@ Implements the server government (1.4):
   - /treasurer fee <machine> <multiplier>          - Treasurer only
   - /treasurer rate <fee-share|market-tax|exchange-tax> <percent>
   - /treasurer bondrate <percent>
+  - /treasurer shares <count>                      - how many shares may exist (1.6)
   - /mayor fund <machine> <amount>                 - Mayor only
   - /mayor enhance <machine>
   - /mayor slots <amount>
   - /mayor bonanza
   - /mayor bonds <amount>                          - open (or, at 0, withdraw) a bond sale
+  - /mayor shares <quantity> [price]               - open (or, at 0, withdraw) a share sale
+  - /mayor buyback <quantity> <max_price>          - buy listed shares back and retire them
   - /bonds buy <denomination>, /bonds holdings
 
 Every rule and every currency movement lives in utils/government.py; this
@@ -64,10 +67,12 @@ from utils.embeds import (
 from utils.formatting import (
     DEFAULT_CURRENCY_EMOJI,
     format_currency,
+    format_dragoncoin,
     format_exact_currency,
     format_exact_price,
     format_price,
     format_relative_timestamp,
+    plural,
 )
 from utils.receipts import build_action_receipt, currency_line
 from utils.government import (
@@ -83,6 +88,7 @@ from utils.government import (
     RATE_KINDS,
     RATE_LABELS,
     RATE_PERCENTS,
+    SHARE_REVENUE_PERCENT,
     GovernmentError,
     announce_voting,
     bonanza_quote,
@@ -104,6 +110,7 @@ from utils.government import (
     member_returned,
     next_voting_day,
     open_bond_sale,
+    outstanding_shares,
     pay_bondholders,
     prune_revenue_history,
     set_bond_rate,
@@ -113,6 +120,13 @@ from utils.government import (
     voting_open,
 )
 from utils.responses import respond
+from utils.exchange import dragoncoin_cents
+from utils.shares import (
+    MAX_SHARES,
+    buy_back_shares,
+    open_share_sale,
+    set_share_ceiling,
+)
 
 log = logging.getLogger("dragonhoard")
 
@@ -323,6 +337,14 @@ class GovernmentCog(commands.Cog):
                 inline=True,
             )
 
+        if status.share_ceiling or status.shares_outstanding:
+            embed.add_field(
+                name="Shares",
+                value=f"`{status.shares_outstanding:,}` of `{status.share_ceiling:,}` · "
+                      f"{SHARE_REVENUE_PERCENT:g}% of revenue each · `/shares status`",
+                inline=True,
+            )
+
         # One line per machine: its fee and multiplier, then its enhancement
         # and what the next one costs.
         machine_lines = []
@@ -416,6 +438,19 @@ class GovernmentCog(commands.Cog):
             lambda tx: set_bond_rate(tx, interaction.guild_id, interaction.user.id, percent),
             "🏛️ Bond Rate Set",
             f"New bonds repay **{percent}%** on top of what they cost.",
+        )
+
+    @treasurer_group.command(name="shares", description="Set how many of this server's shares may exist (once a day)")
+    @app_commands.describe(count=f"0-{MAX_SHARES}. Lowering it stops new sales and cancels no shares")
+    async def treasurer_shares(
+        self, interaction: discord.Interaction, count: app_commands.Range[int, 0, MAX_SHARES],
+    ):
+        await self._treasurer_action(
+            interaction,
+            lambda tx: set_share_ceiling(tx, interaction.guild_id, interaction.user.id, count),
+            "🏛️ Share Limit Set",
+            f"Up to **{count:,}** {plural('share', count)} of this server may exist, each owed "
+            f"{SHARE_REVENUE_PERCENT:g}% of its revenue.",
         )
 
     # -----------------------------------------------------------------------
@@ -533,6 +568,59 @@ class GovernmentCog(commands.Cog):
                 f"**{format_currency(amount, emoji)}** of bonds are for sale at a "
                 f"**{status.bond_rate_percent}%** premium. Players buy them with `/bonds buy`.",
                 None, [],
+            )
+
+        await self._mayor_action(interaction, action)
+
+    @mayor_group.command(name="shares", description="Put new shares up for sale for DragonCoin, replacing any sale (0 withdraws it)")
+    @app_commands.describe(
+        quantity="How many new shares, within the Treasurer's limit",
+        price="DragonCoin per share, to the nearest 0.01. Needed unless withdrawing",
+    )
+    async def mayor_shares(
+        self, interaction: discord.Interaction,
+        quantity: app_commands.Range[int, 0], price: float | None = None,
+    ):
+        price_cents = dragoncoin_cents(price) if price is not None else 0
+        if quantity and price_cents < 1:
+            await self._refuse(interaction, "Give a price of at least 0.01 DragonCoin a share.")
+            return
+
+        async def action(tx):
+            await open_share_sale(tx, interaction.guild_id, interaction.user.id, quantity, price_cents)
+            if not quantity:
+                return "🏛️ Share Sale Withdrawn", "No shares are for sale now.", None, []
+            return (
+                "🏛️ Shares Offered",
+                f"**{quantity:,}** new {plural('share', quantity)} for sale at {format_dragoncoin(price_cents)} each. "
+                "Members buy them with `/shares buy`; the DragonCoin goes to the treasury.",
+                None, [],
+            )
+
+        await self._mayor_action(interaction, action)
+
+    @mayor_group.command(name="buyback", description="Buy listed shares back with treasury money and retire them")
+    @app_commands.describe(
+        quantity="The most shares to buy back",
+        max_price="The most DragonCoin to pay per share, to the nearest 0.01",
+    )
+    async def mayor_buyback(
+        self, interaction: discord.Interaction,
+        quantity: app_commands.Range[int, 1], max_price: float,
+    ):
+        max_cents = dragoncoin_cents(max_price)
+        if max_cents < 1:
+            await self._refuse(interaction, "Give a price of at least 0.01 DragonCoin a share.")
+            return
+
+        async def action(tx):
+            bought = await buy_back_shares(tx, interaction.guild_id, interaction.user.id, quantity, max_cents)
+            retired = sum(fill.quantity for fill in bought.fills)
+            return (
+                "🏛️ Shares Bought Back",
+                f"Bought back and retired **{retired:,}** {plural('share', retired)}. "
+                f"{await outstanding_shares(tx, interaction.guild_id):,} remain.",
+                bought.cost, [],
             )
 
         await self._mayor_action(interaction, action)

@@ -25,6 +25,7 @@ from cogs.scrapper import ScrapperCog
 from cogs.jobboard import JobBoardCog
 from cogs.betting import BettingCog
 from cogs.government import GovernmentCog
+from cogs.shares import SharesCog
 from cogs.donate import DonateCog
 from cogs.recipe import RecipeCog
 from cogs.manual import ManualCog
@@ -49,6 +50,7 @@ COGS = (
     JobBoardCog,
     BettingCog,
     GovernmentCog,
+    SharesCog,
     DonateCog,
     RecipeCog,
     ManualCog,

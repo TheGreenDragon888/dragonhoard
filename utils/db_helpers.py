@@ -457,11 +457,27 @@ def government_held(cfg) -> float:
     return cfg["treasury"] + cfg["repayment_pool"]
 
 
+# Revenue set aside for shareholders and not yet turned into DragonCoin (1.6,
+# utils/shares.py): the server's dividend pool, plus what each holder has
+# accrued. Still this server's currency, owed to somebody, so not a burn until
+# it is converted. Two halves because a reader that already has the
+# server_config row (web/queries.py) takes the pool off it and sums the
+# accruals with the BY_GUILD query.
+DIVIDENDS_HELD_SQL = (
+    "SELECT COALESCE((SELECT dividend_pool FROM server_config WHERE guild_id = ?), 0) "
+    "+ COALESCE((SELECT SUM(accrued) FROM share_holdings WHERE guild_id = ?), 0) AS held"
+)
+DIVIDENDS_ACCRUED_BY_GUILD_SQL = (
+    "SELECT guild_id, COALESCE(SUM(accrued), 0) AS accrued FROM share_holdings GROUP BY guild_id"
+)
+
+
 def circulating_currency(
     balance_total: float,
     escrowed_units: int,
     escrowed_bet_cents: int = 0,
     government_held: float = 0.0,
+    dividends_held: float = 0.0,
 ) -> float:
     """Every unit of this server's currency that still belongs to somebody:
     what is sitting in balances, plus what open buy orders and running bets are
@@ -491,6 +507,10 @@ def circulating_currency(
     until the Mayor spends it on a project - repayments go back to players
     untouched (docs/government.md, Money flow).
 
+    So is revenue set aside for shareholders (1.6): the dividend pool and what
+    each holder has accrued are this server's currency until they are turned
+    into DragonCoin, which is the moment they are burned (utils/shares.py).
+
     escrowed_units is in PLAYER_PRICE_SCALE units, because that is how
     market_orders stores a price; escrowed_bet_cents is in cents, because that
     is how prediction_wagers stores a stake; balance_total is already in
@@ -503,6 +523,7 @@ def circulating_currency(
         + escrowed_units / PLAYER_PRICE_SCALE
         + escrowed_bet_cents / 100
         + government_held
+        + dividends_held
     )
 
 
@@ -512,8 +533,10 @@ async def circulating_currency_for(db: _Executor, guild_id: int) -> float:
     escrow = await db.fetchone(ESCROWED_UNITS_SQL, (guild_id,))
     bets = await db.fetchone(BET_ESCROW_CENTS_SQL, (guild_id,))
     held = await db.fetchone(GOVERNMENT_HELD_SQL, (guild_id,))
+    dividends = await db.fetchone(DIVIDENDS_HELD_SQL, (guild_id, guild_id))
     return circulating_currency(
-        balances["total"], escrow["units"], bets["cents"], held["held"] if held else 0.0
+        balances["total"], escrow["units"], bets["cents"], held["held"] if held else 0.0,
+        dividends["held"],
     )
 
 

@@ -212,7 +212,7 @@ feature's own design doc where one exists.
 | Scrapper menus (`/scrapper`)        | chartreuse  | `#9EFF00` | `SCRAPPER_COLOR` |
 | Job board (`/jobboard`)             | magenta     | `#FF00AA` | `JOBBOARD_COLOR` |
 | Prediction bets (`/bet`)            | violet      | `#C800FF` | `BET_COLOR`      |
-| Government (`/government`, `/vote`, `/treasurer`, `/mayor`, `/bonds`) | sky blue | `#00AAFF` | `GOVERNMENT_COLOR` |
+| Government (`/government`, `/vote`, `/treasurer`, `/mayor`, `/bonds`, `/shares`) | sky blue | `#00AAFF` | `GOVERNMENT_COLOR` |
 | Global notifications                | pure green  | `#00FF00` | `GLOBAL_NOTICE_COLOR` |
 | Server notifications                | pure yellow | `#FFFF00` | `SERVER_NOTICE_COLOR` |
 | Personal notifications              | indigo      | `#2200FF` | `PERSONAL_NOTICE_COLOR` |

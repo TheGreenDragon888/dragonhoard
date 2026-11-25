@@ -20,7 +20,7 @@ The core loop:
 4. **Reinvest** — smelt ore in the `/furnace` (or a hundred at a time in the `/blast` furnace), craft gear and drill upgrades in the `/factory`, press gems in the `/press`, and break things back down in the `/scrapper`. Every fee counts toward **mining slots**: another drill for everyone in the server.
 5. **Check the board** — `/jobboard` shows the task your server pays a bonus for today. It pays every time you finish it.
 6. **Bet on it** — `/bet open` stakes your currency on something happening; others back you or bet against you, and the winners split the pot. The bot takes no cut.
-7. **Elect a government** — every Thursday the server votes (`/vote`) for a **Mayor** and a **Treasurer**. The Treasurer sets fees and taxes; the Mayor spends them on projects and can sell bonds (`/bonds buy`). Admins don't set fees.
+7. **Elect a government** — every Thursday the server votes (`/vote`) for a **Mayor** and a **Treasurer**. The Treasurer sets fees and taxes; the Mayor spends them on projects and can sell bonds (`/bonds buy`) and shares (`/shares buy`). Each share earns a slice of the server's revenue in DragonCoin, forever. Admins don't set fees.
 
 Look things up in-game with `/recipe` (the recipe book) or `/help` (also `/manual` or `/man`).
 
@@ -46,9 +46,10 @@ And `/honk` plays a honk. No further questions.
 | `/jobboard` | Today's paid task for this server |
 | `/bet open\|place\|status\|close\|resolve\|cancel` | Bet this server's currency on what happens next |
 | `/vote mayor\|treasurer`, `/government status` | This server's weekly election, and who holds office |
-| `/treasurer fee\|rate\|bondrate` | The Treasurer's settings |
-| `/mayor fund\|enhance\|slots\|bonanza\|bonds` | The Mayor's projects |
+| `/treasurer fee\|rate\|bondrate\|shares` | The Treasurer's settings |
+| `/mayor fund\|enhance\|slots\|bonanza\|bonds\|shares\|buyback` | The Mayor's projects |
 | `/bonds buy\|holdings` | Lend the server currency, repaid out of its revenue |
+| `/shares status\|buy\|sell\|list\|order\|cancel\|holdings` | Own a slice of this server's revenue, bought and paid in DragonCoin |
 | `/recipe factory\|furnace\|press\|scrapper` | The recipe book |
 | `/help`, `/manual`, `/man` | The in-Discord manual |
 | `/changelog [version]` | What changed in each release |
@@ -75,6 +76,7 @@ dragonhoard/
 ├── utils/                    # Helpers shared by all cogs
 │   ├── db_helpers.py         # Common inventory/balance/stock queries
 │   ├── exchange.py           # DragonCoin exchange rules and currency movement
+│   ├── shares.py             # Server share rules: sales, the books, dividends, buybacks
 │   ├── drills.py             # Drill instance helpers
 │   ├── embeds.py             # Embed colors, footer, field helpers
 │   ├── formatting.py         # Currency/number display, job durations and ETAs
@@ -100,6 +102,7 @@ dragonhoard/
     ├── jobboard.py           # /jobboard (the daily paid task)
     ├── betting.py            # /bet open|place|status|close|resolve|cancel (prediction bets)
     ├── government.py         # /vote, /government, /treasurer, /mayor, /bonds (the elected government)
+    ├── shares.py             # /shares status|buy|sell|list|order|cancel|holdings (server shares)
     ├── recipe.py             # /recipe factory|furnace|press|scrapper (the recipe book; furnace covers both smelters)
     ├── manual.py             # /help, /manual, /man (the same manual under three names)
     ├── changelog.py          # /changelog (release notes, from 1.1 onward)

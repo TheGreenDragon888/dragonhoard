@@ -850,7 +850,8 @@ class EntryExpiryMigrationTests(unittest.IsolatedAsyncioTestCase):
         rows = await self.db.fetchall(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'idx_%_expiry'"
         )
-        self.assertEqual({row["name"] for row in rows}, {"idx_listings_expiry", "idx_orders_expiry"})
+        # A subset: the share books (1.6) have expiry indexes of their own.
+        self.assertLessEqual({"idx_listings_expiry", "idx_orders_expiry"}, {row["name"] for row in rows})
 
     async def test_opening_it_again_changes_nothing(self):
         before = await self.db.fetchall("SELECT listing_id, expires_at FROM market_listings")
@@ -1436,6 +1437,67 @@ class UsersWithoutDragonCoinMigrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_it_gains_the_column_at_zero(self):
         row = await self.db.fetchone("SELECT dragoncoin_cents FROM users WHERE user_id = ?", (USER,))
         self.assertEqual(row["dragoncoin_cents"], 0)
+
+
+
+class SharesMigrationTests(unittest.IsolatedAsyncioTestCase):
+    """Server shares (1.6) added five server_config columns, a column on
+    government_tax_daily and three tables. A 1.5.1 database has none of them;
+    opening it adds them all, empty - no server has shares, a sale, a ceiling or
+    anything set aside, and no day recorded dividends."""
+
+    async def asyncSetUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.path = str(Path(self._dir.name) / "old.db")
+
+        db = Database(self.path)
+        await db.init_schema()
+        db.close()
+
+        conn = sqlite3.connect(self.path)
+        for column in ("share_ceiling", "share_ceiling_changed", "share_sale_quantity",
+                       "share_sale_price_cents", "dividend_pool"):
+            conn.execute(f"ALTER TABLE server_config DROP COLUMN {column}")
+        conn.execute("ALTER TABLE government_tax_daily DROP COLUMN dividends")
+        for table in ("share_holdings", "share_listings", "share_orders"):
+            conn.execute(f"DROP TABLE {table}")
+        conn.execute("INSERT INTO server_config (guild_id, treasury) VALUES (?, 12.5)", (GUILD,))
+        conn.execute(
+            "INSERT INTO government_tax_daily (guild_id, day, amount) VALUES (?, '2026-11-20', 3.0)", (GUILD,)
+        )
+        conn.commit()
+        conn.close()
+
+        self.db = Database(self.path)
+        await self.db.init_schema()
+
+    async def asyncTearDown(self):
+        self.db.close()
+        self._dir.cleanup()
+
+    async def test_every_server_starts_with_no_shares(self):
+        row = await self.db.fetchone("SELECT * FROM server_config WHERE guild_id = ?", (GUILD,))
+        self.assertEqual(
+            (row["share_ceiling"], row["share_sale_quantity"], row["share_sale_price_cents"], row["dividend_pool"]),
+            (0, 0, 0, 0.0),
+        )
+        self.assertIsNone(row["share_ceiling_changed"])
+        self.assertEqual(row["treasury"], 12.5, "the treasury is untouched")
+
+    async def test_past_revenue_recorded_no_dividends(self):
+        row = await self.db.fetchone("SELECT amount, dividends FROM government_tax_daily")
+        self.assertEqual((row["amount"], row["dividends"]), (3.0, 0.0))
+
+    async def test_the_share_tables_exist_and_are_empty(self):
+        for table in ("share_holdings", "share_listings", "share_orders"):
+            with self.subTest(table=table):
+                row = await self.db.fetchone(f"SELECT COUNT(*) AS n FROM {table}")
+                self.assertEqual(row["n"], 0)
+
+    async def test_opening_it_again_changes_nothing(self):
+        await self.db.init_schema()
+        row = await self.db.fetchone("SELECT share_ceiling FROM server_config WHERE guild_id = ?", (GUILD,))
+        self.assertEqual(row["share_ceiling"], 0)
 
 
 if __name__ == "__main__":

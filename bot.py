@@ -73,6 +73,7 @@ def build_initial_extensions(is_beta: bool) -> list[str]:
         "cogs.jobboard",
         "cogs.betting",
         "cogs.government",
+        "cogs.shares",
         "cogs.donate",
         "cogs.recipe",
         "cogs.manual",

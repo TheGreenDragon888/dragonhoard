@@ -173,7 +173,8 @@ an elected Mayor and Treasurer. Admins have no say in it - that is why
 `/setup fee` is gone. Voting is Thursdays on the job board's America/Phoenix
 clock, counted at the midnight that ends it, both lazily by any government
 command and by an hourly loop that also pays bondholders. The rule the module
-keeps: **currency leaves the government only as a burn or a bond repayment.**
+keeps: **currency leaves the government only as a burn or a bond repayment**
+(and, since 1.6, as a dividend or share buyback, both burns into DragonCoin).
 Its revenue (the Fee Share, the Market Tax and the Exchange Tax) is held, not burned, in
 `treasury` or `repayment_pool`, so
 `circulating_currency` counts both (the same argument as order escrow);
@@ -233,6 +234,21 @@ to the price on a purchase, taken from it on a sale, counted in currency cents
 through `rate_cut` and held through `collect_revenue` like the Market Tax. A
 round trip in one server creates nothing; between servers currency moves at
 par, and the tax is a server's only lever on that. See docs/market.md section 2.
+
+**`utils/shares.py` + `cogs/shares.py`**: server shares (1.6). The government
+sells shares for DragonCoin; every share is identical and owed
+`SHARE_REVENUE_PERCENT` of the server's revenue forever. The return is
+REVENUE, never GDP (GDP is a measurement; paying out of it would print
+DragonCoin). `collect_revenue` takes the shareholders' slice off the top into
+`dividend_pool`, and `government_tax_daily` records `amount` (what the
+government kept, which the debt cap reads) apart from `dividends`. The hourly
+payout accrues exactly per holder and converts each whole hundredth of a
+DragonCoin, burning the currency. A listing reserves shares in place
+(`available_shares` is the one place that is subtracted); an order escrows
+DragonCoin. Trading commands act only on the server they are run in - that is
+the owner's membership rule. The Treasurer's ceiling and the Mayor's sale and
+buyback are in `cogs/government.py`; `end_mayor_sales` ends both sales whenever
+the Mayor changes. See docs/shares.md.
 
 **Notice actions** (`notifications.action_key`, the registry in
 `utils/responses.py`): a notice can carry buttons, which is how a new bet

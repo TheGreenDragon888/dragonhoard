@@ -37,6 +37,7 @@ from data.materials import (
 )
 from utils.db_helpers import (
     BET_ESCROW_CENTS_BY_GUILD_SQL,
+    DIVIDENDS_ACCRUED_BY_GUILD_SQL,
     ESCROWED_UNITS_BY_GUILD_SQL,
     circulating_currency,
     government_held,
@@ -315,6 +316,13 @@ def build_payload(
         for r in conn.execute(BET_ESCROW_CENTS_BY_GUILD_SQL)
     }
 
+    # Dividends holders have accrued and not yet turned into DragonCoin (1.6).
+    # Added to each server's dividend pool, off its server_config row.
+    dividends_accrued_by_guild = {
+        r["guild_id"]: r["accrued"]
+        for r in conn.execute(DIVIDENDS_ACCRUED_BY_GUILD_SQL)
+    }
+
     focus_by_user = {
         r["user_id"]: r["focus_id"]
         for r in conn.execute("SELECT user_id, focus_id FROM user_mining_focus")
@@ -380,6 +388,7 @@ def build_payload(
             escrowed_units_by_guild.get(gid, 0),
             bet_escrow_by_guild.get(gid, 0),
             government_held(cfg),
+            cfg["dividend_pool"] + dividends_accrued_by_guild.get(gid, 0.0),
         )
         minted = cfg["currency_minted_total"]
         burned = cfg["currency_burned_total"]
@@ -613,8 +622,12 @@ def build_payload(
     unplaced_total = len(all_drills) - placed_total
     gem_drills = sum(1 for d in all_drills if d["drill_type"] in GEM_DRILL_TYPES)
     # users.dragoncoin_cents holds hundredths (schema.sql); summed as an
-    # integer and divided once, so the total is exact.
-    dragoncoin_total = sum(u["dragoncoin_cents"] for u in all_users) / 100
+    # integer and divided once, so the total is exact. Bids for server shares
+    # (1.6) hold DragonCoin in escrow, which still exists.
+    share_escrow_cents = conn.execute(
+        "SELECT COALESCE(SUM(quantity * price_cents), 0) FROM share_orders"
+    ).fetchone()[0]
+    dragoncoin_total = (sum(u["dragoncoin_cents"] for u in all_users) + share_escrow_cents) / 100
 
     overview = {
         "kServers": len(active_ids),

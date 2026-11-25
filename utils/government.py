@@ -25,8 +25,14 @@ a burn or as a bond repayment.
   proceeds and held the same way.
 
   Money leaves the treasury through spend_treasury and nothing else, and every
-  caller of that is a project, so every such payment is a burn. Money leaves
-  the repayment pool through pay_bondholders and nothing else. So over a whole
+  caller of that is a project or a share buyback, so every such payment is a
+  burn. Money leaves the repayment pool through pay_bondholders and nothing
+  else.
+
+  Server shares (1.6, utils/shares.py) take their slice of revenue BEFORE the
+  government sees it (collect_revenue): SHARE_REVENUE_PERCENT per share goes
+  to server_config.dividend_pool and on to shareholders, converted into
+  DragonCoin - a burn of this server's currency, like /exchange. So over a whole
   bond cycle the server burns exactly what its fees would have burned without a
   government; it only burns it sooner. The one leak is the bond premium, which
   is currency that would have been burned and is paid to a player instead -
@@ -167,6 +173,11 @@ VOTING_WEEKDAY = 3  # Thursday
 # is the only form idx_government_bonds_owed (schema.sql) applies to.
 OWED_BONDS_SQL = "remaining_cents > 0"
 
+# What each server share is owed of the server's government revenue, forever
+# (1.6, utils/shares.py). Here rather than there because collect_revenue is
+# where it is taken, and utils/shares.py already imports this module.
+SHARE_REVENUE_PERCENT = 1.0
+
 # Rounding slack for comparing float currency against the cent it is meant to
 # be. The treasury accumulates revenue a fraction of a cent at a time.
 _EPSILON = 1e-9
@@ -244,22 +255,50 @@ async def has_active_debt(db: _Executor, guild_id: int) -> bool:
     return row is not None
 
 
+async def outstanding_shares(db: _Executor, guild_id: int) -> int:
+    """How many of this server's shares exist (1.6). Summed on read from
+    share_holdings, never stored, the rule slot_progress follows: a listed share
+    is still in its holder's row (schema.sql), so this is everything."""
+    row = await db.fetchone(
+        "SELECT COALESCE(SUM(shares), 0) AS n FROM share_holdings WHERE guild_id = ?",
+        (guild_id,),
+    )
+    return row["n"]
+
+
 async def collect_revenue(db: _Executor, guild_id: int, amount: float, now: datetime | None = None):
-    """Takes `amount` of revenue - any rate's - into the government: into
-    the repayment pool while the server owes active creditors, the treasury
-    otherwise. Also adds it to today's revenue total, which the debt cap is
-    measured against."""
+    """Takes `amount` of revenue - any rate's - into the government.
+
+    Shareholders are paid first (1.6): SHARE_REVENUE_PERCENT for every share
+    outstanding goes to the dividend pool, which utils/shares.py:
+    pay_dividends pays out hourly. The rest goes into the repayment pool while
+    the server owes active creditors, the treasury otherwise.
+
+    Today's revenue total records the two parts apart. The debt cap reads
+    only what the government kept, since the shareholders' slice is not the
+    government's to repay with; the share price floor reads both.
+    """
     if amount <= 0:
         return
-    column = "repayment_pool" if await has_active_debt(db, guild_id) else "treasury"
+    shares = await outstanding_shares(db, guild_id)
+    dividends = amount * min(shares * SHARE_REVENUE_PERCENT, MAX_RATE_PERCENT) / 100 if shares else 0.0
+    kept = amount - dividends
+    if dividends > 0:
+        await db.execute(
+            "UPDATE server_config SET dividend_pool = dividend_pool + ? WHERE guild_id = ?",
+            (dividends, guild_id),
+        )
+    if kept > 0:
+        column = "repayment_pool" if await has_active_debt(db, guild_id) else "treasury"
+        await db.execute(
+            f"UPDATE server_config SET {column} = {column} + ? WHERE guild_id = ?",
+            (kept, guild_id),
+        )
     await db.execute(
-        f"UPDATE server_config SET {column} = {column} + ? WHERE guild_id = ?",
-        (amount, guild_id),
-    )
-    await db.execute(
-        "INSERT INTO government_tax_daily (guild_id, day, amount) VALUES (?, ?, ?) "
-        "ON CONFLICT (guild_id, day) DO UPDATE SET amount = amount + excluded.amount",
-        (guild_id, game_date(now), amount),
+        "INSERT INTO government_tax_daily (guild_id, day, amount, dividends) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (guild_id, day) DO UPDATE SET amount = amount + excluded.amount, "
+        "dividends = dividends + excluded.dividends",
+        (guild_id, game_date(now), kept, dividends),
     )
 
 
@@ -767,6 +806,18 @@ async def announce_repaid_bonds(tx: _Executor, guild_id: int, holder_id: int, bo
     await set_user_notification(tx, holder_id, key, title, body, guild_id=guild_id)
 
 
+async def end_mayor_sales(tx: _Executor, guild_id: int) -> bool:
+    """Withdraws the Mayor's open bond sale and share sale. A sale is the
+    Mayor's and does not outlive them: everything that changes who is Mayor -
+    a count, the Mayor leaving, a devtools appointment - comes here. Returns
+    whether anything was on sale."""
+    return bool(await tx.execute_changes(
+        "UPDATE server_config SET bond_sale_cents = 0, share_sale_quantity = 0 "
+        "WHERE guild_id = ? AND (bond_sale_cents > 0 OR share_sale_quantity > 0)",
+        (guild_id,),
+    ))
+
+
 # ---------------------------------------------------------------------------
 # Members leaving and returning
 # ---------------------------------------------------------------------------
@@ -795,10 +846,7 @@ async def member_left(tx: _Executor, guild_id: int, user_id: int) -> list[str]:
     for office in vacated:
         await tx.execute(f"UPDATE server_config SET {office}_id = NULL WHERE guild_id = ?", (guild_id,))
         if office == MAYOR:
-            # A sale is the Mayor's; it does not outlive them.
-            await tx.execute(
-                "UPDATE server_config SET bond_sale_cents = 0 WHERE guild_id = ?", (guild_id,)
-            )
+            await end_mayor_sales(tx, guild_id)
         await post_server_notification(
             tx, guild_id, f"🏛️ The {OFFICE_LABELS[office]} Has Left",
             f"<@{user_id}> has left the server, so the office of {OFFICE_LABELS[office]} is "
@@ -995,7 +1043,7 @@ async def count_election(
             (mayor, treasurer, voting_day, guild_id),
         )
         if mayor != holders[MAYOR]:
-            await tx.execute("UPDATE server_config SET bond_sale_cents = 0 WHERE guild_id = ?", (guild_id,))
+            await end_mayor_sales(tx, guild_id)
         await tx.execute(
             "DELETE FROM government_votes WHERE guild_id = ? AND voting_day = ?", (guild_id, voting_day)
         )
@@ -1011,7 +1059,7 @@ async def assign_office(tx: _Executor, guild_id: int, office: str, user_id: int 
 
     It keeps the two rules a count keeps, so a tester can never reach a state
     the real game can't: nobody holds both offices (appointing the other
-    office's holder vacates that one), and a Mayor's bond sale ends with the
+    office's holder vacates that one), and a Mayor's sales end with the
     Mayor.
     """
     if office not in OFFICES:
@@ -1024,12 +1072,8 @@ async def assign_office(tx: _Executor, guild_id: int, office: str, user_id: int 
         await tx.execute(f"UPDATE server_config SET {other}_id = NULL WHERE guild_id = ?", (guild_id,))
         notes.append(f"vacated {OFFICE_LABELS[other]}, since nobody holds both")
     if office == MAYOR and holders[MAYOR] != user_id:
-        cancelled = await tx.execute_changes(
-            "UPDATE server_config SET bond_sale_cents = 0 WHERE guild_id = ? AND bond_sale_cents > 0",
-            (guild_id,),
-        )
-        if cancelled:
-            notes.append("ended the previous Mayor's bond sale")
+        if await end_mayor_sales(tx, guild_id):
+            notes.append("ended the previous Mayor's sales")
     await tx.execute(f"UPDATE server_config SET {office}_id = ? WHERE guild_id = ?", (user_id, guild_id))
     return notes
 
@@ -1076,9 +1120,10 @@ async def announce_voting(tx: _Executor, guild_id: int, now: datetime | None = N
 
 async def spend_treasury(tx: _Executor, guild_id: int, amount: float, slot_credit: float) -> None:
     """THE way currency leaves the treasury: burned, with `slot_credit` added to
-    the server's mining slot progress. Every project calls this and nothing
-    else takes money out of the treasury, which is what makes every treasury
-    payment a burn (see the module docstring)."""
+    the server's mining slot progress. Every project calls this, and so does a
+    share buyback (utils/shares.py, with no slot credit: it buys the server
+    nothing it keeps), and nothing else takes money out of the treasury, which
+    is what makes every treasury payment a burn (see the module docstring)."""
     if amount <= 0:
         raise ValueError("a project must cost something")
     changed = await tx.execute_changes(
@@ -1231,6 +1276,8 @@ class GovernmentStatus(NamedTuple):
     sale_cents: int
     bonanza_until: str | None
     currency_emoji: str | None
+    share_ceiling: int
+    shares_outstanding: int
 
 
 async def government_status(db: _Executor, guild_id: int, now: datetime | None = None) -> GovernmentStatus:
@@ -1252,4 +1299,6 @@ async def government_status(db: _Executor, guild_id: int, now: datetime | None =
         sale_cents=cfg["bond_sale_cents"],
         bonanza_until=cfg["bonanza_until"] if bonanza_active(cfg["bonanza_until"], now) else None,
         currency_emoji=cfg["currency_emoji"],
+        share_ceiling=cfg["share_ceiling"],
+        shares_outstanding=await outstanding_shares(db, guild_id),
     )

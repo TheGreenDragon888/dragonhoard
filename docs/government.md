@@ -11,7 +11,8 @@ machine-level cost wall.
 
 Code: `utils/government.py` (every rule and every currency movement) and
 `cogs/government.py` (commands, embeds, the hourly loop, member events).
-Tests: `tests/test_government.py`.
+Tests: `tests/test_government.py`. Server shares (1.6), which the Treasurer and
+Mayor also control, have their own doc: docs/shares.md.
 
 ## 1. Offices and elections
 
@@ -167,7 +168,10 @@ including one that had switched the press off with a fee of 999.
 
 ## 3. Money flow - the invariant
 
-**Currency leaves the government only as a burn or as a bond repayment.**
+**Currency leaves the government only as a burn or as a bond repayment** - or,
+since 1.6, as a dividend or a share buyback, both of which are burns into
+DragonCoin (docs/shares.md section 5). Shareholders' slice of revenue is taken
+before the government sees it, so it never enters the treasury at all.
 
 - What is left of a fee after the Fee Share is handled exactly as a whole fee
   was before 1.4: burned, banked to the machine's level and counted toward
@@ -180,8 +184,9 @@ including one that had switched the press off with a fee of 999.
   Tax, which is paid on top of the price a purchase burns, or split off the
   price a sale mints.
 - `spend_treasury` is the only way money leaves the treasury, and every caller
-  is a project, so every such payment is a burn (and counts toward mining
-  slots). `pay_bondholders` is the only way money leaves the repayment pool.
+  is a project or a share buyback, so every such payment is a burn (a project's
+  counts toward mining slots; a buyback's does not, since it buys the server
+  nothing it keeps). `pay_bondholders` is the only way money leaves the repayment pool.
 - `circulating_currency` adds the treasury and the pool back, for the reason it
   adds order and bet escrow back: the money has left players' balances, not the
   economy.

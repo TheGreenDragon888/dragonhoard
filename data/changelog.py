@@ -70,6 +70,31 @@ def _add(version: ChangelogVersion):
 
 
 _add(ChangelogVersion(
+    version="1.6",
+    released="2026-11-25",
+    emoji="📈",
+    color=GOVERNMENT_COLOR,
+    summary="Server shares: buy a slice of your server's revenue with DragonCoin",
+    headline="Buy shares of your server with DragonCoin and earn a slice of its revenue, forever.",
+    entries=(
+        ChangelogEntry(
+            "📈 Server Shares",
+            "Each share earns 1% of the government's revenue forever, paid hourly in DragonCoin. "
+            "Buy with `/shares buy`, sell with `/shares sell`, and trade at your price with "
+            "`/shares list` and `/shares order`. You can only trade a server's shares in that server.",
+        ),
+        ChangelogEntry(
+            "🏛️ Selling Shares",
+            "The Treasurer sets how many may exist, up to 40 (`/treasurer shares`). The Mayor sells "
+            "new ones into the treasury (`/mayor shares`) and buys listed ones back "
+            "(`/mayor buyback`). Sales can't go below a year of a share's dividends, and buybacks "
+            "can't pay above it.",
+        ),
+    ),
+))
+
+
+_add(ChangelogVersion(
     version="1.5.1",
     released="2026-11-25",
     emoji="💱",

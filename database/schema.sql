@@ -166,6 +166,18 @@ CREATE TABLE IF NOT EXISTS server_config (
     -- MINING_SLOT_ENHANCEMENT_MULTIPLIER times over. Added into the slot
     -- total by utils/db_helpers.py: slot_progress.
     mining_slot_credit   REAL NOT NULL DEFAULT 0.0,
+    -- Server shares (1.6, utils/shares.py, docs/shares.md). share_ceiling is
+    -- how many shares may exist, set by the Treasurer; the count that DOES exist
+    -- is never stored but summed from share_holdings. share_sale_quantity and
+    -- share_sale_price_cents are the Mayor's open sale (price in hundredths of
+    -- a DragonCoin per share; 0 quantity = no sale). dividend_pool is revenue
+    -- set aside for shareholders and not yet paid out - held, not burned, so
+    -- circulating_currency counts it.
+    share_ceiling           INTEGER NOT NULL DEFAULT 0,
+    share_ceiling_changed   TEXT,
+    share_sale_quantity     INTEGER NOT NULL DEFAULT 0,
+    share_sale_price_cents  INTEGER NOT NULL DEFAULT 0,
+    dividend_pool           REAL NOT NULL DEFAULT 0.0,
     -- When the running Server Bonanza ends, UTC in datetime('now')'s layout.
     -- NULL, or in the past, means none is running.
     bonanza_until        TEXT,
@@ -844,6 +856,72 @@ CREATE INDEX IF NOT EXISTS idx_government_bonds_owed
 CREATE TABLE IF NOT EXISTS government_tax_daily (
     guild_id  INTEGER NOT NULL,
     day       TEXT NOT NULL,         -- game date
+    -- What the government kept. This is what the debt cap reads: revenue set
+    -- aside for shareholders (below) is not the government's to repay with.
     amount    REAL NOT NULL DEFAULT 0.0,
+    -- The shareholders' slice of the same day's revenue (1.6). amount +
+    -- dividends is the day's whole revenue, which the share price floor reads.
+    dividends REAL NOT NULL DEFAULT 0.0,
     PRIMARY KEY (guild_id, day)
 );
+
+-- Server shares (1.6, utils/shares.py, docs/shares.md): who owns how much of
+-- each server. Every share of a server is identical and is owed
+-- SHARE_REVENUE_PERCENT of its government revenue forever, so a holding is one
+-- row per (server, player) with a count rather than one row per share.
+--
+-- `shares` includes any the holder has listed for sale. A listing RESERVES
+-- shares rather than moving them out of this row (unlike market_listings,
+-- which escrows goods): the holder keeps earning dividends on them until they
+-- are actually sold, and an expired or cancelled listing has nothing to hand
+-- back. utils/shares.py: available_shares is the one place the reservation is
+-- subtracted.
+--
+-- accrued is dividends paid to this holder and not yet turned into
+-- DragonCoin, in the server's currency: dividends are converted a whole
+-- hundredth of a DragonCoin at a time. Held, not burned, so
+-- circulating_currency counts it. dividends_paid_cents is the lifetime total
+-- of DragonCoin (hundredths) this holding has paid out, for /shares holdings.
+CREATE TABLE IF NOT EXISTS share_holdings (
+    guild_id             INTEGER NOT NULL,
+    holder_id            INTEGER NOT NULL,
+    shares               INTEGER NOT NULL DEFAULT 0 CHECK (shares >= 0),
+    accrued              REAL NOT NULL DEFAULT 0.0,
+    dividends_paid_cents INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (guild_id, holder_id)
+);
+CREATE INDEX IF NOT EXISTS idx_share_holdings_holder ON share_holdings (holder_id);
+
+-- A player's shares offered to the server's other members, at a price in
+-- hundredths of a DragonCoin per share. Reserves shares in share_holdings
+-- rather than escrowing them (see above). Expires like market_listings, and
+-- every read spells utils/market_book.py: LIVE_ENTRY_SQL.
+CREATE TABLE IF NOT EXISTS share_listings (
+    listing_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    seller_id   INTEGER NOT NULL,
+    quantity    INTEGER NOT NULL,
+    price_cents INTEGER NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at  TEXT NOT NULL,
+    CHECK (quantity > 0 AND price_cents > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_share_listings_book ON share_listings (guild_id, price_cents);
+CREATE INDEX IF NOT EXISTS idx_share_listings_expiry ON share_listings (expires_at);
+
+-- A standing bid for a server's shares. THE DRAGONCOIN IS ESCROWED HERE,
+-- deducted from users.dragoncoin_cents when the order is placed, for the
+-- reason market_orders escrows currency: a bid that promises DragonCoin the
+-- buyer has since spent cannot be filled.
+CREATE TABLE IF NOT EXISTS share_orders (
+    order_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id    INTEGER NOT NULL,
+    buyer_id    INTEGER NOT NULL,
+    quantity    INTEGER NOT NULL,
+    price_cents INTEGER NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at  TEXT NOT NULL,
+    CHECK (quantity > 0 AND price_cents > 0)
+);
+CREATE INDEX IF NOT EXISTS idx_share_orders_book ON share_orders (guild_id, price_cents);
+CREATE INDEX IF NOT EXISTS idx_share_orders_expiry ON share_orders (expires_at);

@@ -81,6 +81,13 @@ price out of the server's currency; selling it mints the price back in, in
 whichever server it is sold. Within one server the two cancel; between servers
 it moves currency from one economy to another at par. See section 2.
 
+**Server shares (1.6) move a server's revenue to its shareholders** rather than
+to the Mayor's projects. A government sale is a faucet (the buyer's DragonCoin
+becomes this server's currency in the treasury) and every dividend is a burn
+(the currency becomes the holder's DragonCoin); what a share pays comes out of
+revenue the government would otherwise have spent, never from GDP, which is a
+measurement rather than money. See docs/shares.md.
+
 Faucets, meanwhile, should always be tied to genuine economic activity —
 mining, smelting, crafting, or trading — rather than passive presence.
 Currency entering the economy should reflect real production or effort,

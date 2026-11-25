@@ -53,7 +53,8 @@ from data.materials import (
     drill_scrap_yield,
 )
 from utils.exchange import DRAGONCOIN_RATE
-from utils.government import MAX_BOND_RATE_PERCENT
+from utils.government import MAX_BOND_RATE_PERCENT, SHARE_REVENUE_PERCENT
+from utils.shares import MAX_SHARES
 from utils.market_book import MARKET_ENTRY_LIFETIME_DAYS, MAX_OPEN_LISTINGS, MAX_OPEN_ORDERS
 from utils.production_ledger import BALANCED_ORE_GAP
 
@@ -662,6 +663,40 @@ _add(ManualSection(
         "**Exchange Tax**: on DragonCoin (`/help exchange`).",
         "**Bonds** repay their price plus the premium fixed when you buy, hourly from the "
         "government's revenue. If you leave, they freeze until you return.",
+    ),
+))
+
+
+_add(ManualSection(
+    key="shares",
+    label="Server Shares",
+    emoji="📈",
+    color=GOVERNMENT_COLOR,
+    summary="Buy a slice of this server's revenue with DragonCoin",
+    body=(
+        f"Each share earns {SHARE_REVENUE_PERCENT:g}% of the government's revenue, forever, paid "
+        "hourly in DragonCoin. You can only trade a server's shares in that server."
+    ),
+    commands=(
+        ManualCommand("/shares status", "/shares status", "Shares, sale, prices and yours."),
+        ManualCommand("/shares buy", "/shares buy <quantity>", "Buy, cheapest first, from players or the government."),
+        ManualCommand("/shares sell", "/shares sell <quantity>", "Sell to the highest bids."),
+        ManualCommand("/shares list", "/shares list <quantity> <price>", "Offer shares at your price."),
+        ManualCommand("/shares order", "/shares order <quantity> <price>", "Bid at your price. The DragonCoin is held."),
+        ManualCommand("/shares cancel", "/shares cancel <entry>", "Withdraw a listing or order."),
+        ManualCommand("/shares holdings", "/shares holdings", "Your shares everywhere, and what they've paid."),
+        ManualCommand(
+            "/treasurer shares", "/treasurer shares <count>",
+            f"Treasurer: how many shares may exist, up to {MAX_SHARES}.",
+        ),
+        ManualCommand("/mayor shares", "/mayor shares <quantity> [price]", "Mayor: sell new shares into the treasury."),
+        ManualCommand("/mayor buyback", "/mayor buyback <quantity> <max_price>", "Mayor: buy listed shares back with the treasury."),
+    ),
+    tips=(
+        "Dividends turn into DragonCoin every 0.01. Listed shares keep earning until sold.",
+        "The **price floor** is a year of a share's dividends at last week's revenue. New shares "
+        "can't sell below it, and buybacks can't pay above it.",
+        "Leaving keeps your shares and dividends, but you can't trade them until you return.",
     ),
 ))
 
