@@ -39,7 +39,6 @@ from utils.exchange import (
 )
 from utils.formatting import (
     DEFAULT_CURRENCY_EMOJI,
-    DRAGONCOIN_EMOJI,
     format_currency,
     format_dragoncoin,
     format_receipt_price,
@@ -54,6 +53,11 @@ DIRECTION_CHOICES = [
 ]
 
 RACE_MESSAGE = "Your balance changed while that was going through - nothing was exchanged. Try again."
+
+# For titles and author lines, which render no custom emoji (docs/stylization.md),
+# so DragonCoin's own icon (data/emoji.py) cannot go there. Unicode "currency
+# exchange", which names the feature rather than the coin.
+EXCHANGE_EMOJI = "\U0001F4B1"
 
 
 class ExchangeCog(commands.Cog):
@@ -121,7 +125,7 @@ class ExchangeCog(commands.Cog):
         unit = f" {currency_name}" if currency_name else ""
         embed = make_embed(f"1 DragonCoin = {DRAGONCOIN_RATE:,}{unit}", MARKET_COLOR)
         if interaction.guild is not None:
-            embed.set_author(name=f"{DRAGONCOIN_EMOJI} Exchange • {interaction.guild.name}")
+            embed.set_author(name=f"{EXCHANGE_EMOJI} Exchange • {interaction.guild.name}")
         embed.description = f"Exchange Tax: **{format_percent(percent)}**"
         embed.add_field(
             name=f"Buy {format_dragoncoin(100)}",
@@ -165,7 +169,7 @@ class ExchangeCog(commands.Cog):
         if rounded:
             summary += " Amounts round to the nearest 0.01."
         embed = build_action_receipt(
-            f"{DRAGONCOIN_EMOJI} DragonCoin Bought", MARKET_COLOR, summary, fields,
+            f"{EXCHANGE_EMOJI} DragonCoin Bought", MARKET_COLOR, summary, fields,
             footer_note="sell it back in any server with /exchange",
         )
         await respond(interaction, self.db, embed=embed)
@@ -194,7 +198,7 @@ class ExchangeCog(commands.Cog):
         summary = f"Sold {format_dragoncoin(cents)} to the server."
         if rounded:
             summary += " Amounts round to the nearest 0.01."
-        embed = build_action_receipt(f"{DRAGONCOIN_EMOJI} DragonCoin Sold", MARKET_COLOR, summary, fields)
+        embed = build_action_receipt(f"{EXCHANGE_EMOJI} DragonCoin Sold", MARKET_COLOR, summary, fields)
         await respond(interaction, self.db, embed=embed)
 
     @staticmethod

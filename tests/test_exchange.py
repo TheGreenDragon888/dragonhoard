@@ -33,7 +33,7 @@ from utils.exchange import (
     quote,
     sell_dragoncoin,
 )
-from utils.formatting import format_dragoncoin, format_dragoncoin_amount
+from utils.formatting import DRAGONCOIN_EMOJI, format_dragoncoin, format_dragoncoin_amount
 from utils.government import RATE_PERCENTS
 
 GUILD = 8080
@@ -69,7 +69,7 @@ class RoundingTests(unittest.TestCase):
         self.assertEqual(format_dragoncoin_amount(123), "1.23")
         self.assertEqual(format_dragoncoin_amount(5), "0.05")
         self.assertEqual(format_dragoncoin_amount(123_456_700), "1,234,567.00")
-        self.assertEqual(format_dragoncoin(100), "\U0001FA99 1.00")
+        self.assertEqual(format_dragoncoin(100), f"{DRAGONCOIN_EMOJI} 1.00")
 
 
 class QuoteTests(unittest.TestCase):

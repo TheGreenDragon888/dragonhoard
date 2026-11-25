@@ -72,7 +72,7 @@ def _add(version: ChangelogVersion):
 _add(ChangelogVersion(
     version="1.5.1",
     released="2026-11-25",
-    emoji="🪙",
+    emoji="💱",
     color=MARKET_COLOR,
     summary="DragonCoin arrives: /exchange buys and sells it, and Treasurers set an Exchange Tax",
     headline=(
@@ -81,7 +81,7 @@ _add(ChangelogVersion(
     ),
     entries=(
         ChangelogEntry(
-            "🪙 The DragonCoin Exchange",
+            "💱 The DragonCoin Exchange",
             "`/exchange <amount>` buys DragonCoin for 1,000 of this server's currency each, and "
             "`/exchange <amount> sell` sells it back for the same. DragonCoin is yours in every "
             "server. Amounts round to the nearest 0.01; `/exchange` alone shows the rate.",

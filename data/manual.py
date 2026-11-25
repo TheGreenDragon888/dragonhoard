@@ -414,7 +414,9 @@ _add(ManualSection(
 _add(ManualSection(
     key="exchange",
     label="DragonCoin Exchange",
-    emoji="🪙",
+    # Unicode: this goes in the page's title, which renders no custom emoji,
+    # so DragonCoin's own icon (data/emoji.py) cannot.
+    emoji="💱",
     # The market's yellow: the exchange is the server trading (docs/stylization.md).
     color=MARKET_COLOR,
     summary="Trade this server's currency for DragonCoin, the one that works everywhere",

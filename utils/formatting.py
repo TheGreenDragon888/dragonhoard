@@ -7,12 +7,9 @@ take, the same way.
 import math
 from datetime import datetime, timedelta, timezone
 
-DEFAULT_CURRENCY_EMOJI = "💰"
+from data.emoji import DRAGONCOIN_EMOJI
 
-# DragonCoin's symbol (1.5.1, utils/exchange.py). Unicode until a custom icon is
-# uploaded to both applications, at which point this becomes a custom_emoji()
-# call (data/emoji.py) and every DragonCoin figure follows it.
-DRAGONCOIN_EMOJI = "🪙"
+DEFAULT_CURRENCY_EMOJI = "💰"
 
 # (threshold, suffix) pairs for format_compact_price, ascending order.
 _COMPACT_TIERS = [
@@ -86,7 +83,9 @@ def format_dragoncoin_amount(cents: int) -> str:
 
 
 def format_dragoncoin(cents: int) -> str:
-    """DragonCoin's symbol preceding format_dragoncoin_amount's value."""
+    """DragonCoin's icon (data/emoji.py) preceding format_dragoncoin_amount's
+    value. A custom emoji, so only for descriptions, field names, field values
+    and plain messages - titles and author lines render none."""
     return f"{DRAGONCOIN_EMOJI} {format_dragoncoin_amount(cents)}"
 
 
