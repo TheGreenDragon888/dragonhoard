@@ -20,8 +20,7 @@ beta_id=None and resolves to MISSING_EMOJI there, so a missing beta upload
 is obvious while visually testing instead of looking like a real bug. Every
 icon in data/materials.py currently has both ids, so nothing takes that path
 today - it exists for the gap between designing an icon and uploading it to
-the second application. DragonCoin's icon is the one thing taking that path
-right now (see DRAGONCOIN_EMOJI below).
+the second application.
 """
 import config
 
@@ -54,6 +53,5 @@ MINING_POOL_EMOJI = custom_emoji("MiningBlock", 1523436645729173514, 15337147551
 
 # DragonCoin's icon (1.5.1), one of the first uploaded to the live application.
 # Shown beside every DragonCoin figure through utils/formatting.py:
-# format_dragoncoin. No beta id yet, so the beta bot shows MISSING_EMOJI in its
-# place until one is filled in.
-DRAGONCOIN_EMOJI = custom_emoji("DragonCoin", 1523399622008246312, None)
+# format_dragoncoin.
+DRAGONCOIN_EMOJI = custom_emoji("DragonCoin", 1523399622008246312, 1574994642443960450)

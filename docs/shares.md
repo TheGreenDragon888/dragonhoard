@@ -149,13 +149,24 @@ dividend or a buyback.
 
 ## 7. Scale
 
-The incentive is only as big as revenue. In the 2026-08 production backups the
-busiest server banked 85.3 of fees a week (docs/government.md section 5; a live
-figure, not reproducible from this repo). At 100% Fee Share one share of that
-server would earn 85.3 × 52 × 1% = 44.36 a year, 0.044 DragonCoin, so a share
-priced at 0.10 DragonCoin would yield about 44% a year. `SHARE_REVENUE_PERCENT`,
-`MAX_SHARES` and `SHARE_FLOOR_WEEKS` were proposals at that scale and should be
-re-checked against current revenue.
+The incentive is only as big as revenue. Two live figures, neither
+reproducible from this repo:
+
+- In the 2026-08 production backups the busiest server banked 85.3 of fees a
+  week (docs/government.md section 5). At 100% Fee Share one share would earn
+  85.3 × 52 × 1% = 44.36 a year, 0.044 DragonCoin. That was the scale the
+  constants were first proposed at, and it made shares a slow investment.
+- On 2026-11-25 the owner reported the busiest server making 2,000-4,000 a
+  week, taken here as fees. One share then earns 2,000-4,000 × 52 × 1% =
+  1,040-2,080 a year (1.04-2.08 DragonCoin) at 100% Fee Share, or 104-208
+  (0.104-0.208 DragonCoin) at 10%. The price floor is that same figure, so a
+  busy server's shares open at roughly 0.11-2.08 DragonCoin, well clear of the
+  0.01 minimum.
+
+At that scale `SHARE_REVENUE_PERCENT` (1%), `MAX_SHARES` (40) and
+`SHARE_FLOOR_WEEKS` (52) were kept as they are: a share is priced in tenths or
+whole DragonCoin, and promising at most 40% of revenue still leaves the
+government most of it.
 
 ## 8. Ruled out
 
