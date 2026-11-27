@@ -59,10 +59,11 @@ STARTING_DC = 10_000      # hundredths: 100 DragonCoin each
 
 
 class PriceFloorTests(unittest.TestCase):
-    def test_it_is_a_year_of_one_shares_dividends_rounded_up(self):
-        # 250 a week: one share earns 2.50 a week, 130 a year, which is 0.13 DC.
-        self.assertEqual(price_floor_cents(250.0), 13)
-        self.assertEqual(price_floor_cents(250.01), 14)
+    def test_it_is_three_months_of_one_shares_dividends_rounded_up(self):
+        # 1,000 a week: one share earns 10 a week, 130 over 13 weeks, which is
+        # 0.13 DC.
+        self.assertEqual(price_floor_cents(1000.0), 13)
+        self.assertEqual(price_floor_cents(1000.01), 14)
 
     def test_it_is_never_under_a_hundredth(self):
         self.assertEqual(price_floor_cents(0.0), 1)
@@ -161,7 +162,7 @@ class SaleTests(_SharesTestCase):
         await self.tx(open_share_sale, GUILD, MAYOR_ID, 2, 10)
 
     async def test_it_may_not_ask_less_than_the_floor(self):
-        await self.week_of_revenue(250.0)
+        await self.week_of_revenue(1000.0)
         self.assertEqual(await share_price_floor(self.db, GUILD), 13)
         with self.assertRaises(GovernmentError):
             await self.tx(open_share_sale, GUILD, MAYOR_ID, 5, 12)
@@ -170,7 +171,7 @@ class SaleTests(_SharesTestCase):
     async def test_the_floor_counts_the_shareholders_slice_too(self):
         yesterday = (game_now().date() - timedelta(days=1)).isoformat()
         await self.db.execute(
-            "INSERT INTO government_tax_daily (guild_id, day, amount, dividends) VALUES (?, ?, 200, 50)",
+            "INSERT INTO government_tax_daily (guild_id, day, amount, dividends) VALUES (?, ?, 800, 200)",
             (GUILD, yesterday),
         )
         self.assertEqual(await share_price_floor(self.db, GUILD), 13)
@@ -319,7 +320,7 @@ class BookTests(_SharesTestCase):
 class BuybackTests(_SharesTestCase):
     async def asyncSetUp(self):
         await super().asyncSetUp()
-        await self.week_of_revenue(250.0)                      # a floor of 0.13 DC
+        await self.week_of_revenue(1000.0)                     # a floor of 0.13 DC
         await self.set(treasury=1_000.0)
         await self.grant(BOB, 6)
 

@@ -71,16 +71,29 @@ more risk and more upside: a bond repays a fixed amount, a share a fixed slice.
 ## 4. The price floor
 
 A Mayor could sell 40% of the server's revenue to their own alt for 0.01 a
-share. So **a sale may not ask less than `price_floor_cents`**: one year
-(`SHARE_FLOOR_WEEKS`, 52) of the dividend a share would have earned at the
-revenue of the last `SHARE_FLOOR_WINDOW_DAYS` (7) complete game days, rounded up
-to the next hundredth of a DragonCoin, never under 0.01. That caps the yield a
-new share can be sold at to about 100% a year at last week's pace.
+share. So **a sale may not ask less than `price_floor_cents`**: 13 weeks
+(`SHARE_FLOOR_WEEKS`), about three months, of the dividend a share would have
+earned at the revenue of the last `SHARE_FLOOR_WINDOW_DAYS` (7) complete game
+days, rounded up to the next hundredth of a DragonCoin, never under 0.01. A
+share bought at the floor therefore pays for itself in about three months at
+last week's pace, on every server whatever its size, since the floor is
+measured in time.
+
+The floor was written as 52 weeks and cut to 13 before 1.6 shipped: on
+2026-11-25 the owner judged that players don't play long enough to wait a year
+for a share to pay back, so even the cheapest sale a government could make
+would have been one nobody wanted. The cost of the shorter floor is a weaker
+guard - an insider who buys at the floor breaks even in three months rather
+than twelve, then earns forever - and cheaper buybacks (below).
 
 **A buyback may not pay more than the same figure.** Without it the Mayor could
 list their own shares at a fantastic price and buy them with the treasury.
 With it, the most a buyback ever pays is roughly what the share would have
-cost the server in dividends over a year anyway.
+cost the server in dividends over three months anyway.
+
+The two have to be the same figure. If a buyback could pay more than a sale's
+minimum, an insider could buy shares from the government at the floor and sell
+them straight back above it, taking the difference out of the treasury.
 
 The floor reads *all* revenue, shareholders' slice included
 (`government_tax_daily.amount + dividends`). The other defences: both officers
@@ -157,16 +170,22 @@ reproducible from this repo:
   85.3 × 52 × 1% = 44.36 a year, 0.044 DragonCoin. That was the scale the
   constants were first proposed at, and it made shares a slow investment.
 - On 2026-11-25 the owner reported the busiest server making 2,000-4,000 a
-  week, taken here as fees. One share then earns 2,000-4,000 × 52 × 1% =
-  1,040-2,080 a year (1.04-2.08 DragonCoin) at 100% Fee Share, or 104-208
-  (0.104-0.208 DragonCoin) at 10%. The price floor is that same figure, so a
-  busy server's shares open at roughly 0.11-2.08 DragonCoin, well clear of the
-  0.01 minimum.
+  week, taken here as fees. In months, which is how the owner judges a
+  return, and with the 13-week floor:
 
-At that scale `SHARE_REVENUE_PERCENT` (1%), `MAX_SHARES` (40) and
-`SHARE_FLOOR_WEEKS` (52) were kept as they are: a share is priced in tenths or
-whole DragonCoin, and promising at most 40% of revenue still leaves the
-government most of it.
+  | Fees a week | Fee Share | One share earns a month | Floor (13 weeks) |
+  | --- | --- | --- | --- |
+  | 2,000 | 10% | 8.67 | 26, so 0.03 DragonCoin |
+  | 4,000 | 10% | 17.33 | 52, so 0.06 DragonCoin |
+  | 2,000 | 100% | 86.67 | 260, so 0.26 DragonCoin |
+  | 4,000 | 100% | 173.33 | 520, so 0.52 DragonCoin |
+
+  A month here is a twelfth of 52 weeks; the floor is weekly revenue × 1% × 13,
+  rounded up to the next hundredth of a DragonCoin.
+
+At that scale `SHARE_REVENUE_PERCENT` (1%) and `MAX_SHARES` (40) were kept as
+they are: promising at most 40% of revenue still leaves the government most of
+it.
 
 ## 8. Ruled out
 

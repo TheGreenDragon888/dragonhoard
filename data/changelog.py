@@ -87,7 +87,7 @@ _add(ChangelogVersion(
             "🏛️ Selling Shares",
             "The Treasurer sets how many may exist, up to 40 (`/treasurer shares`). The Mayor sells "
             "new ones into the treasury (`/mayor shares`) and buys listed ones back "
-            "(`/mayor buyback`). Sales can't go below a year of a share's dividends, and buybacks "
+            "(`/mayor buyback`). Sales can't go below three months of a share's dividends, and buybacks "
             "can't pay above it.",
         ),
     ),

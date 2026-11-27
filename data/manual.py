@@ -694,7 +694,7 @@ _add(ManualSection(
     ),
     tips=(
         "Dividends turn into DragonCoin every 0.01. Listed shares keep earning until sold.",
-        "The **price floor** is a year of a share's dividends at last week's revenue. New shares "
+        "The **price floor** is three months of a share's dividends at last week's revenue. New shares "
         "can't sell below it, and buybacks can't pay above it.",
         "Leaving keeps your shares and dividends, but you can't trade them until you return.",
     ),

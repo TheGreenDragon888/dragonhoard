@@ -45,8 +45,8 @@ THE MONEY RULES:
   no obvious government to collect one.
 
 THE GUARD: a Mayor could sell the server's revenue to their own alt for next to
-nothing. So a sale may not ask less than price_floor_cents - one year of the
-dividend a share would have earned at the last week's revenue - and a buyback
+nothing. So a sale may not ask less than price_floor_cents - three months of
+the dividend a share would have earned at the last week's revenue - and a buyback
 may not pay more than that same figure. Both officers have a hand in any
 sale (the Treasurer sets the ceiling, the Mayor sells under it), and
 MAX_SHARES caps what can ever be promised.
@@ -87,8 +87,12 @@ from utils.market_book import ENTRY_LIFETIME_MODIFIER, LIVE_ENTRY_SQL
 MAX_SHARES = 40
 
 # The price floor is this many weeks of the dividend a share would have earned
-# at the revenue of the last SHARE_FLOOR_WINDOW_DAYS complete game days.
-SHARE_FLOOR_WEEKS = 52
+# at the revenue of the last SHARE_FLOOR_WINDOW_DAYS complete game days, so a
+# share bought at the floor pays for itself in that long. 13 weeks is a quarter
+# of a year - about three months, what player text calls it. It was 52 until
+# the owner judged that nobody plays long enough to wait a year for a share to
+# pay back (docs/shares.md section 4).
+SHARE_FLOOR_WEEKS = 13
 SHARE_FLOOR_WINDOW_DAYS = 7
 
 # How many open listings and orders one player may have on one server's share
@@ -647,7 +651,7 @@ async def open_share_sale(
         floor = await share_price_floor(tx, guild_id, now)
         if price_cents < floor:
             raise GovernmentError(
-                f"A share can't sell for less than {format_dragoncoin(floor)}: a year of its "
+                f"A share can't sell for less than {format_dragoncoin(floor)}: three months of its "
                 "dividends at last week's revenue."
             )
     await tx.execute(
